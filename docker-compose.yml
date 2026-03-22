@@ -3,16 +3,18 @@ services:
     image: postgres:17-alpine
     container_name: python-claw-postgres
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      POSTGRES_DB: openassistant
-      POSTGRES_USER: openassistant
-      POSTGRES_PASSWORD: openassistant
+      POSTGRES_DB: ${PYTHON_CLAW_POSTGRES_DB:-openassistant}
+      POSTGRES_USER: ${PYTHON_CLAW_POSTGRES_USER:-openassistant}
+      POSTGRES_PASSWORD: ${PYTHON_CLAW_POSTGRES_PASSWORD:-openassistant}
     ports:
-      - "5432:5432"
+      - "${PYTHON_CLAW_POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U openassistant -d openassistant"]
+      test: ["CMD-SHELL", "pg_isready -U ${PYTHON_CLAW_POSTGRES_USER:-openassistant} -d ${PYTHON_CLAW_POSTGRES_DB:-openassistant}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -22,8 +24,10 @@ services:
     image: redis:7-alpine
     container_name: python-claw-redis
     restart: unless-stopped
+    env_file:
+      - .env
     ports:
-      - "6379:6379"
+      - "${PYTHON_CLAW_REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     command: ["redis-server", "--appendonly", "yes"]

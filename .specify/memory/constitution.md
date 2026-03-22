@@ -20,6 +20,8 @@ Every feature must preserve service boundaries between gateway, graph runtime, c
 ## Architecture Constraints
 
 - Python 3.11+ is required.
+- `uv` is the required Python project tool for environment management, dependency sync, and developer command execution.
+- `python-dotenv` with a project-root `.env` file is required for application, migration, and local infrastructure configuration.
 - FastAPI is the gateway surface.
 - PostgreSQL is the source of truth for sessions, messages, approvals, jobs, and derived-state bookkeeping.
 - Redis may be used for locks, idempotency windows, rate limiting, and ephemeral caches, but not as transcript truth.
@@ -35,6 +37,8 @@ Every feature must preserve service boundaries between gateway, graph runtime, c
 - Each `spec.md` must define purpose, non-goals, dependencies, data-model changes, contracts, invariants, security constraints, operational considerations, acceptance criteria, and explicit test expectations.
 - Each `plan.md` must name exact files or modules to change, migration order, risk areas, rollback strategy where appropriate, and unit/integration test strategy.
 - Each `tasks.md` must be dependency-aware, avoid placeholder cleanup items, and place high-risk tests before high-risk implementation.
+- Specs, plans, tasks, and README-style developer instructions must use `uv` commands in examples and implementation notes, including `uv sync`, `uv run pytest`, `uv run alembic`, and `uv run uvicorn` where applicable.
+- Specs, plans, tasks, Docker Compose instructions, and runtime configuration notes must treat the project-root `.env` file as the canonical local configuration source and use `python-dotenv`-compatible variable names rather than ad hoc shell export steps.
 - No spec may silently collapse service boundaries established by an earlier spec. Later specs may extend contracts, not erase them.
 - Placeholder scaffolds must be marked clearly as stub-only or sample-only.
 
@@ -42,4 +46,4 @@ Every feature must preserve service boundaries between gateway, graph runtime, c
 
 This constitution overrides local convenience when the two conflict. Plans, tasks, and implementations must explicitly verify compliance with these principles. Amendments require a documented reason, a migration path for affected specs, and an update to all impacted acceptance criteria.
 
-**Version**: 1.0.0 | **Ratified**: 2026-03-22 | **Last Amended**: 2026-03-22
+**Version**: 1.1.0 | **Ratified**: 2026-03-22 | **Last Amended**: 2026-03-22
