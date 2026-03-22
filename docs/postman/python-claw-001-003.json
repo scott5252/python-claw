@@ -1,0 +1,749 @@
+{
+	"info": {
+		"_postman_id": "db986fda-3b5d-4016-af30-82ea2f80780e",
+		"name": "python-claw",
+		"description": "### Welcome to Postman! This is your first collection. \n\nCollections are your starting point for building and testing APIs. You can use this one to:\n\n• Group related requests\n• Test your API in real-world scenarios\n• Document and share your requests\n\nUpdate the name and overview whenever you’re ready to make it yours.\n\n[Learn more about Postman Collections.](https://learning.postman.com/docs/collections/collections-overview/)",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "49874448",
+		"_collection_link": "https://scornell-sn-6619796.postman.co/workspace/Scott-Cornell's-Workspace~ee377d2a-c8a4-4f0f-8b88-c1775b08619e/collection/49874448-db986fda-3b5d-4016-af30-82ea2f80780e?action=share&source=collection_link&creator=49874448"
+	},
+	"item": [
+		{
+			"name": "Health",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {},
+						"requests": {}
+					}
+				}
+			],
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "http://127.0.0.1:8000/health",
+					"protocol": "http",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"health"
+					]
+				},
+				"description": "This is a GET request and it is used to \"get\" data from an endpoint. There is no request body for a GET request, but you can use query parameters to help specify the resource you want data on (e.g., in this request, we have `id=1`).\n\nA successful GET response will have a `200 OK` status, and should include some kind of response body - for example, HTML web content or JSON data."
+			},
+			"response": []
+		},
+		{
+			"name": "1_1.Create a Direct-message session",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"var jsonData = pm.response.json();",
+							"",
+							"pm.environment.set(\"session_id\", jsonData.session_id);"
+						],
+						"type": "text/javascript",
+						"packages": {},
+						"requests": {}
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"channel_kind\": \"slack\",\n    \"channel_account_id\": \"acct-1\",\n    \"external_message_id\": \"msg-001\",\n    \"sender_id\": \"sender-1\",\n    \"content\": \"hello\",\n    \"peer_id\": \"peer-1\"\n  }",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://127.0.0.1:8000/inbound/message",
+					"protocol": "http",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"inbound",
+						"message"
+					]
+				},
+				"description": "This is a POST request, submitting data to an API via the request body. This request submits JSON data, and the data is reflected in the response.\n\nA successful POST request typically returns a `200 OK` or `201 Created` response code."
+			},
+			"response": []
+		},
+		{
+			"name": "1_2. Replay the same in bound message",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"channel_kind\": \"slack\",\n    \"channel_account_id\": \"acct-1\",\n    \"external_message_id\": \"msg-001\",\n    \"sender_id\": \"sender-1\",\n    \"content\": \"hello\",\n    \"peer_id\": \"peer-1\"\n  }",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://127.0.0.1:8000/inbound/message",
+					"protocol": "http",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"inbound",
+						"message"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "1_3. Reuse the same session with new inbound message",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"channel_kind\": \"slack\",\n    \"channel_account_id\": \"acct-1\",\n    \"external_message_id\": \"msg-002\",\n    \"sender_id\": \"sender-1\",\n    \"content\": \"follow-up\",\n    \"peer_id\": \"peer-1\"\n  }",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://127.0.0.1:8000/inbound/message",
+					"protocol": "http",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"inbound",
+						"message"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "1_4. inspect the session and transcript",
+			"protocolProfileBehavior": {
+				"disableBodyPruning": true
+			},
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://127.0.0.1:8000/sessions/{{session_id}}",
+					"protocol": "http",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"sessions",
+						"{{session_id}}"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "1_4b. Get transcription history",
+			"protocolProfileBehavior": {
+				"disableBodyPruning": true
+			},
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://127.0.0.1:8000/sessions/{{session_id}}/messages?limit=20",
+					"protocol": "http",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"sessions",
+						"{{session_id}}",
+						"messages"
+					],
+					"query": [
+						{
+							"key": "limit",
+							"value": "20"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "1_5. Verify invalid routing is rejected",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"channel_kind\": \"slack\",\n    \"channel_account_id\": \"acct-1\",\n    \"external_message_id\": \"msg-bad\",\n    \"sender_id\": \"sender-1\",\n    \"content\": \"bad route\",\n    \"peer_id\": \"peer-1\",\n    \"group_id\": \"group-1\"\n  }",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://127.0.0.1:8000/inbound/message",
+					"protocol": "http",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"inbound",
+						"message"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "2_1.Plain Assistance response",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"channel_kind\": \"slack\",\n    \"channel_account_id\": \"acct-2\",\n    \"external_message_id\": \"msg-plain-001\",\n    \"sender_id\": \"sender-2\",\n    \"content\": \"how are you\",\n    \"peer_id\": \"peer-2\"\n  }",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://127.0.0.1:8000/inbound/message",
+					"protocol": "http",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"inbound",
+						"message"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "2_2. Safe local tool execution with echo",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"channel_kind\": \"slack\",\n    \"channel_account_id\": \"acct-2\",\n    \"external_message_id\": \"msg-echo-001\",\n    \"sender_id\": \"sender-2\",\n    \"content\": \"echo runtime hello\",\n    \"peer_id\": \"peer-2\"\n  }",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://127.0.0.1:8000/inbound/message",
+					"protocol": "http",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"inbound",
+						"message"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "3_1. Request a governed action without approval",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"var jsonData = pm.response.json();",
+							"",
+							"pm.environment.set(\"3_session_id\", jsonData.session_id);"
+						],
+						"type": "text/javascript",
+						"packages": {},
+						"requests": {}
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"channel_kind\": \"slack\",\n    \"channel_account_id\": \"acct-3\",\n    \"external_message_id\": \"msg-send-001\",\n    \"sender_id\": \"sender-3\",\n    \"content\": \"send hello channel\",\n    \"peer_id\": \"peer-3\"\n  }",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://127.0.0.1:8000/inbound/message",
+					"protocol": "http",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"inbound",
+						"message"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "3_1b. Get Transacation history",
+			"protocolProfileBehavior": {
+				"disableBodyPruning": true
+			},
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://127.0.0.1:8000/sessions/{{3_session_id}}/messages?limit=20",
+					"protocol": "http",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"sessions",
+						"{{3_session_id}}",
+						"messages"
+					],
+					"query": [
+						{
+							"key": "limit",
+							"value": "20"
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "3_1c.Governance Pending",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"var jsonData = pm.response.json();",
+							"",
+							"// Store a specific attribute in an environment variable",
+							"// Replace 'attributeName' with the actual key from your JSON",
+							"// Replace 'variableName' with the name you want for your Postman variable",
+							"pm.environment.set(\"proposal_id\", jsonData.proposal_id);"
+						],
+						"type": "text/javascript",
+						"packages": {},
+						"requests": {}
+					}
+				}
+			],
+			"protocolProfileBehavior": {
+				"disableBodyPruning": true
+			},
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://127.0.0.1:8000/sessions/{{3_session_id}}/governance/pending",
+					"protocol": "http",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"sessions",
+						"{{3_session_id}}",
+						"governance",
+						"pending"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "3_2.Approve the Proposal",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							""
+						],
+						"type": "text/javascript",
+						"packages": {},
+						"requests": {}
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"channel_kind\": \"slack\",\n    \"channel_account_id\": \"acct-3\",\n    \"external_message_id\": \"msg-send-002\",\n    \"sender_id\": \"sender-3\",\n    \"content\": \"approve {{proposal_id}}\",\n    \"peer_id\": \"peer-3\"\n  }",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://127.0.0.1:8000/inbound/message",
+					"protocol": "http",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"inbound",
+						"message"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "3_3. Retry the Original Governed request",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							""
+						],
+						"type": "text/javascript",
+						"packages": {},
+						"requests": {}
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"channel_kind\": \"slack\",\n    \"channel_account_id\": \"acct-3\",\n    \"external_message_id\": \"msg-send-003\",\n    \"sender_id\": \"sender-3\",\n    \"content\": \"send hello channel\",\n    \"peer_id\": \"peer-3\"\n  }",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://127.0.0.1:8000/inbound/message",
+					"protocol": "http",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"inbound",
+						"message"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "3_4. Revoke the proposal",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							""
+						],
+						"type": "text/javascript",
+						"packages": {},
+						"requests": {}
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"channel_kind\": \"slack\",\n    \"channel_account_id\": \"acct-3\",\n    \"external_message_id\": \"msg-send-004\",\n    \"sender_id\": \"sender-3\",\n    \"content\": \"revoke {{proposal_id}}\",\n    \"peer_id\": \"peer-3\"\n  }",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://127.0.0.1:8000/inbound/message",
+					"protocol": "http",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"inbound",
+						"message"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "3_5. Retry after revocation",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							""
+						],
+						"type": "text/javascript",
+						"packages": {},
+						"requests": {}
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"channel_kind\": \"slack\",\n    \"channel_account_id\": \"acct-3\",\n    \"external_message_id\": \"msg-send-005\",\n    \"sender_id\": \"sender-3\",\n    \"content\": \"send hello channel\",\n    \"peer_id\": \"peer-3\"\n  }",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://127.0.0.1:8000/inbound/message",
+					"protocol": "http",
+					"host": [
+						"127",
+						"0",
+						"0",
+						"1"
+					],
+					"port": "8000",
+					"path": [
+						"inbound",
+						"message"
+					]
+				}
+			},
+			"response": []
+		}
+	]
+}
