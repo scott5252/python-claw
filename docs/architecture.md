@@ -3203,7 +3203,7 @@ sufficient for production continuity protection.
 - Implement real compaction that writes a new `summary_snapshots` row instead of
   deleting or silently dropping old transcript messages.
 - Ensure compaction records the covered transcript range using
-  `base_message_id` and `through_message_id`.
+  `base_message_id` and `through_message_id` as an inclusive range.
 - Preserve transcript rows unchanged in the canonical message store.
 
 **Required implementation expectation:**

@@ -1,11 +1,14 @@
 # Tasks 004: Context Engine Lifecycle, Continuity, Compaction, and Recovery
 
-1. Create migrations for `summary_snapshots` and `outbox_jobs`.
-2. Write repository tests for snapshot creation, latest snapshot lookup, and transcript-range reads.
-3. Write failure-mode tests for transcript-only recovery and duplicate outbox delivery.
-4. Implement context engine interfaces and wire the full lifecycle into runtime execution.
-5. Replace trim-only compaction with versioned summary snapshot compaction.
-6. Implement outbox-driven post-commit memory extraction and indexing hooks.
-7. Implement continuity reconstruction order and compaction/retry handling for context overflow.
-8. Add recovery and repair jobs for failed or missing derived artifacts.
-9. Add integration tests for crash windows, retrieval outage fallback, and concurrent session turns.
+1. Add high-risk contract tests first for snapshot range/version semantics, deterministic latest-valid selection, duplicate `outbox_jobs` delivery, bounded degraded failure on hard overflow, and governance replay after approval or revocation changes.
+2. Add high-risk integration tests first for derived-artifact deletion followed by canonical replay, long-session hard overflow, retrieval or summary outage fallback, and restart/replay continuity for approval waits and revocations.
+3. Create additive migrations for `summary_snapshots`, `outbox_jobs`, and `context_manifests`, including snapshot/version metadata using `base_message_id` and `through_message_id`, dedupe and retry fields, degraded flags, and all required indexes.
+4. Extend repository contracts and repository tests for canonical continuity reads across transcript history, Spec 002 assistant/tool artifacts, and Spec 003 governance artifacts, plus latest-valid summary lookup, deterministic snapshot versioning, `outbox_jobs` enqueue/claim/update flows, and manifest persistence with bounded retention.
+5. Define continuity assembly state and manifest structures so runtime code can deterministically record transcript ranges, summary ids, retrieval/chunk ids, governance artifacts, overflow mode, and degraded outcomes for every turn.
+6. Introduce a dedicated context-service seam for transcript-first assembly, additive aid selection, compaction decisions, and manifest creation so continuity policy does not accumulate in graph node glue.
+7. Wire the four-phase lifecycle into the gateway-owned runtime path so `apps/gateway/api/inbound.py` hands off ingest, assemble, compact/retry, model execution, and after-turn enqueueing in a fixed order with no user-visible resume path outside the gateway.
+8. Implement transcript-first context assembly from canonical records, including deterministic selection of additive summary and retrieval aids and explicit inclusion of assistant/tool continuity artifacts and approval-aware governance visibility state.
+9. Replace trim-only compaction with deterministic overflow handling that records the failure mode, retries with additive aids and older-history elision, and returns a bounded degraded failure plus queued repair when transcript-first assembly still cannot fit.
+10. Persist one durable `context_manifests` record per turn and emit matching structured observability events for assembly mode, overflow retry, degraded operation, summary staleness, replay latency, repair outcomes, and empty-memory retrieval on long sessions.
+11. Implement idempotent post-commit `outbox_jobs` workers for summary generation, retrieval indexing, continuity repair, and any required governance-state rebuild, ensuring duplicate delivery never creates conflicting derived state.
+12. Add repair and recovery flows that can rebuild continuity and normalized governance visibility state from canonical transcript-linked records after crash windows, derived-artifact loss, approval waits, revocations, or stale continuity gaps.
