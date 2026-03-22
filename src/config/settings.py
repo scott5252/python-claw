@@ -8,7 +8,7 @@ load_dotenv(find_dotenv(usecwd=True), override=False)
 
 class Settings(BaseSettings):
     app_name: str = "python-claw-gateway"
-    database_url: str = "sqlite:///./python_claw.db"
+    database_url: str = "postgresql+psycopg://openassistant:openassistant@localhost:5432/openassistant"
     dedupe_retention_days: int = 30
     dedupe_stale_after_seconds: int = 300
     messages_page_default_limit: int = 50

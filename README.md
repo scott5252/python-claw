@@ -117,6 +117,15 @@ PYTHON_CLAW_REDIS_PORT=6379
 
 Update that file before running the stack if you want different local ports, credentials, or database names.
 
+For a brand new checkout, the quickest happy path is:
+
+```bash
+uv sync --group dev
+docker compose --env-file .env up -d
+uv run alembic upgrade head
+uv run uvicorn apps.gateway.main:app --reload
+```
+
 ### 3. PostgreSQL And Redis
 
 A local `docker-compose.yml` is included for developer infrastructure:
@@ -174,25 +183,25 @@ Compose-specific values in the same `.env` file are:
 - `PYTHON_CLAW_POSTGRES_PORT`
 - `PYTHON_CLAW_REDIS_PORT`
 
-If you do not set `PYTHON_CLAW_DATABASE_URL`, the app defaults to:
-
-```bash
-sqlite:///./python_claw.db
-```
-
-That default is convenient for quick local experiments, but PostgreSQL is the intended durable runtime backend for this spec.
-
-## Database Setup
-
-Alembic is configured in [`alembic.ini`](/Users/scottcornell/src/projects/python-claw/alembic.ini) and [`migrations/env.py`](/Users/scottcornell/src/projects/python-claw/migrations/env.py).
-
-Alembic now reads the database URL from the same project `.env` file as the application. For local Docker Compose, the default [`.env`](/Users/scottcornell/src/projects/python-claw/.env) already points at:
+If you do not set `PYTHON_CLAW_DATABASE_URL`, the app now defaults to:
 
 ```bash
 postgresql+psycopg://openassistant:openassistant@localhost:5432/openassistant
 ```
 
-Then run:
+That matches the bundled Docker Compose PostgreSQL service, so the application and Alembic target the same local database by default.
+
+## Database Setup
+
+Alembic is configured in [`alembic.ini`](/Users/scottcornell/src/projects/python-claw/alembic.ini) and [`migrations/env.py`](/Users/scottcornell/src/projects/python-claw/migrations/env.py).
+
+Alembic now reads the database URL from the same project `.env` file as the application and falls back to the same PostgreSQL local-development URL when the variable is unset. For local Docker Compose, the default [`.env`](/Users/scottcornell/src/projects/python-claw/.env) already points at:
+
+```bash
+postgresql+psycopg://openassistant:openassistant@localhost:5432/openassistant
+```
+
+With PostgreSQL running, apply the schema:
 
 ```bash
 uv run alembic upgrade head
@@ -300,6 +309,5 @@ This repository is intentionally still at the foundation stage of the broader ar
 - inbound user messages are persisted, but there is no assistant/model execution yet
 - Redis is provisioned, but not yet used by the application code
 - tests validate behavior mostly against SQLite fixtures rather than a live PostgreSQL instance
-- Alembic is present, but the default checked-in `alembic.ini` still points to SQLite unless you override it
 
 That means the code is already useful for validating routing, session identity, transcript persistence, and idempotent webhook handling, but it is not yet a full assistant runtime.
