@@ -21,6 +21,7 @@ class ScopeKind(str, Enum):
 
 class MessageRole(str, Enum):
     USER = "user"
+    ASSISTANT = "assistant"
 
 
 class DedupeStatus(str, Enum):
@@ -76,6 +77,38 @@ class MessageRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     session: Mapped["SessionRecord"] = relationship(back_populates="messages")
+
+
+class SessionArtifactRecord(Base):
+    __tablename__ = "session_artifacts"
+    __table_args__ = (
+        Index("ix_session_artifacts_session_id_id", "session_id", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    artifact_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    capability_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class ToolAuditEventRecord(Base):
+    __tablename__ = "tool_audit_events"
+    __table_args__ = (
+        Index("ix_tool_audit_events_session_id_id", "session_id", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    capability_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    event_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
 class InboundDedupeRecord(Base):

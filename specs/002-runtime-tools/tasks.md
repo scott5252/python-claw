@@ -1,10 +1,18 @@
 # Tasks 002: LangGraph Runtime and Typed Tool Registry
 
-1. Add any migration needed for tool-call/result and audit capture.
-2. Write tests for `AssistantState` transitions and post-think routing.
-3. Write tests for policy-aware tool visibility.
-4. Implement tool runtime context and registry/factory contract.
-5. Implement outbound message tool and one safe local example tool.
-6. Implement graph nodes, graph factory, and dependency injection points.
-7. Persist or log tool-call arguments and outcomes.
-8. Add integration tests proving transport stays outside orchestration and tool exposure is contextual.
+1. Write repository and persistence tests for one explicit append-only storage contract covering assistant output, tool-call proposals, tool execution outcomes, and outbound intent or outbound references.
+2. Add additive migrations and storage wiring for the chosen append-only transcript or event shape plus the tool execution audit event sink, preferring durable storage but allowing a defined structured-log contract if persistence is deferred.
+3. Implement typed runtime contracts in `src/graphs/state.py` for the minimal single-turn `AssistantState`, `ToolRuntimeContext`, `ModelTurnResult`, and explicit tool-event and tool-result records used by nodes and persistence.
+4. Normalize runtime identifiers to the Spec 001 contract in state and runtime context types by using `channel_kind` and `sender_id`, and define the explicit gateway-owned `agent_id` source for this slice.
+5. Write unit tests for `AssistantState` transitions, deterministic `needs_tools` routing, typed `ModelTurnResult` handling, and failure-path invariants that prevent assistant success claims without a recorded tool result.
+6. Implement `GraphDependencies` and `GraphFactory` so repositories, policy services, model adapters, transcript writers, audit sinks, and configured runtime defaults are injected instead of constructed inline inside graph nodes.
+7. Implement the single-turn LangGraph assembly and nodes in `src/graphs/nodes.py` and `src/graphs/assistant_graph.py` for prompt assembly, typed model inference, deterministic branching, tool execution, and append-only persistence before return.
+8. Write graph assembly tests with fake repositories, fake models, fake policy services, fake tool factories, and fake audit sinks to prove deterministic invocation from injected dependencies only.
+9. Implement `ToolRuntimeContext` and the typed registry or factory contract in `src/tools/registry.py`, including policy-aware filtering by capability, channel, agent, and session context with fail-closed omission for denied tools.
+10. Write registry and policy tests proving tool visibility is contextual and that tool factories receive per-turn runtime context rather than transport-captured state.
+11. Implement the outbound message tool in `src/tools/messaging.py` as a runtime-owned outbound intent or outbound-reference helper that never dispatches channel transports directly and does not require adapters to reinterpret assistant text.
+12. Implement one deterministic, side-effect-bounded local example tool in `src/tools/local_safe.py` that requires no network, shell, filesystem mutation, or remote execution support.
+13. Add tests proving the outbound message tool does not call channel adapters or transport clients directly and that the runtime still functions when only safe local tools are bound.
+14. Implement tool execution recording and audit hooks for requested arguments, execution status, returned outcome, and explicit failure results so successes and failures are both persisted or emitted through the defined event contract.
+15. Wire the gateway-owned runtime entry point in `src/sessions/service.py` and `apps/gateway/deps.py` so the gateway invokes the graph, supplies the explicit `agent_id` source for this slice, and keeps channel adapters outside orchestration.
+16. Add integration tests for a tool-using turn through the gateway-owned runtime path, a policy-denied turn where the tool is absent from the bound set, a local-tools-only turn with no remote execution configured, and a tool failure turn that records failure without fabricated success text.

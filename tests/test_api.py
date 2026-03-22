@@ -46,10 +46,10 @@ def test_session_reuse_and_message_history(client) -> None:
     assert session_response.status_code == 200
     assert session_response.json()["scope_name"] == "main"
 
-    messages_response = client.get(f"/sessions/{session_id}/messages", params={"limit": 2})
+    messages_response = client.get(f"/sessions/{session_id}/messages", params={"limit": 4})
     assert messages_response.status_code == 200
     body = messages_response.json()
-    assert [item["content"] for item in body["items"]] == ["one", "two"]
+    assert [item["content"] for item in body["items"]] == ["Received: one", "two", "Received: two"]
 
 
 def test_cross_channel_dedupe_identity_isolated(client) -> None:

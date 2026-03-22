@@ -1,11 +1,14 @@
 # python-claw
 
-`python-claw` is the foundation for a gateway-first assistant runtime inspired by the `001-gateway-sessions` spec in [`/specs/001-gateway-sessions/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/001-gateway-sessions/spec.md). The current implementation focuses on four things:
+`python-claw` is the foundation for a gateway-first assistant runtime inspired by the `001-gateway-sessions` and `002-runtime-tools` specs in [`/specs/001-gateway-sessions/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/001-gateway-sessions/spec.md) and [`/specs/002-runtime-tools/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/002-runtime-tools/spec.md). The current implementation focuses on these things:
 
 - a single FastAPI gateway entrypoint
 - deterministic routing into durable sessions
 - append-only transcript persistence
 - PostgreSQL-safe idempotency semantics for inbound messages
+- a gateway-owned single-turn assistant runtime
+- a typed, policy-aware local tool registry
+- append-only storage for tool artifacts and audit events
 
 This README is written for a developer who needs to understand what was implemented, how to run it, and how to test it locally.
 
@@ -25,6 +28,9 @@ The implemented flow for `POST /inbound/message` is:
 3. resolve or create the canonical session
 4. append one inbound `user` message
 5. finalize the dedupe record with the resulting `session_id` and `message_id`
+6. invoke the gateway-owned single-turn assistant runtime
+7. append one assistant transcript message
+8. persist any runtime tool artifacts and audit events created during the turn
 
 That behavior is implemented across:
 
@@ -32,10 +38,78 @@ That behavior is implemented across:
 - inbound/admin endpoints: [`apps/gateway/api/inbound.py`](/Users/scottcornell/src/projects/python-claw/apps/gateway/api/inbound.py), [`apps/gateway/api/admin.py`](/Users/scottcornell/src/projects/python-claw/apps/gateway/api/admin.py)
 - routing rules: [`src/routing/service.py`](/Users/scottcornell/src/projects/python-claw/src/routing/service.py)
 - orchestration service: [`src/sessions/service.py`](/Users/scottcornell/src/projects/python-claw/src/sessions/service.py)
+- graph runtime: [`src/graphs/state.py`](/Users/scottcornell/src/projects/python-claw/src/graphs/state.py), [`src/graphs/nodes.py`](/Users/scottcornell/src/projects/python-claw/src/graphs/nodes.py), [`src/graphs/assistant_graph.py`](/Users/scottcornell/src/projects/python-claw/src/graphs/assistant_graph.py)
+- tool and policy wiring: [`src/tools/registry.py`](/Users/scottcornell/src/projects/python-claw/src/tools/registry.py), [`src/tools/local_safe.py`](/Users/scottcornell/src/projects/python-claw/src/tools/local_safe.py), [`src/tools/messaging.py`](/Users/scottcornell/src/projects/python-claw/src/tools/messaging.py), [`src/policies/service.py`](/Users/scottcornell/src/projects/python-claw/src/policies/service.py)
+- model adapter contract: [`src/providers/models.py`](/Users/scottcornell/src/projects/python-claw/src/providers/models.py)
+- audit sink: [`src/observability/audit.py`](/Users/scottcornell/src/projects/python-claw/src/observability/audit.py)
 - persistence layer: [`src/sessions/repository.py`](/Users/scottcornell/src/projects/python-claw/src/sessions/repository.py)
 - idempotency lifecycle: [`src/gateway/idempotency.py`](/Users/scottcornell/src/projects/python-claw/src/gateway/idempotency.py)
 - database schema: [`src/db/models.py`](/Users/scottcornell/src/projects/python-claw/src/db/models.py)
-- migration: [`migrations/versions/20260322_001_gateway_sessions.py`](/Users/scottcornell/src/projects/python-claw/migrations/versions/20260322_001_gateway_sessions.py)
+- migrations: [`migrations/versions/20260322_001_gateway_sessions.py`](/Users/scottcornell/src/projects/python-claw/migrations/versions/20260322_001_gateway_sessions.py), [`migrations/versions/20260322_002_runtime_tools.py`](/Users/scottcornell/src/projects/python-claw/migrations/versions/20260322_002_runtime_tools.py)
+
+## Spec 002 Runtime Tools
+
+Spec 002 adds the first assistant execution path to the project. The key idea is that the gateway still owns the request lifecycle, but after the inbound user message is stored it now invokes a single-turn runtime that can either:
+
+- return plain assistant text
+- call a safe local tool
+- prepare a runtime-owned outbound intent without calling a transport directly
+
+The runtime is intentionally narrow in this spec:
+
+- one turn only
+- local tools only
+- no background workflows
+- no remote execution
+- no transport dispatch from the graph
+
+### What A Developer Needs To Know
+
+The important implementation boundary is:
+
+- `SessionService` is still the entry point for inbound work
+- `AssistantGraph` is invoked from the service layer, not from FastAPI routes directly
+- `ModelAdapter` returns a typed `ModelTurnResult`
+- `ToolRegistry` binds tools per turn using `ToolRuntimeContext`
+- `SessionRepository` persists assistant messages plus append-only runtime artifacts
+- `ToolAuditSink` records execution attempts and outcomes separately from transcript rows
+
+In the current workspace, the default runtime behavior is intentionally simple:
+
+- `echo <text>` invokes `echo_text`
+- `send <text>` invokes `send_message`
+- anything else returns `Received: <text>`
+
+That behavior lives in [`src/providers/models.py`](/Users/scottcornell/src/projects/python-claw/src/providers/models.py). It is a local rule-based adapter used to prove the runtime contracts and test paths before a real provider is introduced.
+
+### Runtime Flow
+
+For each accepted inbound message, the application now does this:
+
+1. normalize routing and claim dedupe
+2. reuse or create the session
+3. append the inbound `user` message
+4. finalize the dedupe record
+5. build `AssistantState` from the current turn and recent transcript history
+6. bind policy-allowed tools for this runtime context
+7. execute any requested tools and record append-only artifacts
+8. append the final `assistant` message
+
+The append-only runtime records introduced by Spec 002 are:
+
+- `session_artifacts` for `tool_proposal`, `tool_result`, and `outbound_intent`
+- `tool_audit_events` for execution attempt and result auditing
+
+### Files To Read First
+
+If you want the shortest path to understanding Spec 002, read:
+
+1. [`specs/002-runtime-tools/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/002-runtime-tools/spec.md)
+2. [`src/sessions/service.py`](/Users/scottcornell/src/projects/python-claw/src/sessions/service.py)
+3. [`src/graphs/nodes.py`](/Users/scottcornell/src/projects/python-claw/src/graphs/nodes.py)
+4. [`src/tools/registry.py`](/Users/scottcornell/src/projects/python-claw/src/tools/registry.py)
+5. [`src/sessions/repository.py`](/Users/scottcornell/src/projects/python-claw/src/sessions/repository.py)
+6. [`tests/test_runtime.py`](/Users/scottcornell/src/projects/python-claw/tests/test_runtime.py) and [`tests/test_integration.py`](/Users/scottcornell/src/projects/python-claw/tests/test_integration.py)
 
 ## How To Read The Code
 
@@ -212,6 +286,8 @@ After the migration runs, the database should contain:
 - `sessions`
 - `messages`
 - `inbound_dedupe`
+- `session_artifacts`
+- `tool_audit_events`
 
 ## How To Run The Application
 
@@ -258,6 +334,36 @@ Example response:
 }
 ```
 
+Runtime smoke test using the built-in local echo tool:
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel_kind": "slack",
+    "channel_account_id": "acct-1",
+    "external_message_id": "msg-echo-1",
+    "sender_id": "sender-1",
+    "content": "echo hello runtime",
+    "peer_id": "peer-1"
+  }'
+```
+
+Runtime smoke test using the outbound-intent tool:
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel_kind": "slack",
+    "channel_account_id": "acct-1",
+    "external_message_id": "msg-send-1",
+    "sender_id": "sender-1",
+    "content": "send hello channel",
+    "peer_id": "peer-1"
+  }'
+```
+
 Read back the session metadata:
 
 ```bash
@@ -290,13 +396,15 @@ The tests currently use temporary SQLite databases created by pytest fixtures, s
 
 - [`tests/test_routing.py`](/Users/scottcornell/src/projects/python-claw/tests/test_routing.py): routing normalization, lowercase `channel_kind`, and session-key composition
 - [`tests/test_idempotency.py`](/Users/scottcornell/src/projects/python-claw/tests/test_idempotency.py): first-claim, finalize, duplicate replay, conflict, and stale-claim recovery
-- [`tests/test_repository.py`](/Users/scottcornell/src/projects/python-claw/tests/test_repository.py): session reuse and append-order message paging
-- [`tests/test_api.py`](/Users/scottcornell/src/projects/python-claw/tests/test_api.py): inbound acceptance, duplicate replay, invalid routing, session history, and dedupe isolation across channels
-- [`tests/test_integration.py`](/Users/scottcornell/src/projects/python-claw/tests/test_integration.py): restart-safe session reuse, replay after restart, stale recovery, and message pagination
+- [`tests/test_repository.py`](/Users/scottcornell/src/projects/python-claw/tests/test_repository.py): session reuse, append-order message paging, and append-only runtime artifacts
+- [`tests/test_runtime.py`](/Users/scottcornell/src/projects/python-claw/tests/test_runtime.py): graph branching, policy-aware tool binding, and no fabricated success on tool failure
+- [`tests/test_api.py`](/Users/scottcornell/src/projects/python-claw/tests/test_api.py): inbound acceptance, duplicate replay, invalid routing, session history with assistant replies, and dedupe isolation across channels
+- [`tests/test_integration.py`](/Users/scottcornell/src/projects/python-claw/tests/test_integration.py): restart-safe session reuse, replay after restart, stale recovery, tool-use flows, outbound intent creation, policy denial, and failure-path runtime behavior
 
 Useful commands during development:
 
 ```bash
+uv run pytest tests/test_runtime.py
 uv run pytest tests/test_api.py
 uv run pytest tests/test_integration.py
 uv run pytest tests/test_routing.py -q
@@ -306,8 +414,11 @@ uv run pytest tests/test_routing.py -q
 
 This repository is intentionally still at the foundation stage of the broader architecture. In its current form:
 
-- inbound user messages are persisted, but there is no assistant/model execution yet
+- the assistant runtime is single-turn only
+- the default model is a local rule-based adapter, not a provider-backed model
+- tools are local and safe only; there is no remote execution or approval workflow yet
+- outbound messaging stops at persisted intent creation; no transport dispatch layer exists yet
 - Redis is provisioned, but not yet used by the application code
 - tests validate behavior mostly against SQLite fixtures rather than a live PostgreSQL instance
 
-That means the code is already useful for validating routing, session identity, transcript persistence, and idempotent webhook handling, but it is not yet a full assistant runtime.
+That means the code is already useful for validating routing, session identity, transcript persistence, idempotent webhook handling, and the first runtime/tooling slice, but it is not yet a full multi-provider, multi-turn assistant platform.

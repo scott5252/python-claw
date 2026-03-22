@@ -16,6 +16,7 @@ def create_app(
     app = FastAPI(title=resolved_settings.app_name)
     app.state.settings = resolved_settings
     app.state.session_manager = session_manager or DatabaseSessionManager(resolved_settings.database_url)
+    app.state.session_service = None
     app.include_router(health_router)
     app.include_router(inbound_router)
     app.include_router(admin_router)

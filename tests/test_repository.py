@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
+from src.graphs.state import ToolEvent, ToolRequest
 from src.routing.service import RoutingInput, normalize_routing_input
 from src.sessions.repository import SessionRepository
 
@@ -74,3 +76,59 @@ def test_message_paging_is_append_ordered(session_manager) -> None:
 
         next_page = repository.list_messages(db, session_id=session.id, limit=2, before_message_id=second.id)
         assert [row.id for row in next_page] == [first.id]
+
+
+def test_append_only_runtime_artifacts_are_persisted_in_order(session_manager) -> None:
+    repository = SessionRepository()
+    routing = normalize_routing_input(
+        RoutingInput(
+            channel_kind="web",
+            channel_account_id="acct",
+            sender_id="sender",
+            peer_id="peer",
+        )
+    )
+
+    with session_manager.session() as db:
+        session = repository.get_or_create_session(db, routing)
+        repository.append_tool_proposal(
+            db,
+            session_id=session.id,
+            request=ToolRequest(
+                correlation_id="corr-1",
+                capability_name="echo_text",
+                arguments={"text": "hello"},
+            ),
+        )
+        repository.append_tool_event(
+            db,
+            session_id=session.id,
+            event=ToolEvent(
+                correlation_id="corr-1",
+                capability_name="echo_text",
+                status="succeeded",
+                arguments={"text": "hello"},
+                outcome={"content": "hello"},
+            ),
+        )
+        repository.append_outbound_intent(
+            db,
+            session_id=session.id,
+            correlation_id="corr-2",
+            payload={"text": "ship it", "channel_kind": "web", "sender_id": "sender"},
+        )
+        db.commit()
+
+    with session_manager.session() as db:
+        artifacts = repository.list_artifacts(db, session_id=session.id)
+        assert [artifact.artifact_kind for artifact in artifacts] == [
+            "tool_proposal",
+            "tool_result",
+            "outbound_intent",
+        ]
+        assert json.loads(artifacts[0].payload_json) == {"arguments": {"text": "hello"}}
+        assert json.loads(artifacts[1].payload_json) == {
+            "arguments": {"text": "hello"},
+            "outcome": {"content": "hello"},
+        }
+        assert json.loads(artifacts[2].payload_json)["text"] == "ship it"

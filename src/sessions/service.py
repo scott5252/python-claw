@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
+from src.graphs.assistant_graph import AssistantGraph
 from src.domain.schemas import MessagePageResponse, SessionResponse
 from src.gateway.idempotency import (
     ClaimAccepted,
@@ -29,14 +30,18 @@ class SessionService:
         self,
         *,
         repository: SessionRepository,
+        assistant_graph: AssistantGraph,
         idempotency_service: IdempotencyService,
+        default_agent_id: str,
         dedupe_retention_days: int,
         dedupe_stale_after_seconds: int,
         page_default_limit: int,
         page_max_limit: int,
     ):
         self.repository = repository
+        self.assistant_graph = assistant_graph
         self.idempotency_service = idempotency_service
+        self.default_agent_id = default_agent_id
         self.dedupe_retention_days = dedupe_retention_days
         self.dedupe_stale_after_seconds = dedupe_stale_after_seconds
         self.page_default_limit = page_default_limit
@@ -104,6 +109,14 @@ class SessionService:
             session_id=session.id,
             message_id=message.id,
             expires_at=now + timedelta(days=self.dedupe_retention_days),
+        )
+        self.assistant_graph.invoke(
+            db=work_db,
+            session_id=session.id,
+            agent_id=self.default_agent_id,
+            channel_kind=routing.channel_kind,
+            sender_id=routing.sender_id,
+            user_text=content,
         )
         work_db.commit()
         return InboundProcessResult(session_id=session.id, message_id=message.id, dedupe_status="accepted")

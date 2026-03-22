@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     dedupe_stale_after_seconds: int = 300
     messages_page_default_limit: int = 50
     messages_page_max_limit: int = 100
+    default_agent_id: str = "default-agent"
+    runtime_transcript_context_limit: int = 20
 
     model_config = SettingsConfigDict(
         env_prefix="PYTHON_CLAW_",
