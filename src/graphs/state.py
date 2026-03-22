@@ -57,6 +57,7 @@ class ToolRuntimeServices:
 @dataclass(frozen=True)
 class ToolRuntimeContext:
     session_id: str
+    message_id: int
     agent_id: str
     channel_kind: str
     sender_id: str
@@ -67,6 +68,7 @@ class ToolRuntimeContext:
 @dataclass
 class AssistantState:
     session_id: str
+    message_id: int
     agent_id: str
     channel_kind: str
     sender_id: str
@@ -75,3 +77,4 @@ class AssistantState:
     tool_events: list[ToolEvent] = field(default_factory=list)
     response_text: str = ""
     needs_tools: bool = False
+    awaiting_approval: bool = False

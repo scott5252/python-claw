@@ -131,3 +131,116 @@ class InboundDedupeRecord(Base):
     message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id"), nullable=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class GovernanceTranscriptEventRecord(Base):
+    __tablename__ = "governance_transcript_events"
+    __table_args__ = (
+        Index("ix_governance_transcript_events_session_id_id", "session_id", "id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), nullable=False)
+    event_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    proposal_id: Mapped[str | None] = mapped_column(ForeignKey("resource_proposals.id"), nullable=True)
+    resource_version_id: Mapped[str | None] = mapped_column(ForeignKey("resource_versions.id"), nullable=True)
+    approval_id: Mapped[str | None] = mapped_column(ForeignKey("resource_approvals.id"), nullable=True)
+    active_resource_id: Mapped[str | None] = mapped_column(ForeignKey("active_resources.id"), nullable=True)
+    event_payload: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class ResourceProposalRecord(Base):
+    __tablename__ = "resource_proposals"
+    __table_args__ = (
+        Index("ix_resource_proposals_session_state", "session_id", "current_state"),
+        Index("ix_resource_proposals_latest_version_id", "latest_version_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), nullable=False)
+    agent_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    resource_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    current_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    latest_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    proposed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    pending_approval_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    denied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class ResourceVersionRecord(Base):
+    __tablename__ = "resource_versions"
+    __table_args__ = (
+        UniqueConstraint("proposal_id", "version_number", name="uq_resource_versions_proposal_version"),
+        Index("ix_resource_versions_content_hash", "content_hash"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    proposal_id: Mapped[str] = mapped_column(ForeignKey("resource_proposals.id"), nullable=False)
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_payload: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class ResourceApprovalRecord(Base):
+    __tablename__ = "resource_approvals"
+    __table_args__ = (
+        UniqueConstraint(
+            "proposal_id",
+            "resource_version_id",
+            "typed_action_id",
+            "canonical_params_hash",
+            name="uq_resource_approvals_exact_match",
+        ),
+        Index(
+            "ix_resource_approvals_lookup",
+            "resource_version_id",
+            "typed_action_id",
+            "canonical_params_hash",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    proposal_id: Mapped[str] = mapped_column(ForeignKey("resource_proposals.id"), nullable=False)
+    resource_version_id: Mapped[str] = mapped_column(ForeignKey("resource_versions.id"), nullable=False)
+    approval_packet_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    typed_action_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    canonical_params_json: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_params_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    approver_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class ActiveResourceRecord(Base):
+    __tablename__ = "active_resources"
+    __table_args__ = (
+        UniqueConstraint(
+            "proposal_id",
+            "resource_version_id",
+            "typed_action_id",
+            "canonical_params_hash",
+            name="uq_active_resources_activation_identity",
+        ),
+        Index("ix_active_resources_lookup", "resource_version_id", "activation_state"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    proposal_id: Mapped[str] = mapped_column(ForeignKey("resource_proposals.id"), nullable=False)
+    resource_version_id: Mapped[str] = mapped_column(ForeignKey("resource_versions.id"), nullable=False)
+    typed_action_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    canonical_params_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    activation_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revocation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)

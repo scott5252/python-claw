@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from apps.gateway.deps import get_db, get_session_service
-from src.domain.schemas import MessagePageResponse, SessionResponse
+from src.domain.schemas import MessagePageResponse, PendingApprovalResponse, SessionResponse
 from src.sessions.service import SessionService
 
 router = APIRouter(tags=["sessions"])
@@ -37,3 +37,15 @@ def get_session_messages(
     if page is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
     return page
+
+
+@router.get("/sessions/{session_id}/governance/pending", response_model=list[PendingApprovalResponse])
+def get_pending_governance_items(
+    session_id: str,
+    db: Session = Depends(get_db),
+    service: SessionService = Depends(get_session_service),
+) -> list[PendingApprovalResponse]:
+    items = service.get_pending_approvals(db, session_id=session_id)
+    if items is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    return items

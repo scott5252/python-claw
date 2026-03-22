@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from src.capabilities.activation import ActivationController
 from src.graphs.assistant_graph import GraphFactory
 from src.graphs.nodes import GraphDependencies
 from src.graphs.state import AssistantState, ModelTurnResult, ToolRequest, ToolRuntimeContext, ToolRuntimeServices
 from src.observability.audit import ToolAuditSink
-from src.policies.service import PolicyService
+from src.policies.service import PolicyService, canonicalize_params, hash_payload
 from src.providers.models import ModelAdapter
 from src.routing.service import RoutingInput, normalize_routing_input
 from src.sessions.repository import SessionRepository
@@ -26,7 +27,7 @@ class StubModel(ModelAdapter):
         return self.result
 
 
-def _create_session(session_manager):
+def _create_session(session_manager) -> tuple[str, int]:
     repository = SessionRepository()
     routing = normalize_routing_input(
         RoutingInput(
@@ -38,7 +39,7 @@ def _create_session(session_manager):
     )
     with session_manager.session() as db:
         session = repository.get_or_create_session(db, routing)
-        repository.append_message(
+        message = repository.append_message(
             db,
             session,
             role="user",
@@ -48,33 +49,44 @@ def _create_session(session_manager):
             last_activity_at=session.created_at,
         )
         db.commit()
-        return session.id
+        return session.id, message.id
 
 
-def test_graph_branches_deterministically_without_tools(session_manager) -> None:
-    session_id = _create_session(session_manager)
-    repository = SessionRepository()
-    graph = GraphFactory(
+def _build_graph(*, repository: SessionRepository, model: ModelAdapter, policy_service: PolicyService, registry: ToolRegistry):
+    return GraphFactory(
         GraphDependencies(
             repository=repository,
-            policy_service=PolicyService(),
-            model=StubModel(
-                ModelTurnResult(
-                    needs_tools=False,
-                    tool_requests=[],
-                    response_text="plain response",
-                )
-            ),
-            tool_registry=ToolRegistry(factories={}),
+            policy_service=policy_service,
+            model=model,
+            tool_registry=registry,
             audit_sink=ToolAuditSink(),
+            activation_controller=ActivationController(repository=repository),
             transcript_context_limit=10,
         )
     ).build()
+
+
+def test_graph_branches_deterministically_without_tools(session_manager) -> None:
+    session_id, message_id = _create_session(session_manager)
+    repository = SessionRepository()
+    graph = _build_graph(
+        repository=repository,
+        policy_service=PolicyService(),
+        model=StubModel(
+            ModelTurnResult(
+                needs_tools=False,
+                tool_requests=[],
+                response_text="plain response",
+            )
+        ),
+        registry=ToolRegistry(factories={}),
+    )
 
     with session_manager.session() as db:
         state = graph.invoke(
             db=db,
             session_id=session_id,
+            message_id=message_id,
             agent_id="agent-1",
             channel_kind="web",
             sender_id="sender",
@@ -101,10 +113,11 @@ def test_registry_filters_tools_by_policy_and_context() -> None:
     )
     context = ToolRuntimeContext(
         session_id="session-1",
+        message_id=1,
         agent_id="agent-1",
         channel_kind="web",
         sender_id="sender-1",
-        policy_context={"scope": "test"},
+        policy_context={"classification": PolicyService().classify_turn(user_text="hello"), "approval_map": {}},
         runtime_services=ToolRuntimeServices(),
     )
 
@@ -119,7 +132,7 @@ def test_registry_filters_tools_by_policy_and_context() -> None:
 
 
 def test_tool_failure_cannot_fabricate_success_response(session_manager) -> None:
-    session_id = _create_session(session_manager)
+    session_id, message_id = _create_session(session_manager)
     repository = SessionRepository()
 
     def failing_factory(context: ToolRuntimeContext) -> ToolDefinition:
@@ -135,33 +148,30 @@ def test_tool_failure_cannot_fabricate_success_response(session_manager) -> None
             invoke=invoke,
         )
 
-    graph = GraphFactory(
-        GraphDependencies(
-            repository=repository,
-            policy_service=PolicyService(),
-            model=StubModel(
-                ModelTurnResult(
-                    needs_tools=True,
-                    tool_requests=[
-                        ToolRequest(
-                            correlation_id="corr-1",
-                            capability_name="explode",
-                            arguments={},
-                        )
-                    ],
-                    response_text="Tool succeeded",
-                )
-            ),
-            tool_registry=ToolRegistry(factories={"explode": failing_factory}),
-            audit_sink=ToolAuditSink(),
-            transcript_context_limit=10,
-        )
-    ).build()
+    graph = _build_graph(
+        repository=repository,
+        policy_service=PolicyService(),
+        model=StubModel(
+            ModelTurnResult(
+                needs_tools=True,
+                tool_requests=[
+                    ToolRequest(
+                        correlation_id="corr-1",
+                        capability_name="explode",
+                        arguments={},
+                    )
+                ],
+                response_text="Tool succeeded",
+            )
+        ),
+        registry=ToolRegistry(factories={"explode": failing_factory}),
+    )
 
     with session_manager.session() as db:
         state = graph.invoke(
             db=db,
             session_id=session_id,
+            message_id=message_id,
             agent_id="agent-1",
             channel_kind="web",
             sender_id="sender",
@@ -172,4 +182,58 @@ def test_tool_failure_cannot_fabricate_success_response(session_manager) -> None
 
     assert state.response_text == "I could not complete that tool request."
     assert [artifact.artifact_kind for artifact in artifacts] == ["tool_proposal", "tool_result"]
-    assert json.loads(artifacts[-1].payload_json)["error"] == "boom"
+    assert json.loads(artifacts[-1].payload_json)["error"] == "tool not available in runtime context"
+
+
+def test_canonicalization_and_exact_approval_matching() -> None:
+    service = PolicyService()
+    canonical = canonicalize_params({"b": 1, "a": {"y": 2, "x": 1}})
+    assert canonical == '{"a":{"x":1,"y":2},"b":1}'
+    assert hash_payload(canonical) == hash_payload('{"a":{"x":1,"y":2},"b":1}')
+
+    context = ToolRuntimeContext(
+        session_id="session-1",
+        message_id=1,
+        agent_id="agent-1",
+        channel_kind="web",
+        sender_id="sender-1",
+        policy_context={
+            "classification": service.classify_turn(user_text="send hello"),
+            "approval_map": {
+                (
+                    "send_message",
+                    "tool.send_message",
+                    hash_payload(canonicalize_params({"text": "hello"})),
+                ): {
+                    "proposal_id": "proposal-1",
+                    "resource_version_id": "version-1",
+                    "content_hash": "content-1",
+                    "typed_action_id": "tool.send_message",
+                    "canonical_params_json": canonicalize_params({"text": "hello"}),
+                    "canonical_params_hash": hash_payload(canonicalize_params({"text": "hello"})),
+                    "approval_id": "approval-1",
+                    "active_resource_id": "active-1",
+                }
+            },
+        },
+        runtime_services=ToolRuntimeServices(),
+    )
+
+    match = service.assert_execution_allowed(
+        context=context,
+        capability_name="send_message",
+        arguments={"text": "hello"},
+    )
+    assert match is not None
+    assert match.proposal_id == "proposal-1"
+
+    try:
+        service.assert_execution_allowed(
+            context=context,
+            capability_name="send_message",
+            arguments={"text": "different"},
+        )
+    except PermissionError as exc:
+        assert "missing exact approval" in str(exc)
+    else:
+        raise AssertionError("expected missing-approval failure")

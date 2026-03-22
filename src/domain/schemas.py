@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -47,3 +47,22 @@ class MessageResponse(BaseModel):
 class MessagePageResponse(BaseModel):
     items: list[MessageResponse]
     next_before_message_id: int | None = Field(default=None)
+
+
+class PendingApprovalResponse(BaseModel):
+    proposal_id: str
+    message_id: int
+    agent_id: str
+    requested_by: str
+    current_state: str
+    resource_kind: str
+    resource_version_id: str
+    capability_name: str
+    typed_action_id: str
+    content_hash: str
+    canonical_params: dict[str, Any]
+    canonical_params_json: str
+    scope_kind: str
+    next_action: str
+    proposed_at: datetime
+    pending_approval_at: datetime | None

@@ -59,3 +59,24 @@ def test_cross_channel_dedupe_identity_isolated(client) -> None:
     assert first.status_code == 201
     assert second.status_code == 201
     assert first.json()["message_id"] != second.json()["message_id"]
+
+
+def test_pending_governance_endpoint_returns_structured_items(client) -> None:
+    response = client.post(
+        "/inbound/message",
+        json=inbound_payload(
+            external_message_id="msg-governed-1",
+            content="send hello channel",
+        ),
+    )
+    assert response.status_code == 201
+    session_id = response.json()["session_id"]
+
+    pending = client.get(f"/sessions/{session_id}/governance/pending")
+    assert pending.status_code == 200
+    body = pending.json()
+    assert len(body) == 1
+    assert body[0]["capability_name"] == "send_message"
+    assert body[0]["typed_action_id"] == "tool.send_message"
+    assert body[0]["canonical_params"] == {"text": "hello channel"}
+    assert body[0]["next_action"].startswith("approve ")

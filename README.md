@@ -1,6 +1,6 @@
 # python-claw
 
-`python-claw` is the foundation for a gateway-first assistant runtime inspired by the `001-gateway-sessions` and `002-runtime-tools` specs in [`/specs/001-gateway-sessions/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/001-gateway-sessions/spec.md) and [`/specs/002-runtime-tools/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/002-runtime-tools/spec.md). The current implementation focuses on these things:
+`python-claw` is the foundation for a gateway-first assistant runtime inspired by the `001-gateway-sessions`, `002-runtime-tools`, and `003-capability-governance` specs in [`/specs/001-gateway-sessions/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/001-gateway-sessions/spec.md), [`/specs/002-runtime-tools/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/002-runtime-tools/spec.md), and [`/specs/003-capability-governance/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/003-capability-governance/spec.md). The current implementation focuses on these things:
 
 - a single FastAPI gateway entrypoint
 - deterministic routing into durable sessions
@@ -9,6 +9,8 @@
 - a gateway-owned single-turn assistant runtime
 - a typed, policy-aware local tool registry
 - append-only storage for tool artifacts and audit events
+- exact-match capability approvals for governed actions
+- transcript-linked governance events plus normalized approval and activation state
 
 This README is written for a developer who needs to understand what was implemented, how to run it, and how to test it locally.
 
@@ -40,12 +42,13 @@ That behavior is implemented across:
 - orchestration service: [`src/sessions/service.py`](/Users/scottcornell/src/projects/python-claw/src/sessions/service.py)
 - graph runtime: [`src/graphs/state.py`](/Users/scottcornell/src/projects/python-claw/src/graphs/state.py), [`src/graphs/nodes.py`](/Users/scottcornell/src/projects/python-claw/src/graphs/nodes.py), [`src/graphs/assistant_graph.py`](/Users/scottcornell/src/projects/python-claw/src/graphs/assistant_graph.py)
 - tool and policy wiring: [`src/tools/registry.py`](/Users/scottcornell/src/projects/python-claw/src/tools/registry.py), [`src/tools/local_safe.py`](/Users/scottcornell/src/projects/python-claw/src/tools/local_safe.py), [`src/tools/messaging.py`](/Users/scottcornell/src/projects/python-claw/src/tools/messaging.py), [`src/policies/service.py`](/Users/scottcornell/src/projects/python-claw/src/policies/service.py)
+- typed capability governance: [`src/tools/typed_actions.py`](/Users/scottcornell/src/projects/python-claw/src/tools/typed_actions.py), [`src/capabilities/activation.py`](/Users/scottcornell/src/projects/python-claw/src/capabilities/activation.py)
 - model adapter contract: [`src/providers/models.py`](/Users/scottcornell/src/projects/python-claw/src/providers/models.py)
 - audit sink: [`src/observability/audit.py`](/Users/scottcornell/src/projects/python-claw/src/observability/audit.py)
 - persistence layer: [`src/sessions/repository.py`](/Users/scottcornell/src/projects/python-claw/src/sessions/repository.py)
 - idempotency lifecycle: [`src/gateway/idempotency.py`](/Users/scottcornell/src/projects/python-claw/src/gateway/idempotency.py)
 - database schema: [`src/db/models.py`](/Users/scottcornell/src/projects/python-claw/src/db/models.py)
-- migrations: [`migrations/versions/20260322_001_gateway_sessions.py`](/Users/scottcornell/src/projects/python-claw/migrations/versions/20260322_001_gateway_sessions.py), [`migrations/versions/20260322_002_runtime_tools.py`](/Users/scottcornell/src/projects/python-claw/migrations/versions/20260322_002_runtime_tools.py)
+- migrations: [`migrations/versions/20260322_001_gateway_sessions.py`](/Users/scottcornell/src/projects/python-claw/migrations/versions/20260322_001_gateway_sessions.py), [`migrations/versions/20260322_002_runtime_tools.py`](/Users/scottcornell/src/projects/python-claw/migrations/versions/20260322_002_runtime_tools.py), [`migrations/versions/20260322_003_capability_governance.py`](/Users/scottcornell/src/projects/python-claw/migrations/versions/20260322_003_capability_governance.py)
 
 ## Spec 002 Runtime Tools
 
@@ -111,6 +114,84 @@ If you want the shortest path to understanding Spec 002, read:
 5. [`src/sessions/repository.py`](/Users/scottcornell/src/projects/python-claw/src/sessions/repository.py)
 6. [`tests/test_runtime.py`](/Users/scottcornell/src/projects/python-claw/tests/test_runtime.py) and [`tests/test_integration.py`](/Users/scottcornell/src/projects/python-claw/tests/test_integration.py)
 
+## Spec 003 Capability Governance
+
+Spec 003 adds a capability-governance layer on top of the single-turn runtime from Spec 002. The key idea is that the gateway still owns the turn lifecycle, but some capabilities are now treated as governed typed actions that cannot be exposed or executed until the user has approved the exact action and parameter payload.
+
+The runtime is still intentionally narrow in this spec:
+
+- approval is exact-match only
+- approval scope is session-and-agent scoped
+- activation stays on the gateway-owned path
+- governed waits are persisted before the turn exits
+- revocation affects future visibility and future execution
+
+### What A Developer Needs To Know
+
+The important implementation boundary is:
+
+- `PolicyService` now classifies turns before gated tool exposure
+- `typed_actions.py` defines which capabilities are governed typed actions
+- `SessionRepository` persists proposals, versions, approvals, active resources, and governance transcript events
+- `ActivationController` is the sole activation path for approved capabilities
+- `AssistantGraph` and graph nodes exit into persisted approval wait when governance blocks execution
+- tool visibility is rebuilt from current approval state on each turn
+- execution still re-checks approval even when a governed tool is visible
+
+In the current workspace, the governance behavior is intentionally concrete:
+
+- `echo_text` remains a safe, always-available local action
+- `send_message` is the governed action used to prove the approval flow
+- `send <text>` creates a proposal when no matching approval exists
+- `approve <proposal_id>` approves and activates that exact proposal
+- `revoke <proposal_id>` revokes it for later turns
+
+### Runtime Flow
+
+For a governed request without approval, the application now does this:
+
+1. normalize routing and claim dedupe
+2. reuse or create the session
+3. append the inbound `user` message
+4. finalize the dedupe record
+5. classify the turn before gated tool exposure
+6. persist a resource proposal, immutable version, and governance transcript events
+7. append an `assistant` message explaining that approval is required
+
+For a later approval turn, the application now does this:
+
+1. classify `approve <proposal_id>` as an approval decision
+2. persist the exact approval record
+3. activate the approved resource through `ActivationController`
+4. append governance transcript events for approval and activation
+5. append an `assistant` message confirming approval and activation
+
+For a later retry of the original request, the application now does this:
+
+1. rebuild policy context from active approvals
+2. expose the governed tool only if the exact approval matches
+3. re-check the approval at execution time
+4. persist normal runtime artifacts such as `tool_proposal`, `outbound_intent`, and `tool_result`
+
+The governance records introduced by Spec 003 are:
+
+- `governance_transcript_events` for proposal creation, approval request, approval decision, activation result, and revocation result
+- `resource_proposals` for proposal state
+- `resource_versions` for immutable proposed content versions
+- `resource_approvals` for exact approval matching and revocation state
+- `active_resources` for activation and revocation state
+
+### Files To Read First
+
+If you want the shortest path to understanding Spec 003, read:
+
+1. [`specs/003-capability-governance/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/003-capability-governance/spec.md)
+2. [`src/tools/typed_actions.py`](/Users/scottcornell/src/projects/python-claw/src/tools/typed_actions.py)
+3. [`src/policies/service.py`](/Users/scottcornell/src/projects/python-claw/src/policies/service.py)
+4. [`src/sessions/repository.py`](/Users/scottcornell/src/projects/python-claw/src/sessions/repository.py)
+5. [`src/graphs/nodes.py`](/Users/scottcornell/src/projects/python-claw/src/graphs/nodes.py)
+6. [`tests/test_runtime.py`](/Users/scottcornell/src/projects/python-claw/tests/test_runtime.py) and [`tests/test_integration.py`](/Users/scottcornell/src/projects/python-claw/tests/test_integration.py)
+
 ## How To Read The Code
 
 If you want the fastest path through the codebase, read it in this order:
@@ -147,6 +228,13 @@ The current database tables are:
 - `sessions`: canonical session identity and routing metadata
 - `messages`: append-only transcript rows
 - `inbound_dedupe`: persisted idempotency claims and replay metadata
+- `session_artifacts`: append-only runtime artifact rows
+- `tool_audit_events`: append-only execution audit rows
+- `governance_transcript_events`: append-only transcript-linked governance history
+- `resource_proposals`: proposal lifecycle state
+- `resource_versions`: immutable proposed content versions
+- `resource_approvals`: exact-match approval and revocation state
+- `active_resources`: activation and revocation state
 
 Important current behaviors:
 

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from src.graphs.assistant_graph import AssistantGraph
-from src.domain.schemas import MessagePageResponse, SessionResponse
+from src.domain.schemas import MessagePageResponse, PendingApprovalResponse, SessionResponse
 from src.gateway.idempotency import (
     ClaimAccepted,
     DuplicateReplay,
@@ -113,6 +113,7 @@ class SessionService:
         self.assistant_graph.invoke(
             db=work_db,
             session_id=session.id,
+            message_id=message.id,
             agent_id=self.default_agent_id,
             channel_kind=routing.channel_kind,
             sender_id=routing.sender_id,
@@ -161,3 +162,12 @@ class SessionService:
             ],
             next_before_message_id=next_before,
         )
+
+    def get_pending_approvals(self, db: Session, *, session_id: str) -> list[PendingApprovalResponse] | None:
+        session = self.repository.get_session(db, session_id)
+        if session is None:
+            return None
+        return [
+            PendingApprovalResponse.model_validate(item)
+            for item in self.repository.list_pending_approvals(db, session_id=session_id)
+        ]
