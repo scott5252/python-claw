@@ -2601,21 +2601,32 @@ it may not bypass `ApprovalSubgraph`, `ActivationController`, or
 ### Capability lifecycle
 
 Every agent-created executable or persistent resource should move through a
-strict lifecycle:
+strict lifecycle. In implementation, prefer a split model with proposal state
+separate from activation state rather than a single combined lifecycle field.
+
+Proposal lifecycle:
 
 - `proposed`
-- `review_ready`
+- `pending_approval`
 - `approved`
+- `denied`
+- `expired`
+
+Activation lifecycle:
+
+- `inactive`
 - `active`
+- `activation_failed`
 - `revoked`
 
 Rules:
 
 - Agents may create `proposed` resources only.
-- Agents may move a proposal to `review_ready` only after policy validation and
-  risk scoring complete.
+- Gateway-owned approval flow may move a proposal from `proposed` to
+  `pending_approval` only after policy validation and risk scoring complete.
 - Only a user or authorized human reviewer may move a proposal to `approved`.
-- Only the `ActivationController` may move an approved artifact to `active`.
+- Only the `ActivationController` may move an approved artifact from `inactive`
+  to `active`.
 - Any change to artifact content creates a new version and invalidates previous
   approvals unless policy explicitly allows inherited approval.
 - `revoked` resources are never callable by the graph even if still present in
@@ -2644,7 +2655,7 @@ Extend Section 6 with the following durable tables.
 - `content_json`
 - `content_hash`
 - `risk_level`
-- `status` (`proposed`, `review_ready`, `approved`, `active`, `revoked`)
+- `status` (`proposed`, `pending_approval`, `approved`, `denied`, `expired`)
 - `created_at`
 - `updated_at`
 
@@ -2681,8 +2692,28 @@ Extend Section 6 with the following durable tables.
 - `runtime_scope`
 - `runtime_binding`
 
+In the bounded implementation slice for Spec 003, `approval_scope` should be
+session-and-agent scoped by default rather than user-wide or ambient.
+
+#### `governance_transcript_events`
+
+- `event_id`
+- `session_id`
+- `message_id`
+- `event_kind`
+- `proposal_id`
+- `version_id` nullable
+- `approval_id` nullable
+- `active_resource_id` nullable
+- `event_payload`
+- `created_at`
+
 These structures are intentionally separate from `approval_requests` because the
 system needs artifact-level governance, not only turn-level approval prompts.
+The append-only governance event stream should be linked to the canonical
+transcript and treated as the source of truth for persisted approval waits,
+approval decisions, activation results, and revocation history. Optional queue
+rows may exist as derived lookup state for presentation and resume workflows.
 
 ### Request classification before tool binding
 

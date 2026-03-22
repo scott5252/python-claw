@@ -1,10 +1,14 @@
 # Tasks 003: User-Controlled Capability Governance
 
-1. Create migrations for proposal, version, approval, and active-resource tables.
-2. Write policy tests for request classification and fail-closed approval matching.
-3. Implement proposal/version repositories and immutable version storage.
-4. Implement approval packet models and approval gating node/subgraph.
-5. Implement ActivationController and ExecutionPolicyEnforcer.
-6. Add typed action catalog and block raw shell by default.
-7. Add provenance and audit logging for proposal, approval, activation, and invocation.
-8. Add integration tests for unapproved denial and approved activation flow.
+1. Write unit tests for deterministic parameter canonicalization, exact approval matching on `resource_version_id` plus `content_hash` plus `typed_action_id` plus canonical params, and fail-closed execution-time rejection for missing, mismatched, expired, denied, or revoked approvals.
+2. Write unit tests for proposal and activation state transitions, including `proposed -> pending_approval -> approved`, denial, expiry, activation failure, revocation, immutable proposal-version storage, and `ActivationController` idempotency on duplicate activation attempts.
+3. Write repository or persistence tests proving dual durability of transcript-linked governance artifacts and normalized enforcement rows, plus duplicate approval submission handling without conflicting approval or active state.
+4. Create additive migrations for append-only `governance_transcript_events`, `resource_proposals`, `resource_versions`, `resource_approvals`, `active_resources`, and approval queue records if stored separately, including the required uniqueness and lookup indexes from the spec.
+5. Implement governance persistence models and repositories for proposal creation, immutable version writes, approval decision persistence, approval queue state as derived lookup state when present, exact-match approval lookup, activation result persistence, revocation persistence, and transcript-linked artifact recording in the same repository boundary.
+6. Implement the typed action catalog in `src/tools/typed_actions.py` and keep raw shell unavailable by default for this slice.
+7. Implement policy services for request classification before tool binding, approval visibility and revocation metadata in `ToolRuntimeContext.policy_context`, fail-closed filtering of denied or unapproved capabilities, and execution-time enforcement with the shared canonicalizer.
+8. Implement `ActivationController` as the sole gateway-owned activation path with idempotency on `(proposal_id, resource_version_id, typed_action_id, canonical_params_hash)` and transactionally persisted activation attempt plus outcome plus active-resource updates.
+9. Extend runtime state and graph contracts so approval waits are persisted explicitly in transcript-linked governance events, proposals and approval-request artifacts are recorded before exit, and resumed turns rebuild tool visibility from refreshed policy context instead of stale bindings.
+10. Update the tool registry and gateway dependency wiring so only the gateway-owned runtime path can expose approval-gated tools, resume approval flows, activate capabilities, or apply revocations; adapters, schedulers, workers, and control-plane code must not activate directly.
+11. Add structured audit and provenance logging for proposal creation, approval request, approval decision, activation attempt or result, denial, expiry, revocation, and execution enforcement using the required correlation fields from the spec.
+12. Add integration tests for blocked unapproved activation, proposal -> approval -> activation happy path, persisted await-approval exit and later gateway-owned resume with refreshed tool binding, duplicate approval or activation idempotency, restart-safe approval waits, and later-turn or later-execution denial after revocation.
