@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from src.config.settings import Settings
 from src.capabilities.activation import ActivationController
+from src.context.service import ContextService
 from src.db.session import DatabaseSessionManager
 from src.gateway.idempotency import IdempotencyService
 from src.graphs.assistant_graph import GraphFactory
@@ -56,7 +57,7 @@ def get_session_service(
             ),
             audit_sink=ToolAuditSink(),
             activation_controller=ActivationController(repository=repository),
-            transcript_context_limit=settings.runtime_transcript_context_limit,
+            context_service=ContextService(context_window=settings.runtime_transcript_context_limit),
         )
     ).build()
     return SessionService(

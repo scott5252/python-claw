@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from src.context.service import ContextService
 from src.graphs.prompts import render_prompt
 from src.graphs.state import AssistantState, ToolEvent, ToolRuntimeContext
 from src.observability.audit import ToolAuditEvent
@@ -21,7 +22,7 @@ class GraphDependencies:
     tool_registry: ToolRegistry
     audit_sink: Any
     activation_controller: Any
-    transcript_context_limit: int
+    context_service: ContextService
 
 
 def assemble_state(
@@ -35,19 +36,15 @@ def assemble_state(
     sender_id: str,
     user_text: str,
 ) -> AssistantState:
-    messages = dependencies.repository.list_conversation_messages(
-        db,
-        session_id=session_id,
-        limit=dependencies.transcript_context_limit,
-    )
-    return AssistantState(
+    return dependencies.context_service.assemble(
+        db=db,
+        repository=dependencies.repository,
         session_id=session_id,
         message_id=message_id,
         agent_id=agent_id,
         channel_kind=channel_kind,
         sender_id=sender_id,
         user_text=user_text,
-        messages=messages,
     )
 
 
@@ -231,6 +228,23 @@ def _handle_awaiting_approval(
 
 
 def execute_turn(*, db: Session, state: AssistantState, dependencies: GraphDependencies) -> AssistantState:
+    if state.degraded:
+        state.response_text = (
+            "I could not safely fit the required session context into the model window for this turn. "
+            "Continuity repair has been queued."
+        )
+        dependencies.repository.append_message(
+            db,
+            dependencies.repository.get_session(db, state.session_id),
+            role="assistant",
+            content=state.response_text,
+            external_message_id=None,
+            sender_id=state.agent_id,
+            last_activity_at=datetime.now(timezone.utc),
+        )
+        dependencies.context_service.persist_manifest(db=db, repository=dependencies.repository, state=state)
+        return state
+
     context = _build_context(state=state, dependencies=dependencies, db=db)
     classification: TurnClassification = context.policy_context["classification"]
 
@@ -408,4 +422,5 @@ def execute_turn(*, db: Session, state: AssistantState, dependencies: GraphDepen
         sender_id=state.agent_id,
         last_activity_at=datetime.now(timezone.utc),
     )
+    dependencies.context_service.persist_manifest(db=db, repository=dependencies.repository, state=state)
     return state

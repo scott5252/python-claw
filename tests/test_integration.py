@@ -9,12 +9,15 @@ from fastapi.testclient import TestClient
 from apps.gateway.main import create_app
 from src.capabilities.activation import ActivationController
 from src.config.settings import Settings
+from src.context.service import ContextService
 from src.db.base import Base
 from src.db.models import (
     ActiveResourceRecord,
+    ContextManifestRecord,
     DedupeStatus,
     GovernanceTranscriptEventRecord,
     InboundDedupeRecord,
+    OutboxJobRecord,
     ResourceApprovalRecord,
     ResourceProposalRecord,
     SessionArtifactRecord,
@@ -66,7 +69,7 @@ def build_session_service(
             ),
             audit_sink=ToolAuditSink(),
             activation_controller=ActivationController(repository=repository),
-            transcript_context_limit=10,
+            context_service=ContextService(context_window=10),
         )
     ).build()
     return SessionService(
@@ -458,3 +461,123 @@ def test_duplicate_approval_and_later_revocation_are_idempotent(tmp_path) -> Non
     assert active[0].activation_state == "revoked"
     assert refreshed_proposal.current_state == "approved"
     assert events[-1].event_kind == "approval_requested"
+
+
+def test_long_session_overflow_persists_degraded_manifest_and_repair_job(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'overflow.db'}"
+    settings = Settings(database_url=database_url, runtime_transcript_context_limit=1)
+    manager = DatabaseSessionManager(database_url)
+    Base.metadata.create_all(manager.engine)
+
+    app = create_app(settings=settings, session_manager=manager)
+    client = TestClient(app)
+
+    first = client.post(
+        "/inbound/message",
+        json={
+            "channel_kind": "web",
+            "channel_account_id": "acct",
+            "external_message_id": "msg-1",
+            "sender_id": "sender",
+            "content": "hello",
+            "peer_id": "peer",
+        },
+    )
+    second = client.post(
+        "/inbound/message",
+        json={
+            "channel_kind": "web",
+            "channel_account_id": "acct",
+            "external_message_id": "msg-2",
+            "sender_id": "sender",
+            "content": "follow up",
+            "peer_id": "peer",
+        },
+    )
+    assert first.status_code == 201
+    assert second.status_code == 201
+
+    session_id = second.json()["session_id"]
+    with manager.session() as db:
+        messages = SessionRepository().list_messages(db, session_id=session_id, limit=10, before_message_id=None)
+        manifest = (
+            db.query(ContextManifestRecord)
+            .filter_by(session_id=session_id)
+            .order_by(ContextManifestRecord.id.desc())
+            .first()
+        )
+        jobs = list(
+            db.query(OutboxJobRecord)
+            .filter_by(session_id=session_id)
+            .order_by(OutboxJobRecord.id.asc())
+        )
+
+    assert messages[-1].content == (
+        "I could not safely fit the required session context into the model window for this turn. "
+        "Continuity repair has been queued."
+    )
+    assert manifest is not None
+    assert manifest.degraded is True
+    assert json.loads(manifest.manifest_json)["assembly_mode"] == "degraded_failure"
+    assert any(job.job_kind == "continuity_repair" for job in jobs)
+
+
+def test_governance_replay_survives_normalized_state_loss(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'governance-replay.db'}"
+    settings = Settings(database_url=database_url)
+    manager = DatabaseSessionManager(database_url)
+    Base.metadata.create_all(manager.engine)
+
+    app = create_app(settings=settings, session_manager=manager)
+    client = TestClient(app)
+
+    first = client.post(
+        "/inbound/message",
+        json={
+            "channel_kind": "slack",
+            "channel_account_id": "acct",
+            "external_message_id": "msg-1",
+            "sender_id": "sender",
+            "content": "send hello channel",
+            "peer_id": "peer",
+        },
+    )
+    session_id = first.json()["session_id"]
+
+    with manager.session() as db:
+        proposal = db.query(ResourceProposalRecord).filter_by(session_id=session_id).one()
+
+    client.post(
+        "/inbound/message",
+        json={
+            "channel_kind": "slack",
+            "channel_account_id": "acct",
+            "external_message_id": "msg-2",
+            "sender_id": "sender",
+            "content": f"approve {proposal.id}",
+            "peer_id": "peer",
+        },
+    )
+
+    with manager.session() as db:
+        db.query(ResourceApprovalRecord).delete()
+        db.query(ActiveResourceRecord).delete()
+        db.commit()
+
+    retry = client.post(
+        "/inbound/message",
+        json={
+            "channel_kind": "slack",
+            "channel_account_id": "acct",
+            "external_message_id": "msg-3",
+            "sender_id": "sender",
+            "content": "send hello channel",
+            "peer_id": "peer",
+        },
+    )
+    assert retry.status_code == 201
+
+    with manager.session() as db:
+        messages = SessionRepository().list_messages(db, session_id=session_id, limit=20, before_message_id=None)
+
+    assert messages[-1].content == "Prepared outbound message: hello channel"

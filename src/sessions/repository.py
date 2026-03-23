@@ -4,19 +4,22 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.db.models import (
     ActiveResourceRecord,
+    ContextManifestRecord,
     GovernanceTranscriptEventRecord,
     MessageRecord,
+    OutboxJobRecord,
     ResourceApprovalRecord,
     ResourceProposalRecord,
     ResourceVersionRecord,
     SessionArtifactRecord,
     SessionRecord,
+    SummarySnapshotRecord,
 )
 from src.graphs.state import ConversationMessage, ToolEvent, ToolRequest
 from src.policies.service import canonicalize_params, hash_payload
@@ -646,3 +649,245 @@ class SessionRepository:
             .order_by(SessionArtifactRecord.id.asc())
         )
         return list(db.scalars(stmt))
+
+    def list_governance_events(self, db: Session, *, session_id: str) -> list[GovernanceTranscriptEventRecord]:
+        stmt = (
+            select(GovernanceTranscriptEventRecord)
+            .where(GovernanceTranscriptEventRecord.session_id == session_id)
+            .order_by(GovernanceTranscriptEventRecord.created_at.asc(), GovernanceTranscriptEventRecord.id.asc())
+        )
+        return list(db.scalars(stmt))
+
+    def append_summary_snapshot(
+        self,
+        db: Session,
+        *,
+        session_id: str,
+        base_message_id: int,
+        through_message_id: int,
+        source_watermark_message_id: int,
+        summary_text: str,
+        summary_metadata: dict[str, Any] | None = None,
+    ) -> SummarySnapshotRecord:
+        latest = db.scalar(
+            select(SummarySnapshotRecord)
+            .where(SummarySnapshotRecord.session_id == session_id)
+            .order_by(SummarySnapshotRecord.snapshot_version.desc())
+        )
+        snapshot = SummarySnapshotRecord(
+            session_id=session_id,
+            snapshot_version=1 if latest is None else latest.snapshot_version + 1,
+            base_message_id=base_message_id,
+            through_message_id=through_message_id,
+            source_watermark_message_id=source_watermark_message_id,
+            summary_text=summary_text,
+            summary_metadata_json=None if summary_metadata is None else json.dumps(summary_metadata, sort_keys=True),
+        )
+        db.add(snapshot)
+        db.flush()
+        return snapshot
+
+    def get_latest_valid_summary_snapshot(
+        self,
+        db: Session,
+        *,
+        session_id: str,
+        message_id: int,
+    ) -> SummarySnapshotRecord | None:
+        stmt = (
+            select(SummarySnapshotRecord)
+            .where(
+                SummarySnapshotRecord.session_id == session_id,
+                SummarySnapshotRecord.through_message_id < message_id,
+                SummarySnapshotRecord.source_watermark_message_id <= message_id,
+            )
+            .order_by(
+                SummarySnapshotRecord.through_message_id.desc(),
+                SummarySnapshotRecord.snapshot_version.desc(),
+            )
+        )
+        return db.scalar(stmt)
+
+    def append_context_manifest(
+        self,
+        db: Session,
+        *,
+        session_id: str,
+        message_id: int,
+        manifest: dict[str, Any],
+        degraded: bool,
+        retention_limit: int = 25,
+    ) -> ContextManifestRecord:
+        record = ContextManifestRecord(
+            session_id=session_id,
+            message_id=message_id,
+            manifest_json=json.dumps(manifest, sort_keys=True),
+            degraded=degraded,
+        )
+        db.add(record)
+        db.flush()
+
+        retained_ids = list(
+            db.scalars(
+                select(ContextManifestRecord.id)
+                .where(ContextManifestRecord.session_id == session_id)
+                .order_by(ContextManifestRecord.created_at.desc(), ContextManifestRecord.id.desc())
+                .limit(retention_limit)
+            )
+        )
+        if retained_ids:
+            db.execute(
+                delete(ContextManifestRecord).where(
+                    ContextManifestRecord.session_id == session_id,
+                    ContextManifestRecord.id.not_in(retained_ids),
+                )
+            )
+        db.flush()
+        return record
+
+    def list_context_manifests(self, db: Session, *, session_id: str) -> list[ContextManifestRecord]:
+        stmt = (
+            select(ContextManifestRecord)
+            .where(ContextManifestRecord.session_id == session_id)
+            .order_by(ContextManifestRecord.created_at.asc(), ContextManifestRecord.id.asc())
+        )
+        return list(db.scalars(stmt))
+
+    def enqueue_outbox_job(
+        self,
+        db: Session,
+        *,
+        session_id: str,
+        message_id: int,
+        job_kind: str,
+        job_dedupe_key: str,
+        available_at: datetime | None = None,
+    ) -> OutboxJobRecord:
+        existing = db.scalar(select(OutboxJobRecord).where(OutboxJobRecord.job_dedupe_key == job_dedupe_key))
+        if existing is not None:
+            return existing
+        record = OutboxJobRecord(
+            session_id=session_id,
+            message_id=message_id,
+            job_kind=job_kind,
+            job_dedupe_key=job_dedupe_key,
+            status="pending",
+            available_at=available_at or datetime.now(timezone.utc),
+            attempt_count=0,
+        )
+        db.add(record)
+        db.flush()
+        return record
+
+    def claim_outbox_jobs(
+        self,
+        db: Session,
+        *,
+        session_id: str | None,
+        now: datetime,
+        limit: int,
+    ) -> list[OutboxJobRecord]:
+        stmt = select(OutboxJobRecord).where(
+            OutboxJobRecord.status == "pending",
+            OutboxJobRecord.available_at <= now,
+        )
+        if session_id is not None:
+            stmt = stmt.where(OutboxJobRecord.session_id == session_id)
+        jobs = list(
+            db.scalars(
+                stmt.order_by(OutboxJobRecord.available_at.asc(), OutboxJobRecord.id.asc()).limit(limit)
+            )
+        )
+        for job in jobs:
+            job.status = "running"
+            job.attempt_count += 1
+            job.last_error = None
+        db.flush()
+        return jobs
+
+    def complete_outbox_job(self, db: Session, *, job_id: int) -> OutboxJobRecord:
+        job = db.get(OutboxJobRecord, job_id)
+        if job is None:
+            raise LookupError("outbox job not found")
+        job.status = "completed"
+        job.last_error = None
+        db.flush()
+        return job
+
+    def fail_outbox_job(
+        self,
+        db: Session,
+        *,
+        job_id: int,
+        error: str,
+        available_at: datetime | None = None,
+    ) -> OutboxJobRecord:
+        job = db.get(OutboxJobRecord, job_id)
+        if job is None:
+            raise LookupError("outbox job not found")
+        job.status = "failed"
+        job.last_error = error
+        if available_at is not None:
+            job.available_at = available_at
+        db.flush()
+        return job
+
+    def replay_active_approvals(
+        self,
+        db: Session,
+        *,
+        session_id: str,
+        agent_id: str,
+        now: datetime,
+    ) -> list[dict[str, Any]]:
+        proposals_by_id = {
+            proposal.id: proposal
+            for proposal in db.scalars(
+                select(ResourceProposalRecord).where(
+                    ResourceProposalRecord.session_id == session_id,
+                    ResourceProposalRecord.agent_id == agent_id,
+                )
+            )
+        }
+        versions_by_id = {
+            version.id: version
+            for version in db.scalars(
+                select(ResourceVersionRecord).where(
+                    ResourceVersionRecord.proposal_id.in_(proposals_by_id.keys() or [""])
+                )
+            )
+        }
+        active: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        for event in self.list_governance_events(db, session_id=session_id):
+            payload = json.loads(event.event_payload)
+            proposal = proposals_by_id.get(event.proposal_id or "")
+            version = versions_by_id.get(event.resource_version_id or "")
+            if proposal is None or version is None:
+                continue
+            version_payload = json.loads(version.resource_payload)
+            typed_action_id = payload.get("typed_action_id") or version_payload.get("typed_action_id")
+            canonical_params_json = canonicalize_params(version_payload["arguments"])
+            canonical_params_hash = payload.get("canonical_params_hash") or hash_payload(canonical_params_json)
+            key = (proposal.id, version.id, typed_action_id, canonical_params_hash)
+            if event.event_kind == "approval_decision" and payload.get("decision") == "approved":
+                active[key] = {
+                    "approval_id": event.approval_id or f"replay-{proposal.id}",
+                    "proposal_id": proposal.id,
+                    "resource_version_id": version.id,
+                    "content_hash": version.content_hash,
+                    "typed_action_id": typed_action_id,
+                    "canonical_params_json": canonical_params_json,
+                    "canonical_params_hash": canonical_params_hash,
+                    "active_resource_id": event.active_resource_id or f"replay-active-{proposal.id}",
+                    "capability_name": version_payload["capability_name"],
+                    "approved_at": event.created_at.isoformat(),
+                }
+            elif event.event_kind == "activation_result":
+                existing = active.get(key)
+                if existing is not None:
+                    existing["active_resource_id"] = event.active_resource_id or existing["active_resource_id"]
+            elif event.event_kind == "revocation_result":
+                for candidate in [k for k in active if k[0] == proposal.id]:
+                    active.pop(candidate, None)
+        _ = now
+        return list(active.values())

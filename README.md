@@ -1,6 +1,6 @@
 # python-claw
 
-`python-claw` is the foundation for a gateway-first assistant runtime inspired by the `001-gateway-sessions`, `002-runtime-tools`, and `003-capability-governance` specs in [`/specs/001-gateway-sessions/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/001-gateway-sessions/spec.md), [`/specs/002-runtime-tools/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/002-runtime-tools/spec.md), and [`/specs/003-capability-governance/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/003-capability-governance/spec.md). The current implementation focuses on these things:
+`python-claw` is the foundation for a gateway-first assistant runtime inspired by the `001-gateway-sessions`, `002-runtime-tools`, `003-capability-governance`, and `004-context-continuity` specs in [`/specs/001-gateway-sessions/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/001-gateway-sessions/spec.md), [`/specs/002-runtime-tools/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/002-runtime-tools/spec.md), [`/specs/003-capability-governance/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/003-capability-governance/spec.md), and [`/specs/004-context-continuity/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/004-context-continuity/spec.md). The current implementation focuses on these things:
 
 - a single FastAPI gateway entrypoint
 - deterministic routing into durable sessions
@@ -11,6 +11,9 @@
 - append-only storage for tool artifacts and audit events
 - exact-match capability approvals for governed actions
 - transcript-linked governance events plus normalized approval and activation state
+- transcript-first context assembly with additive summary snapshots
+- per-turn persisted context manifests for inspection and replay analysis
+- post-turn outbox enqueueing for summaries, retrieval indexing, and continuity repair
 
 This README is written for a developer who needs to understand what was implemented, how to run it, and how to test it locally.
 
@@ -33,6 +36,8 @@ The implemented flow for `POST /inbound/message` is:
 6. invoke the gateway-owned single-turn assistant runtime
 7. append one assistant transcript message
 8. persist any runtime tool artifacts and audit events created during the turn
+9. persist one inspectable context manifest for the turn
+10. enqueue additive post-turn continuity jobs
 
 That behavior is implemented across:
 
@@ -41,6 +46,7 @@ That behavior is implemented across:
 - routing rules: [`src/routing/service.py`](/Users/scottcornell/src/projects/python-claw/src/routing/service.py)
 - orchestration service: [`src/sessions/service.py`](/Users/scottcornell/src/projects/python-claw/src/sessions/service.py)
 - graph runtime: [`src/graphs/state.py`](/Users/scottcornell/src/projects/python-claw/src/graphs/state.py), [`src/graphs/nodes.py`](/Users/scottcornell/src/projects/python-claw/src/graphs/nodes.py), [`src/graphs/assistant_graph.py`](/Users/scottcornell/src/projects/python-claw/src/graphs/assistant_graph.py)
+- continuity assembly and outbox worker: [`src/context/service.py`](/Users/scottcornell/src/projects/python-claw/src/context/service.py), [`src/context/outbox.py`](/Users/scottcornell/src/projects/python-claw/src/context/outbox.py)
 - tool and policy wiring: [`src/tools/registry.py`](/Users/scottcornell/src/projects/python-claw/src/tools/registry.py), [`src/tools/local_safe.py`](/Users/scottcornell/src/projects/python-claw/src/tools/local_safe.py), [`src/tools/messaging.py`](/Users/scottcornell/src/projects/python-claw/src/tools/messaging.py), [`src/policies/service.py`](/Users/scottcornell/src/projects/python-claw/src/policies/service.py)
 - typed capability governance: [`src/tools/typed_actions.py`](/Users/scottcornell/src/projects/python-claw/src/tools/typed_actions.py), [`src/capabilities/activation.py`](/Users/scottcornell/src/projects/python-claw/src/capabilities/activation.py)
 - model adapter contract: [`src/providers/models.py`](/Users/scottcornell/src/projects/python-claw/src/providers/models.py)
@@ -192,6 +198,67 @@ If you want the shortest path to understanding Spec 003, read:
 5. [`src/graphs/nodes.py`](/Users/scottcornell/src/projects/python-claw/src/graphs/nodes.py)
 6. [`tests/test_runtime.py`](/Users/scottcornell/src/projects/python-claw/tests/test_runtime.py) and [`tests/test_integration.py`](/Users/scottcornell/src/projects/python-claw/tests/test_integration.py)
 
+## Spec 004 Context Continuity
+
+Spec 004 adds a continuity layer around the gateway-owned runtime from Specs 001 to 003. The key idea is that the canonical source of conversation continuity remains the append-only transcript plus transcript-linked tool and governance artifacts, while summaries, manifests, and outbox jobs are treated as additive derived state.
+
+The runtime shape is still intentionally narrow in this workspace:
+
+- assembly is transcript-first
+- compaction retries are deterministic but simple
+- summary generation is implemented as a local worker-side heuristic
+- retrieval indexing is queued but not yet implemented
+- degraded overflow produces a bounded assistant failure rather than silent truncation
+
+### What A Developer Needs To Know
+
+The important implementation boundary is:
+
+- `ContextService` owns context assembly, overflow retry, and manifest construction
+- `AssistantGraph` still runs only on the gateway-owned invocation path
+- `SessionRepository` exposes additive continuity reads and writes for summaries, manifests, outbox jobs, and governance replay
+- `SessionService` enqueues post-turn jobs only after the assistant turn commits
+- `PolicyService` can replay active approvals from transcript-linked governance events when normalized state is missing
+- `OutboxWorker` currently implements `summary_generation` and leaves other queued job kinds as no-ops
+
+In the current workspace, continuity behavior is intentionally concrete:
+
+- a turn first loads transcript history, all persisted tool artifacts, all governance events, and the latest valid summary snapshot
+- if the transcript fits within `runtime_transcript_context_limit`, the full transcript is used
+- if it overflows and a summary exists, the runtime retries with one synthetic summary message plus the newest tail messages
+- if retry still cannot fit, or no usable summary exists, the turn degrades safely and returns a continuity-repair response
+- every turn persists a `context_manifests` row recording transcript ranges, summary ids, tool artifact ids, governance artifact ids, and overflow metadata
+- after the assistant turn commits, the service enqueues `summary_generation` and `retrieval_index` jobs, plus `continuity_repair` when the turn degraded
+
+### Runtime Flow
+
+For each accepted inbound message, the application now does this:
+
+1. persist the inbound `user` message through the canonical transcript path
+2. assemble transcript-first context from messages plus additive aids
+3. build an inspectable manifest for the chosen assembly mode
+4. execute the governed runtime turn, or return a bounded degraded response on hard overflow
+5. append the final `assistant` message
+6. persist the turn manifest
+7. enqueue post-turn outbox jobs for summaries, retrieval indexing, and continuity repair when needed
+
+The additive continuity records introduced by Spec 004 are:
+
+- `summary_snapshots` for versioned, range-bounded summaries
+- `context_manifests` for durable per-turn assembly inspection
+- `outbox_jobs` for post-commit summary, retrieval, and repair work
+
+### Files To Read First
+
+If you want the shortest path to understanding Spec 004, read:
+
+1. [`specs/004-context-continuity/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/004-context-continuity/spec.md)
+2. [`src/context/service.py`](/Users/scottcornell/src/projects/python-claw/src/context/service.py)
+3. [`src/sessions/service.py`](/Users/scottcornell/src/projects/python-claw/src/sessions/service.py)
+4. [`src/sessions/repository.py`](/Users/scottcornell/src/projects/python-claw/src/sessions/repository.py)
+5. [`src/context/outbox.py`](/Users/scottcornell/src/projects/python-claw/src/context/outbox.py)
+6. [`tests/test_repository.py`](/Users/scottcornell/src/projects/python-claw/tests/test_repository.py) and [`tests/test_integration.py`](/Users/scottcornell/src/projects/python-claw/tests/test_integration.py)
+
 ## How To Read The Code
 
 If you want the fastest path through the codebase, read it in this order:
@@ -202,8 +269,9 @@ If you want the fastest path through the codebase, read it in this order:
 4. [`src/sessions/service.py`](/Users/scottcornell/src/projects/python-claw/src/sessions/service.py) to understand the business flow.
 5. [`src/routing/service.py`](/Users/scottcornell/src/projects/python-claw/src/routing/service.py) for deterministic routing and session-key composition.
 6. [`src/gateway/idempotency.py`](/Users/scottcornell/src/projects/python-claw/src/gateway/idempotency.py) for `claimed` vs `completed` dedupe behavior.
-7. [`src/sessions/repository.py`](/Users/scottcornell/src/projects/python-claw/src/sessions/repository.py) and [`src/db/models.py`](/Users/scottcornell/src/projects/python-claw/src/db/models.py) for storage details.
-8. [`tests/`](/Users/scottcornell/src/projects/python-claw/tests) to see the expected behavior end to end.
+7. [`src/context/service.py`](/Users/scottcornell/src/projects/python-claw/src/context/service.py) for transcript-first assembly and overflow behavior.
+8. [`src/sessions/repository.py`](/Users/scottcornell/src/projects/python-claw/src/sessions/repository.py) and [`src/db/models.py`](/Users/scottcornell/src/projects/python-claw/src/db/models.py) for storage details.
+9. [`tests/`](/Users/scottcornell/src/projects/python-claw/tests) to see the expected behavior end to end.
 
 ### Request Lifecycle
 
@@ -235,6 +303,9 @@ The current database tables are:
 - `resource_versions`: immutable proposed content versions
 - `resource_approvals`: exact-match approval and revocation state
 - `active_resources`: activation and revocation state
+- `summary_snapshots`: additive versioned summaries for continuity compaction
+- `outbox_jobs`: post-commit summary, retrieval, and repair jobs
+- `context_manifests`: persisted per-turn assembly manifests
 
 Important current behaviors:
 
@@ -242,6 +313,9 @@ Important current behaviors:
 - a fresh duplicate that hits an in-progress non-stale claim returns `409`
 - stale `claimed` dedupe rows are recoverable after `dedupe_stale_after_seconds`
 - transcript pagination is cursor-based with `before_message_id`
+- summary selection prefers the latest valid snapshot whose covered range is strictly before the current message
+- context manifests are retained with a bounded per-session history
+- approval visibility can be replayed from governance transcript events if normalized approval rows are missing
 
 ## Environment Setup
 
@@ -336,6 +410,7 @@ The main variables you will care about are:
 - `PYTHON_CLAW_DEDUPE_STALE_AFTER_SECONDS`
 - `PYTHON_CLAW_MESSAGES_PAGE_DEFAULT_LIMIT`
 - `PYTHON_CLAW_MESSAGES_PAGE_MAX_LIMIT`
+- `PYTHON_CLAW_RUNTIME_TRANSCRIPT_CONTEXT_LIMIT`
 
 Compose-specific values in the same `.env` file are:
 
@@ -376,6 +451,13 @@ After the migration runs, the database should contain:
 - `inbound_dedupe`
 - `session_artifacts`
 - `tool_audit_events`
+- `governance_transcript_events`
+- `resource_proposals`
+- `resource_versions`
+- `resource_approvals`
+- `active_resources`
+
+Current note for Spec 004: the ORM models and tests already include `summary_snapshots`, `outbox_jobs`, and `context_manifests`, but there is not yet a `004` Alembic migration under [`migrations/versions`](/Users/scottcornell/src/projects/python-claw/migrations/versions). If you rely on Alembic alone against PostgreSQL today, those three continuity tables will not be created until that migration is added.
 
 ## How To Run The Application
 
@@ -485,9 +567,10 @@ The tests currently use temporary SQLite databases created by pytest fixtures, s
 - [`tests/test_routing.py`](/Users/scottcornell/src/projects/python-claw/tests/test_routing.py): routing normalization, lowercase `channel_kind`, and session-key composition
 - [`tests/test_idempotency.py`](/Users/scottcornell/src/projects/python-claw/tests/test_idempotency.py): first-claim, finalize, duplicate replay, conflict, and stale-claim recovery
 - [`tests/test_repository.py`](/Users/scottcornell/src/projects/python-claw/tests/test_repository.py): session reuse, append-order message paging, and append-only runtime artifacts
+- [`tests/test_repository.py`](/Users/scottcornell/src/projects/python-claw/tests/test_repository.py): also covers summary snapshot selection, context manifest retention, outbox dedupe, outbox worker summary generation, and governance replay from transcript history
 - [`tests/test_runtime.py`](/Users/scottcornell/src/projects/python-claw/tests/test_runtime.py): graph branching, policy-aware tool binding, and no fabricated success on tool failure
 - [`tests/test_api.py`](/Users/scottcornell/src/projects/python-claw/tests/test_api.py): inbound acceptance, duplicate replay, invalid routing, session history with assistant replies, and dedupe isolation across channels
-- [`tests/test_integration.py`](/Users/scottcornell/src/projects/python-claw/tests/test_integration.py): restart-safe session reuse, replay after restart, stale recovery, tool-use flows, outbound intent creation, policy denial, and failure-path runtime behavior
+- [`tests/test_integration.py`](/Users/scottcornell/src/projects/python-claw/tests/test_integration.py): restart-safe session reuse, replay after restart, stale recovery, governed-tool flows, overflow degradation with continuity-repair enqueueing, and governance replay after normalized-state loss
 
 Useful commands during development:
 
@@ -504,9 +587,13 @@ This repository is intentionally still at the foundation stage of the broader ar
 
 - the assistant runtime is single-turn only
 - the default model is a local rule-based adapter, not a provider-backed model
-- tools are local and safe only; there is no remote execution or approval workflow yet
+- tools are local and safe only; there is no remote execution
 - outbound messaging stops at persisted intent creation; no transport dispatch layer exists yet
 - Redis is provisioned, but not yet used by the application code
 - tests validate behavior mostly against SQLite fixtures rather than a live PostgreSQL instance
+- retrieval indexing is only represented as queued `outbox_jobs`; no retrieval store or retrieval-based assembly exists yet
+- summary generation is a simple local heuristic worker, not a provider-backed summarization pipeline
+- the deterministic compaction path currently retries with at most one summary message plus a short tail, rather than a richer retrieval or chunking strategy
+- the continuity tables from Spec 004 are present in ORM models and tests, but Alembic migration support for them is still pending
 
 That means the code is already useful for validating routing, session identity, transcript persistence, idempotent webhook handling, and the first runtime/tooling slice, but it is not yet a full multi-provider, multi-turn assistant platform.

@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 
 from src.capabilities.activation import ActivationController
+from src.context.service import ContextService
 from src.graphs.assistant_graph import GraphFactory
 from src.graphs.nodes import GraphDependencies
 from src.graphs.state import AssistantState, ModelTurnResult, ToolRequest, ToolRuntimeContext, ToolRuntimeServices
@@ -61,7 +62,7 @@ def _build_graph(*, repository: SessionRepository, model: ModelAdapter, policy_s
             tool_registry=registry,
             audit_sink=ToolAuditSink(),
             activation_controller=ActivationController(repository=repository),
-            transcript_context_limit=10,
+            context_service=ContextService(context_window=10),
         )
     ).build()
 

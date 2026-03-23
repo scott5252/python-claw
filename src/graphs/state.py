@@ -74,6 +74,8 @@ class AssistantState:
     sender_id: str
     user_text: str
     messages: list[ConversationMessage]
+    context_manifest: dict[str, Any] = field(default_factory=dict)
+    degraded: bool = False
     tool_events: list[ToolEvent] = field(default_factory=list)
     response_text: str = ""
     needs_tools: bool = False

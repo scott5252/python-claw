@@ -110,7 +110,7 @@ class SessionService:
             message_id=message.id,
             expires_at=now + timedelta(days=self.dedupe_retention_days),
         )
-        self.assistant_graph.invoke(
+        state = self.assistant_graph.invoke(
             db=work_db,
             session_id=session.id,
             message_id=message.id,
@@ -120,7 +120,45 @@ class SessionService:
             user_text=content,
         )
         work_db.commit()
+        self._enqueue_after_turn_jobs(
+            work_db,
+            session_id=session.id,
+            message_id=message.id,
+            degraded=state.degraded,
+        )
+        work_db.commit()
         return InboundProcessResult(session_id=session.id, message_id=message.id, dedupe_status="accepted")
+
+    def _enqueue_after_turn_jobs(
+        self,
+        db: Session,
+        *,
+        session_id: str,
+        message_id: int,
+        degraded: bool,
+    ) -> None:
+        self.repository.enqueue_outbox_job(
+            db,
+            session_id=session_id,
+            message_id=message_id,
+            job_kind="summary_generation",
+            job_dedupe_key=f"summary_generation:{session_id}:{message_id}",
+        )
+        self.repository.enqueue_outbox_job(
+            db,
+            session_id=session_id,
+            message_id=message_id,
+            job_kind="retrieval_index",
+            job_dedupe_key=f"retrieval_index:{session_id}:{message_id}",
+        )
+        if degraded:
+            self.repository.enqueue_outbox_job(
+                db,
+                session_id=session_id,
+                message_id=message_id,
+                job_kind="continuity_repair",
+                job_dedupe_key=f"continuity_repair:{session_id}:{message_id}",
+            )
 
     def get_session(self, db: Session, session_id: str) -> SessionResponse | None:
         session = self.repository.get_session(db, session_id)

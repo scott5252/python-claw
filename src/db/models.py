@@ -244,3 +244,56 @@ class ActiveResourceRecord(Base):
     activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revocation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class SummarySnapshotRecord(Base):
+    __tablename__ = "summary_snapshots"
+    __table_args__ = (
+        UniqueConstraint("session_id", "snapshot_version", name="uq_summary_snapshots_session_version"),
+        Index("ix_summary_snapshots_session_through_message_id", "session_id", "through_message_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    snapshot_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    base_message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), nullable=False)
+    through_message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), nullable=False)
+    source_watermark_message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), nullable=False)
+    summary_text: Mapped[str] = mapped_column(Text, nullable=False)
+    summary_metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class OutboxJobRecord(Base):
+    __tablename__ = "outbox_jobs"
+    __table_args__ = (
+        UniqueConstraint("job_dedupe_key", name="uq_outbox_jobs_job_dedupe_key"),
+        Index("ix_outbox_jobs_session_status_available_at", "session_id", "status", "available_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), nullable=False)
+    job_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    job_dedupe_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class ContextManifestRecord(Base):
+    __tablename__ = "context_manifests"
+    __table_args__ = (
+        Index("ix_context_manifests_session_created_at", "session_id", "created_at"),
+        Index("ix_context_manifests_message_id", "message_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), nullable=False)
+    manifest_json: Mapped[str] = mapped_column(Text, nullable=False)
+    degraded: Mapped[bool] = mapped_column(nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
