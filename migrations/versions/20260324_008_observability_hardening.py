@@ -1,7 +1,7 @@
 """observability hardening
 
-Revision ID: 20260324_008_observability_hardening
-Revises: 20260324_007_channels_media
+Revision ID: 20260324_008
+Revises: 20260324_007
 Create Date: 2026-03-24
 """
 
@@ -9,8 +9,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "20260324_008_observability_hardening"
-down_revision = "20260324_007_channels_media"
+revision = "20260324_008"
+down_revision = "20260324_007"
 branch_labels = None
 depends_on = None
 
