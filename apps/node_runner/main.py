@@ -41,3 +41,6 @@ def create_app(
     app.state.node_runner_executor = NodeRunnerExecutor(audit_repository=audit_repository)
     app.include_router(internal_router)
     return app
+
+
+app = create_app()
