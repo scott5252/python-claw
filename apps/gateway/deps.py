@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import Depends, Request
+from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from src.config.settings import Settings
@@ -17,6 +17,8 @@ from src.graphs.nodes import GraphDependencies
 from src.jobs.repository import JobsRepository
 from src.jobs.service import FailureClassifier, RunExecutionService, SchedulerService
 from src.observability.audit import ToolAuditSink
+from src.observability.diagnostics import DiagnosticsService
+from src.observability.health import HealthService
 from src.policies.service import PolicyService
 from src.providers.models import RuleBasedModelAdapter
 from src.media.processor import MediaProcessor
@@ -105,7 +107,10 @@ def build_assistant_graph(settings: Settings, repository: SessionRepository):
             ),
             audit_sink=ToolAuditSink(),
             activation_controller=ActivationController(repository=repository),
-            context_service=ContextService(context_window=settings.runtime_transcript_context_limit),
+            context_service=ContextService(
+                context_window=settings.runtime_transcript_context_limit,
+                settings=settings,
+            ),
             remote_execution_runtime=remote_runtime,
         )
     ).build()
@@ -131,7 +136,10 @@ def create_session_service(settings: Settings) -> SessionService:
 def create_run_execution_service(settings: Settings) -> RunExecutionService:
     repository = SessionRepository()
     jobs_repository = JobsRepository()
+    dispatcher = build_dispatcher()
+    dispatcher.settings = settings
     return RunExecutionService(
+        settings=settings,
         jobs_repository=jobs_repository,
         session_repository=repository,
         concurrency_service=SessionConcurrencyService(
@@ -153,7 +161,7 @@ def create_run_execution_service(settings: Settings) -> RunExecutionService:
                 item.strip() for item in settings.media_allowed_mime_prefixes.split(",") if item.strip()
             ),
         ),
-        outbound_dispatcher=build_dispatcher(),
+        outbound_dispatcher=dispatcher,
     )
 
 
@@ -196,3 +204,42 @@ def get_scheduler_service(
     if service is not None:
         return service
     return create_scheduler_service(settings)
+
+
+def get_health_service(
+    settings: Settings = Depends(get_settings),
+) -> HealthService:
+    return HealthService(settings=settings)
+
+
+def get_diagnostics_service(
+    settings: Settings = Depends(get_settings),
+) -> DiagnosticsService:
+    return DiagnosticsService(settings=settings)
+
+
+def verify_operator_access(
+    *,
+    settings: Settings,
+    authorization: str | None,
+    x_internal_service_token: str | None,
+) -> None:
+    admin_token = settings.diagnostics_admin_bearer_token
+    internal_token = settings.diagnostics_internal_service_token
+    admin_ok = bool(admin_token and authorization == f"Bearer {admin_token}")
+    internal_ok = bool(internal_token and x_internal_service_token == internal_token)
+    if admin_ok or internal_ok:
+        return
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="operator authorization required")
+
+
+def require_operator_access(
+    settings: Settings = Depends(get_settings),
+    authorization: str | None = Header(default=None),
+    x_internal_service_token: str | None = Header(default=None),
+) -> None:
+    verify_operator_access(
+        settings=settings,
+        authorization=authorization,
+        x_internal_service_token=x_internal_service_token,
+    )

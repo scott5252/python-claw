@@ -31,6 +31,10 @@ def settings(database_url: str) -> Settings:
         dedupe_stale_after_seconds=1,
         messages_page_default_limit=2,
         messages_page_max_limit=3,
+        diagnostics_admin_bearer_token="admin-secret",
+        diagnostics_internal_service_token="internal-secret",
+        diagnostics_page_default_limit=2,
+        diagnostics_page_max_limit=3,
     )
 
 

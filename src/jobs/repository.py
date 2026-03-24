@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -54,6 +55,11 @@ class JobsRepository:
             trigger_ref=trigger_ref,
         )
         if existing is not None:
+            if existing.trace_id is None:
+                existing.trace_id = uuid4().hex
+                existing.correlation_id = existing.trace_id
+                existing.updated_at = current_time
+                db.flush()
             return existing
 
         run = ExecutionRunRecord(
@@ -67,7 +73,9 @@ class JobsRepository:
             attempt_count=0,
             max_attempts=max_attempts,
             available_at=current_time,
+            trace_id=uuid4().hex,
         )
+        run.correlation_id = run.trace_id
         db.add(run)
         try:
             db.flush()
@@ -80,6 +88,11 @@ class JobsRepository:
             )
             if existing is None:
                 raise
+            if existing.trace_id is None:
+                existing.trace_id = uuid4().hex
+                existing.correlation_id = existing.trace_id
+                existing.updated_at = current_time
+                db.flush()
             return existing
         return run
 
@@ -266,6 +279,7 @@ class JobsRepository:
         run.status = ExecutionRunStatus.FAILED.value
         run.finished_at = current_time
         run.last_error = error
+        run.failure_category = "unexpected_internal"
         run.updated_at = current_time
         db.flush()
         return run
@@ -290,6 +304,7 @@ class JobsRepository:
         )
         run.available_at = current_time + timedelta(seconds=backoff_seconds)
         run.last_error = error
+        run.failure_category = "unexpected_internal"
         run.finished_at = current_time if run.status == ExecutionRunStatus.DEAD_LETTER.value else None
         run.updated_at = current_time
         db.flush()

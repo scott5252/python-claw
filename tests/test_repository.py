@@ -444,6 +444,7 @@ def test_attachment_and_delivery_records_are_append_only_and_chunk_idempotent(se
             db,
             session_id=session.id,
             execution_run_id="run-1",
+            trace_id="trace-1",
             outbound_intent_id=artifact.id,
             channel_kind="slack",
             channel_account_id="acct",
@@ -457,6 +458,7 @@ def test_attachment_and_delivery_records_are_append_only_and_chunk_idempotent(se
             db,
             session_id=session.id,
             execution_run_id="run-1",
+            trace_id="trace-1",
             outbound_intent_id=artifact.id,
             channel_kind="slack",
             channel_account_id="acct",
@@ -469,6 +471,7 @@ def test_attachment_and_delivery_records_are_append_only_and_chunk_idempotent(se
         attempt_one = repository.create_outbound_delivery_attempt(
             db,
             outbound_delivery_id=first_delivery.id,
+            trace_id="trace-1",
             provider_idempotency_key="key-1",
         )
         repository.mark_outbound_delivery_failed(
@@ -481,6 +484,7 @@ def test_attachment_and_delivery_records_are_append_only_and_chunk_idempotent(se
         attempt_two = repository.create_outbound_delivery_attempt(
             db,
             outbound_delivery_id=first_delivery.id,
+            trace_id="trace-1",
             provider_idempotency_key="key-2",
         )
         repository.mark_outbound_delivery_sent(
@@ -507,6 +511,8 @@ def test_attachment_and_delivery_records_are_append_only_and_chunk_idempotent(se
     assert first_delivery.id == same_delivery.id
     assert len(deliveries) == 1
     assert deliveries[0].status == "sent"
+    assert deliveries[0].trace_id == "trace-1"
     assert len(attempts) == 2
     assert attempts[0].status == "failed"
     assert attempts[1].status == "sent"
+    assert attempts[0].trace_id == "trace-1"

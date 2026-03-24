@@ -7,7 +7,9 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from src.config.settings import Settings
 from src.graphs.state import AssistantState, ConversationMessage
+from src.observability.logging import build_event, emit_event
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,7 @@ class ContextAssemblyResult:
 @dataclass
 class ContextService:
     context_window: int
+    settings: Settings | None = None
 
     def assemble(
         self,
@@ -215,4 +218,21 @@ class ContextService:
         }
 
     def _emit_manifest(self, manifest: dict[str, Any]) -> None:
-        logger.info("context manifest generated", extra={"context_manifest": json.dumps(manifest, sort_keys=True)})
+        if self.settings is None:
+            logger.info("context manifest generated", extra={"context_manifest": json.dumps(manifest, sort_keys=True)})
+            return
+        emit_event(
+            logger,
+            event=build_event(
+                settings=self.settings,
+                event_name="context.manifest.generated",
+                component="context",
+                status="degraded" if manifest.get("degraded") else "ok",
+                trace_id=None,
+                session_id=manifest.get("session_id"),
+                message_id=manifest.get("message_id"),
+                degraded=manifest.get("degraded"),
+                assembly_mode=manifest.get("assembly_mode"),
+                attachment_ids=manifest.get("attachment_ids"),
+            ),
+        )

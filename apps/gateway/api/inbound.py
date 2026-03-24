@@ -4,10 +4,12 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from apps.gateway.deps import get_session_manager, get_session_service
+from apps.gateway.deps import get_session_manager, get_session_service, get_settings
+from src.config.settings import Settings
 from src.db.session import DatabaseSessionManager
 from src.domain.schemas import InboundMessageRequest, InboundMessageResponse
 from src.gateway.idempotency import IdempotencyConflictError
+from src.observability.logging import build_event, emit_event
 from src.routing.service import RoutingValidationError
 from src.sessions.service import SessionService
 
@@ -21,6 +23,7 @@ def post_inbound_message(
     payload: InboundMessageRequest,
     session_manager: DatabaseSessionManager = Depends(get_session_manager),
     service: SessionService = Depends(get_session_service),
+    settings: Settings = Depends(get_settings),
 ) -> InboundMessageResponse:
     try:
         with session_manager.session() as db:
@@ -45,19 +48,28 @@ def post_inbound_message(
     except IdempotencyConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
-    log_payload = {
-        "channel_kind": payload.channel_kind.strip(),
-        "channel_account_id": payload.channel_account_id.strip(),
-        "external_message_id": payload.external_message_id.strip(),
-        "session_id": result.session_id,
-        "run_id": result.run_id,
-        "status": result.dedupe_status,
-    }
-    logger.info("inbound message accepted", extra=log_payload)
+    emit_event(
+        logger,
+        event=build_event(
+            settings=settings,
+            event_name="gateway.inbound.accepted",
+            component="gateway",
+            status=result.dedupe_status,
+            trace_id=result.trace_id,
+            session_id=result.session_id,
+            execution_run_id=result.run_id,
+            message_id=result.message_id,
+            channel_kind=payload.channel_kind.strip(),
+            channel_account_id=payload.channel_account_id.strip(),
+            content=payload.content,
+            external_message_id=payload.external_message_id.strip(),
+        ),
+    )
     return InboundMessageResponse(
         session_id=result.session_id,
         message_id=result.message_id,
         run_id=result.run_id,
         status=result.status,
         dedupe_status=result.dedupe_status,  # type: ignore[arg-type]
+        trace_id=result.trace_id,
     )

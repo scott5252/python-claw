@@ -31,6 +31,7 @@ class InboundProcessResult:
     session_id: str
     message_id: int
     run_id: str
+    trace_id: str
     status: str
     dedupe_status: str
 
@@ -109,6 +110,7 @@ class SessionService:
                 session_id=claim_result.session_id,
                 message_id=claim_result.message_id,
                 run_id=run.id,
+                trace_id=run.trace_id or "",
                 status=run.status,
                 dedupe_status="duplicate",
             )
@@ -155,6 +157,7 @@ class SessionService:
             session_id=session.id,
             message_id=message.id,
             run_id=run.id,
+            trace_id=run.trace_id or "",
             status=run.status,
             dedupe_status="accepted",
         )

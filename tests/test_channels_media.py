@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from src.config.settings import Settings
+from src.db.models import ExecutionRunRecord
 from src.channels.adapters.telegram import TelegramAdapter
 from src.channels.adapters.webchat import WebchatAdapter
 from src.channels.dispatch import OutboundDispatchError, OutboundDispatcher
@@ -167,6 +169,23 @@ def test_dispatcher_chunks_text_and_fails_closed_for_unsupported_voice(session_m
 
     with session_manager.session() as db:
         session = repository.get_or_create_session(db, routing)
+        db.add(
+            ExecutionRunRecord(
+                id="run-1",
+                session_id=session.id,
+                message_id=None,
+                agent_id="agent-1",
+                trigger_kind="test",
+                trigger_ref="test-1",
+                lane_key=session.id,
+                status="queued",
+                attempt_count=0,
+                max_attempts=1,
+                available_at=datetime.now(timezone.utc),
+                trace_id="trace-1",
+                correlation_id="trace-1",
+            )
+        )
         artifact = repository.append_outbound_intent(
             db,
             session_id=session.id,
@@ -176,7 +195,7 @@ def test_dispatcher_chunks_text_and_fails_closed_for_unsupported_voice(session_m
                 "execution_run_id": "run-1",
             },
         )
-        dispatcher = OutboundDispatcher(adapters={"webchat": WebchatAdapter()})
+        dispatcher = OutboundDispatcher(adapters={"webchat": WebchatAdapter()}, settings=Settings(database_url="sqlite://"))
         with pytest.raises(OutboundDispatchError):
             dispatcher.dispatch_run(
                 db=db,
@@ -190,6 +209,7 @@ def test_dispatcher_chunks_text_and_fails_closed_for_unsupported_voice(session_m
 
     assert artifact.id == deliveries[0].outbound_intent_id
     assert deliveries[0].status == "failed"
+    assert deliveries[0].trace_id == "trace-1"
     assert attempts[0].status == "failed"
 
 
@@ -206,6 +226,23 @@ def test_dispatcher_sends_chunked_text_and_media(session_manager, tmp_path) -> N
 
     with session_manager.session() as db:
         session = repository.get_or_create_session(db, routing)
+        db.add(
+            ExecutionRunRecord(
+                id="run-1",
+                session_id=session.id,
+                message_id=None,
+                agent_id="agent-1",
+                trigger_kind="test",
+                trigger_ref="test-1",
+                lane_key=session.id,
+                status="queued",
+                attempt_count=0,
+                max_attempts=1,
+                available_at=datetime.now(timezone.utc),
+                trace_id="trace-1",
+                correlation_id="trace-1",
+            )
+        )
         message = repository.append_message(
             db,
             session,
@@ -255,7 +292,7 @@ def test_dispatcher_sends_chunked_text_and_media(session_manager, tmp_path) -> N
                 "execution_run_id": "run-1",
             },
         )
-        dispatcher = OutboundDispatcher(adapters={"telegram": TelegramAdapter()})
+        dispatcher = OutboundDispatcher(adapters={"telegram": TelegramAdapter()}, settings=Settings(database_url="sqlite://"))
         dispatcher.dispatch_run(
             db=db,
             repository=repository,
@@ -267,3 +304,4 @@ def test_dispatcher_sends_chunked_text_and_media(session_manager, tmp_path) -> N
 
     assert [delivery.delivery_kind for delivery in deliveries] == ["text_chunk", "media"]
     assert all(delivery.status == "sent" for delivery in deliveries)
+    assert all(delivery.trace_id == "trace-1" for delivery in deliveries)

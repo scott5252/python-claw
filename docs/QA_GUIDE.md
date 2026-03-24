@@ -11,6 +11,7 @@ Right now it covers how to test the behaviors delivered by:
 - Spec 005: async queueing, workers, scheduler submission, and run diagnostics
 - Spec 006: remote node runner and sandboxing
 - Spec 007: channels, chunking, and media normalization
+- Spec 008: observability, diagnostics, health or readiness, and operational hardening
 
 The emphasis is on running the server, interacting with it through HTTP, and verifying both API behavior and database state.
 
@@ -19,12 +20,21 @@ The emphasis is on running the server, interacting with it through HTTP, and ver
 The current HTTP surface is:
 
 - `GET /health`
+- `GET /health/live`
+- `GET /health/ready`
 - `POST /inbound/message`
 - `GET /sessions/{session_id}`
 - `GET /sessions/{session_id}/messages`
 - `GET /sessions/{session_id}/governance/pending`
 - `GET /runs/{run_id}`
 - `GET /sessions/{session_id}/runs`
+- `GET /diagnostics/runs`
+- `GET /diagnostics/runs/{run_id}`
+- `GET /diagnostics/sessions/{session_id}/continuity`
+- `GET /diagnostics/outbox-jobs`
+- `GET /diagnostics/node-executions`
+- `GET /diagnostics/deliveries`
+- `GET /diagnostics/attachments`
 
 The main write path is always `POST /inbound/message`.
 
@@ -57,6 +67,18 @@ Default local address:
 ```bash
 http://127.0.0.1:8000
 ```
+
+### 2a. Set observability tokens for Spec 008 checks
+
+Spec 008 adds fail-closed readiness and diagnostics routes. For local QA, make sure `.env` includes values like:
+
+```bash
+PYTHON_CLAW_DIAGNOSTICS_ADMIN_BEARER_TOKEN=change-me
+PYTHON_CLAW_DIAGNOSTICS_INTERNAL_SERVICE_TOKEN=change-me-internal
+PYTHON_CLAW_HEALTH_READY_REQUIRES_AUTH=true
+```
+
+If you change `.env`, restart the gateway before testing.
 
 ### 3. Keep a worker command ready
 
@@ -100,6 +122,27 @@ Expected result:
 
 - HTTP `200`
 - a small health payload
+
+For Spec 008, also confirm:
+
+```bash
+curl http://127.0.0.1:8000/health/live
+```
+
+Expected result:
+
+- HTTP `200`
+- JSON with `status: "ok"`
+
+And confirm readiness is protected by default:
+
+```bash
+curl -i http://127.0.0.1:8000/health/ready
+```
+
+Expected result:
+
+- HTTP `401`
 
 ## Spec 001: Gateway Sessions
 
@@ -256,6 +299,367 @@ What to verify:
 - one canonical session row per conversation identity
 - duplicate deliveries do not create duplicate inbound message rows
 - `inbound_dedupe` stores the original `session_id` and `message_id`
+
+## Spec 008: Observability, Diagnostics, and Operational Hardening
+
+Spec 008 adds correlation identifiers, health or readiness separation, authenticated diagnostics, bounded diagnostics paging, and operator-facing visibility into runs, outbox work, node execution, deliveries, and attachments.
+
+### Scenario 1: Verify inbound acceptance now returns a stable `trace_id`
+
+Send a fresh inbound request:
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel_kind": "slack",
+    "channel_account_id": "acct-obs",
+    "external_message_id": "msg-obs-001",
+    "sender_id": "sender-obs-1",
+    "content": "hello observability",
+    "peer_id": "peer-obs-1"
+  }'
+```
+
+Expected result:
+
+- HTTP `202`
+- response includes:
+  - `session_id`
+  - `message_id`
+  - `run_id`
+  - `trace_id`
+  - `dedupe_status: "accepted"`
+
+Replay the exact same request.
+
+Expected result:
+
+- HTTP `202`
+- `dedupe_status: "duplicate"`
+- same `run_id` and same `trace_id` as the first request
+
+### Scenario 2: Verify liveness is open but readiness is authenticated
+
+Check liveness:
+
+```bash
+curl http://127.0.0.1:8000/health/live
+```
+
+Expected result:
+
+- HTTP `200`
+- process-only payload with `status: "ok"`
+
+Check readiness without credentials:
+
+```bash
+curl -i http://127.0.0.1:8000/health/ready
+```
+
+Expected result:
+
+- HTTP `401`
+
+Check readiness with the admin bearer token from `.env`:
+
+```bash
+curl http://127.0.0.1:8000/health/ready \
+  -H 'Authorization: Bearer change-me'
+```
+
+Expected result:
+
+- HTTP `200`
+- payload includes:
+  - top-level `status`
+  - `checks`
+  - a PostgreSQL dependency entry
+
+### Scenario 3: Verify diagnostics routes deny by default
+
+Try a diagnostics route without credentials:
+
+```bash
+curl -i http://127.0.0.1:8000/diagnostics/runs
+```
+
+Expected result:
+
+- HTTP `401`
+
+Try the same route with the internal service token:
+
+```bash
+curl http://127.0.0.1:8000/diagnostics/runs \
+  -H 'X-Internal-Service-Token: change-me-internal'
+```
+
+Expected result:
+
+- HTTP `200`
+- JSON envelope with:
+  - `items`
+  - `limit`
+  - `next_cursor`
+  - `has_more`
+  - `capability_status`
+
+### Scenario 4: Verify run diagnostics and cursor-based paging
+
+Create at least three fresh inbound runs:
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel_kind": "slack",
+    "channel_account_id": "acct-obs",
+    "external_message_id": "msg-obs-002",
+    "sender_id": "sender-obs-1",
+    "content": "run two",
+    "peer_id": "peer-obs-1"
+  }'
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel_kind": "slack",
+    "channel_account_id": "acct-obs",
+    "external_message_id": "msg-obs-003",
+    "sender_id": "sender-obs-1",
+    "content": "run three",
+    "peer_id": "peer-obs-1"
+  }'
+```
+
+Request a bounded page:
+
+```bash
+curl "http://127.0.0.1:8000/diagnostics/runs?limit=2" \
+  -H 'Authorization: Bearer change-me'
+```
+
+Expected result:
+
+- HTTP `200`
+- two `items`
+- `has_more: true`
+- non-null `next_cursor`
+
+Use the returned cursor in the next request:
+
+```bash
+curl "http://127.0.0.1:8000/diagnostics/runs?limit=2&cursor=<next_cursor>" \
+  -H 'Authorization: Bearer change-me'
+```
+
+Expected result:
+
+- HTTP `200`
+- remaining items in deterministic order
+
+Then inspect one run directly:
+
+```bash
+curl http://127.0.0.1:8000/diagnostics/runs/<run_id> \
+  -H 'Authorization: Bearer change-me'
+```
+
+Expected result:
+
+- HTTP `200`
+- payload includes:
+  - `run`
+  - `recent_failures`
+  - `correlated_artifacts`
+- `run.trace_id` matches the value originally returned by `POST /inbound/message`
+
+### Scenario 5: Verify worker execution preserves correlation into follow-on state
+
+Run the worker until the queued run is processed:
+
+```bash
+uv run python - <<'PY'
+from apps.worker.jobs import run_once
+
+while True:
+    run_id = run_once()
+    print(run_id)
+    if run_id is None:
+        break
+PY
+```
+
+Re-check the run detail route:
+
+```bash
+curl http://127.0.0.1:8000/diagnostics/runs/<run_id> \
+  -H 'Authorization: Bearer change-me'
+```
+
+Expected result:
+
+- terminal or progressed run state is visible
+- correlated outbox or delivery identifiers may appear under `correlated_artifacts`
+
+Check continuity diagnostics:
+
+```bash
+curl http://127.0.0.1:8000/diagnostics/sessions/<session_id>/continuity \
+  -H 'Authorization: Bearer change-me'
+```
+
+Expected result:
+
+- HTTP `200`
+- payload includes:
+  - `capability_status`
+  - `summary_snapshot_count`
+  - `context_manifest_count`
+  - `pending_outbox_jobs`
+  - `failed_outbox_jobs`
+  - `recent_run_statuses`
+
+### Scenario 6: Verify attachment and delivery diagnostics
+
+Submit an inbound attachment that will fail normalization because the file is missing:
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel_kind": "slack",
+    "channel_account_id": "acct-obs",
+    "external_message_id": "msg-obs-attach-001",
+    "sender_id": "sender-obs-1",
+    "content": "attachment check",
+    "peer_id": "peer-obs-1",
+    "attachments": [
+      {
+        "source_url": "file:///tmp/missing-observability-check.txt",
+        "mime_type": "text/plain"
+      }
+    ]
+  }'
+```
+
+Run the worker once, then inspect attachments:
+
+```bash
+curl http://127.0.0.1:8000/diagnostics/attachments \
+  -H 'Authorization: Bearer change-me'
+```
+
+Expected result:
+
+- HTTP `200`
+- attachment items include bounded error summaries
+- payload remains paginated and typed
+
+Inspect deliveries too:
+
+```bash
+curl http://127.0.0.1:8000/diagnostics/deliveries \
+  -H 'Authorization: Bearer change-me'
+```
+
+Expected result:
+
+- HTTP `200`
+- each item remains bounded
+- recent attempts, when present, are included in a bounded form
+
+### Scenario 7: Verify outbox and node execution diagnostics routes stay available
+
+Query outbox jobs:
+
+```bash
+curl http://127.0.0.1:8000/diagnostics/outbox-jobs \
+  -H 'Authorization: Bearer change-me'
+```
+
+Query node executions:
+
+```bash
+curl http://127.0.0.1:8000/diagnostics/node-executions \
+  -H 'Authorization: Bearer change-me'
+```
+
+Expected result:
+
+- both routes return HTTP `200`
+- both use the same envelope shape:
+  - `items`
+  - `limit`
+  - `next_cursor`
+  - `has_more`
+  - `capability_status`
+- node executions may be empty in deployments where remote execution is not currently exercised, but the route should still exist and return typed data
+
+### Tables To Inspect For Spec 008
+
+Look at these tables while testing:
+
+- `execution_runs`
+- `outbox_jobs`
+- `outbound_deliveries`
+- `outbound_delivery_attempts`
+- `node_execution_audits`
+- `message_attachments`
+- `context_manifests`
+- `summary_snapshots`
+
+Useful queries:
+
+```sql
+select id, session_id, status, trigger_kind, trace_id, correlation_id, degraded_reason, failure_category, updated_at
+from execution_runs
+order by created_at desc;
+```
+
+```sql
+select id, session_id, message_id, job_kind, status, trace_id, failure_category, last_error, updated_at
+from outbox_jobs
+order by created_at desc;
+```
+
+```sql
+select id, execution_run_id, channel_kind, status, trace_id, failure_category, error_code, created_at
+from outbound_deliveries
+order by created_at desc;
+```
+
+```sql
+select id, outbound_delivery_id, attempt_number, status, trace_id, error_code, created_at
+from outbound_delivery_attempts
+order by created_at desc;
+```
+
+```sql
+select id, request_id, execution_run_id, status, trace_id, deny_reason, created_at
+from node_execution_audits
+order by created_at desc;
+```
+
+```sql
+select id, session_id, message_id, normalization_status, mime_type, error_detail, created_at
+from message_attachments
+order by created_at desc;
+```
+
+What to verify:
+
+- every new accepted run has a non-null `trace_id`
+- duplicate replay preserves the same `trace_id`
+- outbox jobs created after a turn inherit the parent run correlation
+- outbound delivery rows and delivery attempts persist `trace_id`
+- diagnostics expose bounded summaries rather than raw unbounded payloads
+- readiness is not publicly exposed by default
+- diagnostics are denied without valid credentials
 
 ## Spec 002: Runtime Tools
 

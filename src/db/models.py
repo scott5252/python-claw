@@ -213,6 +213,7 @@ class ExecutionRunRecord(Base):
         Index("ix_execution_runs_session_status_created", "session_id", "status", "created_at"),
         Index("ix_execution_runs_lane_status_available", "lane_key", "status", "available_at"),
         Index("ix_execution_runs_worker_status", "worker_id", "status"),
+        Index("ix_execution_runs_status_updated", "status", "updated_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
@@ -232,6 +233,9 @@ class ExecutionRunRecord(Base):
     worker_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     trace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    degraded_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
@@ -445,6 +449,7 @@ class OutboxJobRecord(Base):
     __table_args__ = (
         UniqueConstraint("job_dedupe_key", name="uq_outbox_jobs_job_dedupe_key"),
         Index("ix_outbox_jobs_session_status_available_at", "session_id", "status", "available_at"),
+        Index("ix_outbox_jobs_status_updated", "status", "updated_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -456,6 +461,8 @@ class OutboxJobRecord(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    failure_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
@@ -481,6 +488,7 @@ class OutboundDeliveryRecord(Base):
         UniqueConstraint("outbound_intent_id", "chunk_index", name="uq_outbound_deliveries_intent_chunk"),
         Index("ix_outbound_deliveries_intent_chunk", "outbound_intent_id", "chunk_index"),
         Index("ix_outbound_deliveries_session_created", "session_id", "created_at"),
+        Index("ix_outbound_deliveries_status_created", "status", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -498,6 +506,8 @@ class OutboundDeliveryRecord(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    failure_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
@@ -505,6 +515,7 @@ class OutboundDeliveryAttemptRecord(Base):
     __tablename__ = "outbound_delivery_attempts"
     __table_args__ = (
         UniqueConstraint("outbound_delivery_id", "attempt_number", name="uq_outbound_delivery_attempts_number"),
+        Index("ix_outbound_delivery_attempts_status_created", "status", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -515,6 +526,7 @@ class OutboundDeliveryAttemptRecord(Base):
     provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 

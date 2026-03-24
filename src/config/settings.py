@@ -38,6 +38,24 @@ class Settings(BaseSettings):
     node_runner_allowed_executables: str = "/bin/echo,/usr/bin/env"
     sandbox_workspace_root: str = ".claw-sandboxes"
     sandbox_shared_base_key: str = "shared-default"
+    observability_json_logs: bool = True
+    observability_log_content_preview: bool = False
+    observability_log_content_preview_chars: int = 160
+    diagnostics_enabled: bool = True
+    diagnostics_page_default_limit: int = 20
+    diagnostics_page_max_limit: int = 50
+    diagnostics_admin_bearer_token: str | None = None
+    diagnostics_internal_service_token: str | None = None
+    health_ready_requires_auth: bool = True
+    observability_metrics_enabled: bool = False
+    observability_metrics_path: str = "/metrics"
+    observability_tracing_enabled: bool = False
+    execution_run_stale_after_seconds: int = 300
+    outbox_job_stale_after_seconds: int = 300
+    scheduled_job_fire_stale_after_seconds: int = 300
+    outbound_delivery_stale_after_seconds: int = 300
+    node_execution_stale_after_seconds: int = 300
+    attachment_stale_after_seconds: int = 300
 
     model_config = SettingsConfigDict(
         env_prefix="PYTHON_CLAW_",

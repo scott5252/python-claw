@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from src.capabilities.repository import CapabilitiesRepository
 from src.config.settings import Settings
+from src.db.models import ExecutionRunRecord
 from src.execution.contracts import (
     NodeCommandTemplate,
     NodeExecutionResult,
@@ -60,6 +61,7 @@ class RemoteExecutionRuntime:
             session_id=session_id,
             template=template,
         )
+        run = db.get(ExecutionRunRecord, execution_run_id)
         request = build_exec_request(
             execution_run_id=execution_run_id,
             tool_call_id=tool_call_id,
@@ -78,6 +80,7 @@ class RemoteExecutionRuntime:
             workspace_mount_mode=sandbox.workspace_mount_mode,
             typed_action_id=approval.typed_action_id,
             ttl_seconds=self.settings.node_runner_request_ttl_seconds,
+            trace_id=None if run is None else run.trace_id,
         )
         signed = self.signing_service.build_signed_request(
             key_id=self.settings.node_runner_signing_key_id,

@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
 from src.channels.adapters.base import ChannelAdapter
+from src.config.settings import Settings
+from src.db.models import ExecutionRunRecord
 from src.domain.block_chunker import chunk_text
 from src.domain.reply_directives import ReplyDirectiveError, parse_reply_directives
+from src.observability.failures import classify_failure
+from src.observability.logging import build_event, emit_event
+
+logger = logging.getLogger(__name__)
 
 
 class OutboundDispatchError(RuntimeError):
@@ -17,6 +24,7 @@ class OutboundDispatchError(RuntimeError):
 @dataclass
 class OutboundDispatcher:
     adapters: dict[str, ChannelAdapter]
+    settings: Settings | None = None
 
     def dispatch_run(
         self,
@@ -31,6 +39,8 @@ class OutboundDispatcher:
         adapter = self.adapters.get(session.channel_kind)
         if adapter is None:
             return
+        run = db.get(ExecutionRunRecord, execution_run_id)
+        trace_id = run.trace_id if run is not None else None
         for artifact in repository.list_outbound_intents_for_run(
             db,
             session_id=session.id,
@@ -42,6 +52,7 @@ class OutboundDispatcher:
                 repository=repository,
                 session=session,
                 execution_run_id=execution_run_id,
+                trace_id=trace_id,
                 artifact_id=artifact.id,
                 payload=payload,
                 adapter=adapter,
@@ -54,6 +65,7 @@ class OutboundDispatcher:
         repository,
         session,
         execution_run_id: str,
+        trace_id: str | None,
         artifact_id: int,
         payload: dict[str, object],
         adapter: ChannelAdapter,
@@ -67,6 +79,7 @@ class OutboundDispatcher:
                 repository=repository,
                 session=session,
                 execution_run_id=execution_run_id,
+                trace_id=trace_id,
                 artifact_id=artifact_id,
                 chunk_index=0,
                 chunk_count=1,
@@ -81,6 +94,7 @@ class OutboundDispatcher:
                 repository=repository,
                 session=session,
                 execution_run_id=execution_run_id,
+                trace_id=trace_id,
                 artifact_id=artifact_id,
                 chunk_index=0,
                 chunk_count=1,
@@ -95,6 +109,7 @@ class OutboundDispatcher:
                 repository=repository,
                 session=session,
                 execution_run_id=execution_run_id,
+                trace_id=trace_id,
                 artifact_id=artifact_id,
                 chunk_index=0,
                 chunk_count=1,
@@ -109,6 +124,7 @@ class OutboundDispatcher:
                 repository=repository,
                 session=session,
                 execution_run_id=execution_run_id,
+                trace_id=trace_id,
                 artifact_id=artifact_id,
                 chunk_index=0,
                 chunk_count=1,
@@ -126,6 +142,7 @@ class OutboundDispatcher:
                 db,
                 session_id=session.id,
                 execution_run_id=execution_run_id,
+                trace_id=trace_id,
                 outbound_intent_id=artifact_id,
                 channel_kind=session.channel_kind,
                 channel_account_id=session.channel_account_id,
@@ -140,6 +157,7 @@ class OutboundDispatcher:
             attempt = repository.create_outbound_delivery_attempt(
                 db,
                 outbound_delivery_id=delivery.id,
+                trace_id=trace_id,
                 provider_idempotency_key=f"{artifact_id}:{chunk_index}",
             )
             try:
@@ -156,6 +174,15 @@ class OutboundDispatcher:
                     attempt_id=attempt.id,
                     provider_message_id=result.provider_message_id,
                 )
+                self._emit_delivery_event(
+                    event_name="delivery.sent",
+                    status="sent",
+                    trace_id=trace_id,
+                    session=session,
+                    execution_run_id=execution_run_id,
+                    delivery_id=delivery.id,
+                    attempt_id=attempt.id,
+                )
             except Exception as exc:
                 repository.mark_outbound_delivery_failed(
                     db,
@@ -163,6 +190,18 @@ class OutboundDispatcher:
                     attempt_id=attempt.id,
                     error_code="adapter_send_failed",
                     error_detail=str(exc),
+                )
+                self._emit_delivery_event(
+                    event_name="delivery.failed",
+                    status="failed",
+                    trace_id=trace_id,
+                    session=session,
+                    execution_run_id=execution_run_id,
+                    delivery_id=delivery.id,
+                    attempt_id=attempt.id,
+                    error=str(exc),
+                    failure_category=classify_failure(error_code="adapter_send_failed", exc=exc),
+                    level=logging.ERROR,
                 )
                 raise OutboundDispatchError(str(exc)) from exc
 
@@ -175,6 +214,7 @@ class OutboundDispatcher:
                     repository=repository,
                     session=session,
                     execution_run_id=execution_run_id,
+                    trace_id=trace_id,
                     artifact_id=artifact_id,
                     chunk_index=media_offset,
                     chunk_count=total_count,
@@ -190,6 +230,7 @@ class OutboundDispatcher:
                     repository=repository,
                     session=session,
                     execution_run_id=execution_run_id,
+                    trace_id=trace_id,
                     artifact_id=artifact_id,
                     chunk_index=media_offset,
                     chunk_count=total_count,
@@ -202,6 +243,7 @@ class OutboundDispatcher:
                 db,
                 session_id=session.id,
                 execution_run_id=execution_run_id,
+                trace_id=trace_id,
                 outbound_intent_id=artifact_id,
                 channel_kind=session.channel_kind,
                 channel_account_id=session.channel_account_id,
@@ -216,6 +258,7 @@ class OutboundDispatcher:
             attempt = repository.create_outbound_delivery_attempt(
                 db,
                 outbound_delivery_id=delivery.id,
+                trace_id=trace_id,
                 provider_idempotency_key=f"{artifact_id}:{media_offset}",
             )
             try:
@@ -235,6 +278,15 @@ class OutboundDispatcher:
                     attempt_id=attempt.id,
                     provider_message_id=result.provider_message_id,
                 )
+                self._emit_delivery_event(
+                    event_name="delivery.sent",
+                    status="sent",
+                    trace_id=trace_id,
+                    session=session,
+                    execution_run_id=execution_run_id,
+                    delivery_id=delivery.id,
+                    attempt_id=attempt.id,
+                )
             except Exception as exc:
                 repository.mark_outbound_delivery_failed(
                     db,
@@ -242,6 +294,18 @@ class OutboundDispatcher:
                     attempt_id=attempt.id,
                     error_code="adapter_send_failed",
                     error_detail=str(exc),
+                )
+                self._emit_delivery_event(
+                    event_name="delivery.failed",
+                    status="failed",
+                    trace_id=trace_id,
+                    session=session,
+                    execution_run_id=execution_run_id,
+                    delivery_id=delivery.id,
+                    attempt_id=attempt.id,
+                    error=str(exc),
+                    failure_category=classify_failure(error_code="adapter_send_failed", exc=exc),
+                    level=logging.ERROR,
                 )
                 raise OutboundDispatchError(str(exc)) from exc
 
@@ -259,6 +323,7 @@ class OutboundDispatcher:
         repository,
         session,
         execution_run_id: str,
+        trace_id: str | None,
         artifact_id: int,
         chunk_index: int,
         chunk_count: int,
@@ -270,6 +335,7 @@ class OutboundDispatcher:
             db,
             session_id=session.id,
             execution_run_id=execution_run_id,
+            trace_id=trace_id,
             outbound_intent_id=artifact_id,
             channel_kind=session.channel_kind,
             channel_account_id=session.channel_account_id,
@@ -282,6 +348,7 @@ class OutboundDispatcher:
         attempt = repository.create_outbound_delivery_attempt(
             db,
             outbound_delivery_id=delivery.id,
+            trace_id=trace_id,
             provider_idempotency_key=f"{artifact_id}:{chunk_index}",
         )
         repository.mark_outbound_delivery_failed(
@@ -290,4 +357,50 @@ class OutboundDispatcher:
             attempt_id=attempt.id,
             error_code=error_code,
             error_detail=error_detail,
+        )
+        self._emit_delivery_event(
+            event_name="delivery.failed",
+            status="failed",
+            trace_id=trace_id,
+            session=session,
+            execution_run_id=execution_run_id,
+            delivery_id=delivery.id,
+            attempt_id=attempt.id,
+            error=error_detail,
+            failure_category=classify_failure(error_code=error_code, error_detail=error_detail),
+            level=logging.ERROR,
+        )
+
+    def _emit_delivery_event(
+        self,
+        *,
+        event_name: str,
+        status: str,
+        trace_id: str | None,
+        session,
+        execution_run_id: str,
+        delivery_id: int,
+        attempt_id: int,
+        level: int = logging.INFO,
+        **fields: object,
+    ) -> None:
+        if self.settings is None:
+            return
+        emit_event(
+            logger,
+            level=level,
+            event=build_event(
+                settings=self.settings,
+                event_name=event_name,
+                component="dispatcher",
+                status=status,
+                trace_id=trace_id,
+                session_id=session.id,
+                execution_run_id=execution_run_id,
+                channel_kind=session.channel_kind,
+                channel_account_id=session.channel_account_id,
+                delivery_id=delivery_id,
+                attempt_id=attempt_id,
+                **fields,
+            ),
         )

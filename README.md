@@ -23,10 +23,11 @@ In simpler terms, this project is the backend skeleton for an AI assistant syste
 - normalize inbound attachments into safe runtime-owned media records
 - deliver completed outbound replies through channel-aware dispatch paths
 - support remote execution through a separate internal node-runner boundary
+- expose health, readiness, and operator diagnostics for the durable workflows it owns
 
 ### What it does today
 
-The current implementation focuses on seven delivered capability areas:
+The current implementation focuses on eight delivered capability areas:
 
 1. Gateway sessions and deterministic routing
 2. Runtime tools and typed tool execution
@@ -35,6 +36,7 @@ The current implementation focuses on seven delivered capability areas:
 5. Async queueing with worker-owned execution runs
 6. Remote node-runner execution with per-agent sandbox resolution
 7. Channel-aware outbound delivery, chunking, and first-pass media normalization
+8. Observability, diagnostics, health or readiness, and operational hardening
 
 ### What it does not do yet
 
@@ -45,7 +47,7 @@ The project is still a foundation, not a finished end-user assistant platform. I
 - richer retrieval and memory indexing
 - production-grade sandbox/container enforcement
 - sub-agent orchestration
-- operational observability and hardening
+- full production telemetry backends and alerting integrations
 
 ### Who should read this
 
@@ -71,6 +73,7 @@ That means the project keeps routing, session identity, policy decisions, persis
 - Tool registry and policy layer: controls which tools are visible and executable
 - Outbound dispatcher: parses directives, chunks text, applies channel capability rules, and records delivery attempts
 - Channel adapters: thin transport-specific send interfaces for `webchat`, `slack`, and `telegram`
+- Observability layer: emits structured events, redacts sensitive fields, classifies failures, and supports diagnostics queries
 - Database: stores sessions, messages, approvals, artifacts, runs, and audits
 - Node runner: isolated internal execution boundary for remote command execution
 - Sandbox service: resolves sandbox profile and workspace rules per agent/run
@@ -118,7 +121,7 @@ sequenceDiagram
     Gateway->>DB: append user message
     Gateway->>DB: append canonical attachment inputs if present
     Gateway->>DB: create or reuse execution_run
-    Gateway-->>Client: 202 Accepted + session_id + run_id
+    Gateway-->>Client: 202 Accepted + session_id + run_id + trace_id
     Worker->>DB: claim queued run
     Worker->>DB: normalize attachments to terminal states
     Worker->>Runtime: execute assistant turn
@@ -126,6 +129,7 @@ sequenceDiagram
     Worker->>DB: create outbound delivery records and attempts
     Worker->>Channel: send chunked text and bounded media instructions
     Worker->>DB: mark run terminal state
+    Note over Gateway,Worker: health, readiness, and diagnostics now expose correlated operational state
 ```
 
 ### Execution architecture in more detail
@@ -135,12 +139,21 @@ sequenceDiagram
 The gateway is the main API service. It currently exposes:
 
 - `GET /health`
+- `GET /health/live`
+- `GET /health/ready`
 - `POST /inbound/message`
 - `GET /sessions/{session_id}`
 - `GET /sessions/{session_id}/messages`
 - `GET /sessions/{session_id}/governance/pending`
 - `GET /runs/{run_id}`
 - `GET /sessions/{session_id}/runs`
+- `GET /diagnostics/runs`
+- `GET /diagnostics/runs/{run_id}`
+- `GET /diagnostics/sessions/{session_id}/continuity`
+- `GET /diagnostics/outbox-jobs`
+- `GET /diagnostics/node-executions`
+- `GET /diagnostics/deliveries`
+- `GET /diagnostics/attachments`
 
 Its responsibilities are:
 
@@ -149,8 +162,10 @@ Its responsibilities are:
 - claim idempotency records
 - persist inbound transcript messages
 - persist canonical inbound attachment references
-- create durable execution runs
+- create durable execution runs with stable per-run correlation
 - return quickly with `202 Accepted`
+
+The gateway now also owns the default operator-facing read boundary for service health and diagnostics. In practical terms, `GET /health/live` is the cheap process check, `GET /health/ready` is the deployment-readiness check, and `/diagnostics/*` routes are authenticated inspection surfaces for operators or internal services.
 
 #### Worker and async runs
 
@@ -162,6 +177,7 @@ After the gateway accepts work, the worker becomes responsible for execution. Th
 - invokes the assistant runtime
 - dispatches outbound text and media after the assistant turn completes
 - persists results, errors, and diagnostics
+- preserves the parent run `trace_id` when follow-on work creates additional operational records
 
 #### Assistant runtime
 
@@ -198,6 +214,8 @@ The platform keeps transcript history as the main source of truth. It also suppo
 
 This lets the system inspect how context was assembled for each turn and lays the groundwork for future summarization and retrieval workflows.
 
+With Spec 008, continuity is also easier to inspect operationally. Developers can now use diagnostics to see whether context assembly degraded, whether outbox follow-up work is pending or failed, and how recent runs for a session behaved without manually reconstructing the state from raw SQL alone.
+
 #### Channels, chunking, and media handling
 
 The system now includes a shared outbound delivery layer for three supported channel kinds in this phase:
@@ -223,6 +241,8 @@ This is an important distinction for both non-developers and developers: the sys
 For privileged or host-execution scenarios, the project introduces a separate internal service boundary called the node runner. The gateway and worker construct signed execution requests; the node runner independently verifies and enforces policy before executing.
 
 This separation is important because it prevents the main application path from being the same process that directly performs privileged execution.
+
+Spec 008 builds on that separation by making node execution easier to trace. Node execution audits now participate in the same broader run-correlation model, so operators can connect a privileged execution attempt back to the parent assistant run more directly.
 
 ### Internal service diagram
 
@@ -294,6 +314,8 @@ The database currently stores the system's durable state in tables such as:
 - `outbox_jobs`
 - `context_manifests`
 
+Several of these records now also carry observability metadata such as `trace_id`, failure classification, or degraded-state fields. That is important because the platform's diagnostics are built on canonical durable records, not on a separate shadow state system.
+
 ### Current implementation boundaries
 
 Implemented now:
@@ -309,6 +331,10 @@ Implemented now:
 - append-only outbound delivery auditing for `webchat`, `slack`, and `telegram`
 - signed internal node-runner requests
 - audit persistence for remote execution
+- stable run correlation with `trace_id`
+- authenticated diagnostics for runs, continuity, outbox jobs, node executions, deliveries, and attachments
+- structured health and readiness surfaces
+- structured operator-facing failure visibility and redaction
 
 Planned or partial:
 
@@ -316,7 +342,8 @@ Planned or partial:
 - retrieval indexing and retrieval-assisted context assembly
 - production transport API integrations beyond the current thin channel adapters
 - stronger production sandbox isolation
-- richer operator diagnostics and presence surfaces
+- richer metrics exporters, tracing backends, and alerting integrations
+- presence or real-time end-user activity surfaces
 
 ## 3. Setup
 
@@ -368,6 +395,17 @@ Key variables include:
 - `PYTHON_CLAW_NODE_RUNNER_SIGNING_KEY_ID`
 - `PYTHON_CLAW_NODE_RUNNER_SIGNING_SECRET`
 - `PYTHON_CLAW_NODE_RUNNER_ALLOWED_EXECUTABLES`
+- `PYTHON_CLAW_DIAGNOSTICS_ADMIN_BEARER_TOKEN`
+- `PYTHON_CLAW_DIAGNOSTICS_INTERNAL_SERVICE_TOKEN`
+- `PYTHON_CLAW_HEALTH_READY_REQUIRES_AUTH`
+- `PYTHON_CLAW_OBSERVABILITY_LOG_CONTENT_PREVIEW`
+- `PYTHON_CLAW_OBSERVABILITY_LOG_CONTENT_PREVIEW_CHARS`
+- `PYTHON_CLAW_DIAGNOSTICS_PAGE_DEFAULT_LIMIT`
+- `PYTHON_CLAW_DIAGNOSTICS_PAGE_MAX_LIMIT`
+- `PYTHON_CLAW_EXECUTION_RUN_STALE_AFTER_SECONDS`
+- `PYTHON_CLAW_OUTBOX_JOB_STALE_AFTER_SECONDS`
+- `PYTHON_CLAW_OUTBOUND_DELIVERY_STALE_AFTER_SECONDS`
+- `PYTHON_CLAW_NODE_EXECUTION_STALE_AFTER_SECONDS`
 
 Docker-related variables include:
 
@@ -381,6 +419,14 @@ The default local database URL is:
 
 ```text
 postgresql+psycopg://openassistant:openassistant@localhost:5432/openassistant
+```
+
+For local diagnostics and readiness testing, you will usually also want to set explicit tokens in `.env`, for example:
+
+```text
+PYTHON_CLAW_DIAGNOSTICS_ADMIN_BEARER_TOKEN=change-me
+PYTHON_CLAW_DIAGNOSTICS_INTERNAL_SERVICE_TOKEN=change-me-internal
+PYTHON_CLAW_HEALTH_READY_REQUIRES_AUTH=true
 ```
 
 ### Step 3: Start local infrastructure
@@ -412,7 +458,7 @@ Apply the schema with:
 uv run alembic upgrade head
 ```
 
-This creates the currently migrated database tables needed by the gateway, queueing, governance, media normalization, outbound delivery auditing, and node-runner flows.
+This creates the currently migrated database tables needed by the gateway, queueing, governance, media normalization, outbound delivery auditing, node-runner flows, and observability metadata used by diagnostics.
 
 ### Step 5: Start the gateway API
 
@@ -424,6 +470,14 @@ The gateway will be available at:
 
 ```text
 http://127.0.0.1:8000
+```
+
+Once the gateway is running, the most useful operator checks are:
+
+```bash
+curl http://127.0.0.1:8000/health/live
+curl http://127.0.0.1:8000/health/ready -H 'Authorization: Bearer change-me'
+curl http://127.0.0.1:8000/diagnostics/runs -H 'Authorization: Bearer change-me'
 ```
 
 ### Step 6: Start the node runner when working on remote execution
@@ -449,10 +503,10 @@ PY
 For local development, the usual flow is:
 
 1. Send an inbound message to the gateway
-2. Receive a `run_id`
+2. Receive a `run_id` and `trace_id`
 3. Run the worker pass
-4. Inspect the session messages, attachment state, and run state
-5. If relevant, inspect outbound delivery records in the database
+4. Inspect the session messages, attachment state, run state, and diagnostics routes
+5. If relevant, inspect outbound delivery or node execution records in the database
 
 ### Step 8: Run tests
 
@@ -501,11 +555,20 @@ The primary write entrypoint is:
 The main read/inspection entrypoints are:
 
 - `GET /health`
+- `GET /health/live`
+- `GET /health/ready`
 - `GET /sessions/{session_id}`
 - `GET /sessions/{session_id}/messages`
 - `GET /sessions/{session_id}/governance/pending`
 - `GET /runs/{run_id}`
 - `GET /sessions/{session_id}/runs`
+- `GET /diagnostics/runs`
+- `GET /diagnostics/runs/{run_id}`
+- `GET /diagnostics/sessions/{session_id}/continuity`
+- `GET /diagnostics/outbox-jobs`
+- `GET /diagnostics/node-executions`
+- `GET /diagnostics/deliveries`
+- `GET /diagnostics/attachments`
 
 The internal execution boundary for remote execution is:
 
@@ -513,6 +576,12 @@ The internal execution boundary for remote execution is:
 - `GET /internal/node/exec/{request_id}`
 
 These node-runner endpoints are internal system endpoints, not general external client APIs.
+
+The practical distinction between these surfaces is:
+
+- session and run routes are narrower product-facing read APIs
+- health routes are service-supervision endpoints
+- diagnostics routes are operator-facing inspection endpoints with explicit authorization
 
 ### Example: connect through the gateway
 
@@ -575,6 +644,7 @@ Expected response shape:
   "session_id": "session-uuid",
   "message_id": 1,
   "run_id": "run-uuid",
+  "trace_id": "run-trace-id",
   "status": "queued",
   "dedupe_status": "accepted"
 }
@@ -597,6 +667,15 @@ Read run diagnostics:
 ```bash
 curl http://127.0.0.1:8000/runs/<run_id>
 curl http://127.0.0.1:8000/sessions/<session_id>/runs
+```
+
+Read operator diagnostics:
+
+```bash
+curl http://127.0.0.1:8000/health/live
+curl http://127.0.0.1:8000/health/ready -H "Authorization: Bearer change-me"
+curl http://127.0.0.1:8000/diagnostics/runs -H "Authorization: Bearer change-me"
+curl http://127.0.0.1:8000/diagnostics/runs/<run_id> -H "Authorization: Bearer change-me"
 ```
 
 ### Example: use the `webchat` adapter locally

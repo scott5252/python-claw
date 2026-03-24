@@ -55,6 +55,7 @@ class InboundMessageResponse(BaseModel):
     run_id: str
     status: str
     dedupe_status: Literal["accepted", "duplicate"]
+    trace_id: str
 
 
 class ExecutionRunResponse(BaseModel):
@@ -75,6 +76,9 @@ class ExecutionRunResponse(BaseModel):
     worker_id: str | None
     last_error: str | None
     trace_id: str | None
+    correlation_id: str | None = None
+    degraded_reason: str | None = None
+    failure_category: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -128,3 +132,44 @@ class PendingApprovalResponse(BaseModel):
     next_action: str
     proposed_at: datetime
     pending_approval_at: datetime | None
+
+
+class DependencyStatusResponse(BaseModel):
+    name: str
+    status: str
+    detail: str | None = None
+
+
+class HealthResponse(BaseModel):
+    status: str
+    service: str
+    checks: list[DependencyStatusResponse] = Field(default_factory=list)
+
+
+class DiagnosticsPageResponse(BaseModel):
+    items: list[dict[str, Any]]
+    limit: int
+    next_cursor: str | None = None
+    has_more: bool
+    capability_status: str = "enabled"
+
+
+class RunDiagnosticsResponse(BaseModel):
+    run: ExecutionRunResponse
+    lane_lease: dict[str, Any] | None = None
+    global_lease: dict[str, Any] | None = None
+    recent_failures: list[str] = Field(default_factory=list)
+    correlated_artifacts: dict[str, Any] = Field(default_factory=dict)
+    capability_status: str = "enabled"
+
+
+class SessionContinuityDiagnosticsResponse(BaseModel):
+    session_id: str
+    capability_status: str
+    summary_snapshot_count: int = 0
+    latest_summary_created_at: datetime | None = None
+    context_manifest_count: int = 0
+    latest_manifest_degraded: bool | None = None
+    pending_outbox_jobs: int = 0
+    failed_outbox_jobs: int = 0
+    recent_run_statuses: list[str] = Field(default_factory=list)

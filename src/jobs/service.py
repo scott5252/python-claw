@@ -5,14 +5,19 @@ import socket
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
+import logging
 
 from sqlalchemy.orm import Session
 
 from src.graphs.assistant_graph import AssistantGraph
 from src.jobs.repository import JobsRepository
+from src.observability.failures import classify_failure
+from src.observability.logging import build_event, emit_event
 from src.sessions.concurrency import SessionConcurrencyService
 from src.sessions.repository import SessionRepository
+from src.config.settings import Settings
 
+logger = logging.getLogger(__name__)
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -42,9 +47,11 @@ class RunExecutionService:
     max_backoff_seconds: int
     media_processor: object | None = None
     outbound_dispatcher: object | None = None
+    settings: Settings | None = None
 
     def process_next_run(self, db: Session, *, worker_id: str | None = None) -> str | None:
         resolved_worker_id = worker_id or f"{socket.gethostname()}-worker"
+        settings = self.settings or Settings(database_url="sqlite://")
         claim = self.jobs_repository.claim_next_eligible_run(
             db,
             worker_id=resolved_worker_id,
@@ -56,6 +63,20 @@ class RunExecutionService:
 
         run = claim.run
         try:
+            emit_event(
+                logger,
+                event=build_event(
+                    settings=settings,
+                    event_name="execution_run.claimed",
+                    component="worker",
+                    status="claimed",
+                    trace_id=run.trace_id,
+                    session_id=run.session_id,
+                    execution_run_id=run.id,
+                    message_id=run.message_id,
+                    agent_id=run.agent_id,
+                ),
+            )
             self.jobs_repository.mark_running(db, run_id=run.id, worker_id=resolved_worker_id)
             self.concurrency_service.refresh_lane(
                 db,
@@ -107,13 +128,29 @@ class RunExecutionService:
                 session_id=run.session_id,
                 message_id=message.id,
                 degraded=state.degraded,
+                trace_id=run.trace_id,
             )
             self.jobs_repository.complete_run(db, run_id=run.id, worker_id=resolved_worker_id)
+            emit_event(
+                logger,
+                event=build_event(
+                    settings=settings,
+                    event_name="execution_run.completed",
+                    component="worker",
+                    status="completed",
+                    trace_id=run.trace_id,
+                    session_id=run.session_id,
+                    execution_run_id=run.id,
+                    message_id=run.message_id,
+                    agent_id=run.agent_id,
+                ),
+            )
             if run.trigger_kind == "scheduler_fire":
                 self.jobs_repository.mark_fire_by_key(db, fire_key=run.trigger_ref, status="completed")
             return run.id
         except Exception as exc:
             decision = self.failure_classifier.classify(exc)
+            run.failure_category = classify_failure(exc=exc)
             if decision.retryable:
                 updated_run = self.jobs_repository.retry_run(
                     db,
@@ -122,6 +159,7 @@ class RunExecutionService:
                     error=decision.reason,
                     backoff_seconds=self._backoff_seconds(run.attempt_count),
                 )
+                updated_run.failure_category = classify_failure(exc=exc)
                 if run.trigger_kind == "scheduler_fire" and updated_run.status == "dead_letter":
                     self.jobs_repository.mark_fire_by_key(
                         db,
@@ -130,12 +168,13 @@ class RunExecutionService:
                         error=decision.reason,
                     )
             else:
-                self.jobs_repository.fail_run(
+                failed_run = self.jobs_repository.fail_run(
                     db,
                     run_id=run.id,
                     worker_id=resolved_worker_id,
                     error=decision.reason,
                 )
+                failed_run.failure_category = classify_failure(exc=exc)
                 if run.trigger_kind == "scheduler_fire":
                     self.jobs_repository.mark_fire_by_key(
                         db,
@@ -143,6 +182,23 @@ class RunExecutionService:
                         status="failed",
                         error=decision.reason,
                     )
+            emit_event(
+                logger,
+                level=logging.ERROR,
+                event=build_event(
+                    settings=settings,
+                    event_name="execution_run.failed",
+                    component="worker",
+                    status="failed",
+                    trace_id=run.trace_id,
+                    session_id=run.session_id,
+                    execution_run_id=run.id,
+                    message_id=run.message_id,
+                    agent_id=run.agent_id,
+                    error=str(exc),
+                    failure_category=classify_failure(exc=exc),
+                ),
+            )
             return run.id
         finally:
             self.concurrency_service.release_lane(
@@ -167,6 +223,7 @@ class RunExecutionService:
         session_id: str,
         message_id: int,
         degraded: bool,
+        trace_id: str | None = None,
     ) -> None:
         self.session_repository.enqueue_outbox_job(
             db,
@@ -174,6 +231,7 @@ class RunExecutionService:
             message_id=message_id,
             job_kind="summary_generation",
             job_dedupe_key=f"summary_generation:{session_id}:{message_id}",
+            trace_id=trace_id,
         )
         self.session_repository.enqueue_outbox_job(
             db,
@@ -181,6 +239,7 @@ class RunExecutionService:
             message_id=message_id,
             job_kind="retrieval_index",
             job_dedupe_key=f"retrieval_index:{session_id}:{message_id}",
+            trace_id=trace_id,
         )
         if degraded:
             self.session_repository.enqueue_outbox_job(
@@ -189,6 +248,7 @@ class RunExecutionService:
                 message_id=message_id,
                 job_kind="continuity_repair",
                 job_dedupe_key=f"continuity_repair:{session_id}:{message_id}",
+                trace_id=trace_id,
             )
 
 

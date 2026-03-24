@@ -309,6 +309,7 @@ class SessionRepository:
         *,
         session_id: str,
         execution_run_id: str,
+        trace_id: str | None,
         outbound_intent_id: int,
         channel_kind: str,
         channel_account_id: str,
@@ -338,6 +339,7 @@ class SessionRepository:
             reply_to_external_id=reply_to_external_id,
             attachment_id=attachment_id,
             status="pending",
+            trace_id=trace_id,
         )
         db.add(record)
         try:
@@ -360,6 +362,7 @@ class SessionRepository:
         db: Session,
         *,
         outbound_delivery_id: int,
+        trace_id: str | None,
         provider_idempotency_key: str | None,
     ) -> OutboundDeliveryAttemptRecord:
         last_attempt = db.scalar(
@@ -375,6 +378,7 @@ class SessionRepository:
             attempt_number=1 if last_attempt is None else last_attempt.attempt_number + 1,
             provider_idempotency_key=provider_idempotency_key,
             status="started",
+            trace_id=trace_id,
         )
         db.add(attempt)
         db.flush()
@@ -396,6 +400,7 @@ class SessionRepository:
         delivery.provider_message_id = provider_message_id
         delivery.error_code = None
         delivery.error_detail = None
+        delivery.failure_category = None
         attempt.status = "sent"
         attempt.provider_message_id = provider_message_id
         attempt.error_code = None
@@ -418,6 +423,7 @@ class SessionRepository:
         delivery.status = "failed"
         delivery.error_code = error_code
         delivery.error_detail = error_detail
+        delivery.failure_category = "delivery_failed"
         attempt.status = "failed"
         attempt.error_code = error_code
         attempt.error_detail = error_detail
@@ -1059,6 +1065,7 @@ class SessionRepository:
         message_id: int,
         job_kind: str,
         job_dedupe_key: str,
+        trace_id: str | None = None,
         available_at: datetime | None = None,
     ) -> OutboxJobRecord:
         existing = db.scalar(select(OutboxJobRecord).where(OutboxJobRecord.job_dedupe_key == job_dedupe_key))
@@ -1072,6 +1079,7 @@ class SessionRepository:
             status="pending",
             available_at=available_at or datetime.now(timezone.utc),
             attempt_count=0,
+            trace_id=trace_id,
         )
         db.add(record)
         db.flush()
@@ -1109,6 +1117,7 @@ class SessionRepository:
             raise LookupError("outbox job not found")
         job.status = "completed"
         job.last_error = None
+        job.failure_category = None
         db.flush()
         return job
 
@@ -1125,6 +1134,7 @@ class SessionRepository:
             raise LookupError("outbox job not found")
         job.status = "failed"
         job.last_error = error
+        job.failure_category = "unexpected_internal"
         if available_at is not None:
             job.available_at = available_at
         db.flush()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
+from apps.node_runner.api.health import router as health_router
 from apps.node_runner.api.internal import router as internal_router
 from apps.node_runner.executor import NodeRunnerExecutor
 from apps.node_runner.policy import NodeRunnerPolicy
@@ -39,6 +40,7 @@ def create_app(
         audit_repository=audit_repository,
     )
     app.state.node_runner_executor = NodeRunnerExecutor(audit_repository=audit_repository)
+    app.include_router(health_router)
     app.include_router(internal_router)
     return app
 
