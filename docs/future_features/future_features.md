@@ -46,6 +46,41 @@ The future features fit into four major groups:
 
 These are the features users would most directly notice.
 
+## 3.0 Chat Interfaces
+
+One common question is whether the future roadmap supports a real chat interface like Telegram.
+
+The answer is yes.
+
+The current architecture already has the right shape for chat interfaces because it includes:
+
+- inbound message acceptance
+- session routing
+- outbound delivery
+- channel adapter boundaries
+
+That means the platform is already structured to support interfaces such as:
+
+- Telegram
+- Slack
+- web chat
+- future chat-style channels
+
+What is missing today is not the overall architecture. What is missing is the production-grade implementation behind those channel boundaries.
+
+The most important future features for a real Telegram-like or Slack-like experience are:
+
+- real channel integrations
+- true streaming or near-real-time updates
+- richer outbound content
+- attachment understanding
+- optional human handoff
+
+In practical terms:
+
+- `telegram` support is conceptually part of the roadmap already
+- but it becomes a true user-facing chat product only after the transport adapter grows from a thin local implementation into a real provider integration
+
 ## 3.1 Real LLM Integration
 
 Current state:
