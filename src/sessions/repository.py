@@ -17,6 +17,7 @@ from src.db.models import (
     ResourceApprovalRecord,
     ResourceProposalRecord,
     ResourceVersionRecord,
+    ScheduledJobRecord,
     SessionArtifactRecord,
     SessionRecord,
     SummarySnapshotRecord,
@@ -54,6 +55,20 @@ class SessionRepository:
 
     def get_session(self, db: Session, session_id: str) -> SessionRecord | None:
         return db.get(SessionRecord, session_id)
+
+    def get_session_channel_kind(self, db: Session, *, session_id: str) -> str:
+        session = self.get_session(db, session_id)
+        if session is None:
+            raise RuntimeError("session not found")
+        return session.channel_kind
+
+    def get_message(self, db: Session, *, message_id: int | None) -> MessageRecord | None:
+        if message_id is None:
+            return None
+        return db.get(MessageRecord, message_id)
+
+    def get_scheduled_job_by_key(self, db: Session, *, job_key: str) -> ScheduledJobRecord | None:
+        return db.scalar(select(ScheduledJobRecord).where(ScheduledJobRecord.job_key == job_key))
 
     def append_message(
         self,

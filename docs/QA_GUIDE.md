@@ -7,6 +7,8 @@ Right now it covers how to test the behaviors delivered by:
 - Spec 001: gateway sessions
 - Spec 002: runtime tools
 - Spec 003: capability governance
+- Spec 004: context continuity
+- Spec 005: async queueing, workers, scheduler submission, and run diagnostics
 
 The emphasis is on running the server, interacting with it through HTTP, and verifying both API behavior and database state.
 
@@ -18,8 +20,13 @@ The current HTTP surface is:
 - `POST /inbound/message`
 - `GET /sessions/{session_id}`
 - `GET /sessions/{session_id}/messages`
+- `GET /sessions/{session_id}/governance/pending`
+- `GET /runs/{run_id}`
+- `GET /sessions/{session_id}/runs`
 
 The main write path is always `POST /inbound/message`.
+
+As of Spec 005, that write path is accept-and-queue. The gateway returns after the inbound message and queued run are durably stored. Assistant execution happens later when a worker claims the run.
 
 ## Before You Start
 
@@ -47,7 +54,21 @@ Default local address:
 http://127.0.0.1:8000
 ```
 
-### 3. Optional: open a database shell
+### 3. Keep a worker command ready
+
+Most specs now need a worker pass after `POST /inbound/message`. The simplest manual command is:
+
+```bash
+uv run python - <<'PY'
+from apps.worker.jobs import run_once
+
+print(run_once())
+PY
+```
+
+Run it once per queued turn, or repeat it until it prints `None`.
+
+### 4. Optional: open a database shell
 
 If you are using the default local PostgreSQL container:
 
@@ -99,10 +120,12 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
 
 Expected result:
 
-- HTTP `201`
+- HTTP `202`
 - JSON with:
   - `session_id`
   - `message_id`
+  - `run_id`
+  - `status: "queued"`
   - `dedupe_status: "accepted"`
 
 ### Scenario 2: Replay the same inbound message
@@ -124,10 +147,11 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
 
 Expected result:
 
-- HTTP `201`
+- HTTP `202`
 - `dedupe_status: "duplicate"`
 - same `session_id` as the first call
 - same `message_id` as the first call
+- same `run_id` as the first call
 
 ### Scenario 3: Reuse the same session with a new inbound message
 
@@ -148,9 +172,10 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
 
 Expected result:
 
-- HTTP `201`
+- HTTP `202`
 - same `session_id` as before
 - a new `message_id`
+- a new `run_id`
 
 ### Scenario 4: Inspect the session and transcript
 
@@ -169,8 +194,8 @@ curl "http://127.0.0.1:8000/sessions/<session_id>/messages?limit=20"
 Expected result:
 
 - the session shows the normalized routing identity
-- messages come back in append order
-- transcript includes both user and assistant rows
+- before worker execution, transcript only includes inbound user rows
+- after running the worker, transcript includes both user and assistant rows
 
 ### Scenario 5: Verify invalid routing is rejected
 
@@ -255,8 +280,9 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
 
 Expected result:
 
-- HTTP `201`
-- transcript gets a final assistant message like `Received: how are you`
+- HTTP `202`
+- response `status` is initially `queued`
+- after running the worker once, transcript gets a final assistant message like `Received: how are you`
 - no tool artifacts for this turn
 
 ### Scenario 2: Safe local tool execution with `echo`
@@ -276,8 +302,8 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
 
 Expected result:
 
-- HTTP `201`
-- assistant response content should be `runtime hello`
+- HTTP `202`
+- after running the worker once, assistant response content should be `runtime hello`
 - runtime artifacts should show tool proposal and tool result
 - audit rows should show attempt and result
 
@@ -337,8 +363,8 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
 
 Expected result:
 
-- HTTP `201`
-- assistant message says approval is required
+- HTTP `202`
+- after running the worker once, assistant message says approval is required
 - assistant message includes a proposal id
 - no outbound intent is created yet
 - no governed tool execution happens yet
@@ -418,8 +444,8 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
 
 Expected result:
 
-- HTTP `201`
-- assistant confirms approval
+- HTTP `202`
+- after running the worker once, assistant confirms approval
 - assistant says the original request can now be retried
 
 ### Scenario 3: Retry the original governed request
@@ -439,8 +465,8 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
 
 Expected result:
 
-- HTTP `201`
-- governed capability is now allowed
+- HTTP `202`
+- after running the worker once, governed capability is now allowed
 - assistant response should be `Prepared outbound message: hello channel`
 - an outbound intent should now exist
 - tool artifacts and audit rows should exist for this successful runtime call
@@ -462,8 +488,8 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
 
 Expected result:
 
-- HTTP `201`
-- assistant confirms revocation
+- HTTP `202`
+- after running the worker once, assistant confirms revocation
 
 ### Scenario 5: Retry after revocation
 
@@ -482,8 +508,8 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
 
 Expected result:
 
-- HTTP `201`
-- system should require approval again
+- HTTP `202`
+- after running the worker once, system should require approval again
 - a new approval wait should be visible in the assistant response
 - no governed action should execute after revocation
 
@@ -569,9 +595,9 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
 
 Expected result:
 
-- HTTP `201`
-- response includes `session_id` and `message_id`
-- transcript includes the user row and a final assistant row
+- HTTP `202`
+- response includes `session_id`, `message_id`, and `run_id`
+- after running the worker once, transcript includes the user row and a final assistant row
 
 Inspect the latest manifest and jobs for that session:
 
@@ -615,6 +641,8 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
     "peer_id": "peer-4"
   }'
 ```
+
+Then run the queue worker until it prints `None`, so those queued turns complete before the outbox worker runs.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/inbound/message \
@@ -693,6 +721,8 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
   }'
 ```
 
+Run the queue worker until it prints `None`, then fetch the transcript.
+
 ```bash
 curl -X POST http://127.0.0.1:8000/inbound/message \
   -H 'Content-Type: application/json' \
@@ -714,7 +744,7 @@ curl "http://127.0.0.1:8000/sessions/<session_id>/messages?limit=20"
 
 Expected result:
 
-- HTTP `201` for both inbound requests
+- HTTP `202` for both inbound requests
 - the final assistant message for the second turn says:
   - `I could not safely fit the required session context into the model window for this turn. Continuity repair has been queued.`
 
@@ -769,7 +799,8 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
 
 What to verify:
 
-- the turn still succeeds with HTTP `201`
+- the turn still succeeds with HTTP `202`
+- after running the queue worker once, the assistant response appears in transcript history
 - transcript history is still intact through `GET /sessions/<session_id>/messages`
 - a new `context_manifests` row is created for the latest turn
 - new post-commit `outbox_jobs` rows are created again
@@ -823,8 +854,8 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
 
 Expected result:
 
-- HTTP `201`
-- the governed request still succeeds instead of falling back to a new approval wait
+- HTTP `202`
+- after running the queue worker once, the governed request still succeeds instead of falling back to a new approval wait
 - the assistant response should again be `Prepared outbound message: hello channel`
 
 Inspect the rebuilt approval state:
@@ -848,6 +879,386 @@ What to verify:
 - approval state was rebuilt from persisted governance artifacts
 - the replay does not create conflicting approvals for the same exact approved action
 - approval visibility remains fail-closed for anything that was not actually approved
+
+## Spec 005: Async Queueing, Workers, Scheduler Submission, and Run Diagnostics
+
+Spec 005 moves graph execution out of the request thread and into durable `execution_runs` rows processed by a worker.
+
+Current implementation notes:
+
+- `POST /inbound/message` now returns `202 Accepted`
+- the response includes `run_id` and the initial run `status`
+- assistant output does not appear until a worker claims and executes the queued run
+- `GET /runs/{run_id}` and `GET /sessions/{session_id}/runs` are the main read-only diagnostics
+- scheduler fires create canonical user-role trigger messages with `sender_id = scheduler:<job_key>`
+
+### Scenario 1: Verify accept-and-queue before worker execution
+
+Send a plain inbound message in a fresh session:
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel_kind": "slack",
+    "channel_account_id": "acct-7",
+    "external_message_id": "msg-async-001",
+    "sender_id": "sender-7",
+    "content": "hello from async qa",
+    "peer_id": "peer-7"
+  }'
+```
+
+Expected result before any worker runs:
+
+- HTTP `202`
+- response includes `session_id`, `message_id`, `run_id`, `status`, and `dedupe_status`
+- `status` is `queued`
+- transcript contains the inbound user row but not the assistant reply yet
+
+Check the run endpoints:
+
+```bash
+curl http://127.0.0.1:8000/runs/<run_id>
+```
+
+```bash
+curl http://127.0.0.1:8000/sessions/<session_id>/runs
+```
+
+Expected result:
+
+- `GET /runs/<run_id>` returns the same run in `queued`
+- `GET /sessions/<session_id>/runs` includes the run in descending creation order
+
+Inspect the durable queue state:
+
+```sql
+select id, session_id, message_id, trigger_kind, trigger_ref, lane_key, status, attempt_count, max_attempts, available_at, claimed_at, started_at, finished_at, worker_id, last_error, created_at
+from execution_runs
+where id = '<run_id>';
+```
+
+```sql
+select id, status, channel_kind, channel_account_id, external_message_id, session_id, message_id
+from inbound_dedupe
+where external_message_id = 'msg-async-001';
+```
+
+What to verify:
+
+- the inbound user message and the queued run both exist before execution
+- the run uses `trigger_kind = 'inbound_message'`
+- `trigger_ref` matches the persisted inbound `message_id`
+- the dedupe row is finalized against that same `session_id` and `message_id`
+
+### Scenario 2: Run the worker and verify terminal completion
+
+From the project root, run the worker once:
+
+```bash
+uv run python - <<'PY'
+from apps.worker.jobs import run_once
+
+print(run_once())
+PY
+```
+
+Then fetch the run and transcript again:
+
+```bash
+curl http://127.0.0.1:8000/runs/<run_id>
+```
+
+```bash
+curl "http://127.0.0.1:8000/sessions/<session_id>/messages?limit=20"
+```
+
+Expected result:
+
+- the worker prints the processed `run_id`
+- the run becomes `completed`
+- transcript now includes the assistant response for the turn
+
+Inspect queue side effects:
+
+```sql
+select id, status, attempt_count, claimed_at, started_at, finished_at, worker_id, last_error
+from execution_runs
+where id = '<run_id>';
+```
+
+```sql
+select lane_key, execution_run_id, worker_id, lease_expires_at
+from session_run_leases
+where lane_key = '<session_id>';
+```
+
+```sql
+select slot_key, execution_run_id, worker_id, lease_expires_at
+from global_run_leases
+order by slot_key asc;
+```
+
+What to verify:
+
+- `claimed_at`, `started_at`, and `finished_at` are populated on the run
+- `worker_id` is populated on the completed run
+- `last_error` remains `NULL` on success
+- session and global lease rows were released after completion
+
+### Scenario 3: Verify duplicate replay reuses the same queued run
+
+Replay the exact same inbound request from Scenario 1:
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel_kind": "slack",
+    "channel_account_id": "acct-7",
+    "external_message_id": "msg-async-001",
+    "sender_id": "sender-7",
+    "content": "hello from async qa",
+    "peer_id": "peer-7"
+  }'
+```
+
+Expected result:
+
+- HTTP `202`
+- `dedupe_status` is `duplicate`
+- `run_id` matches the original run
+- no second logical run is created
+
+Verify in SQL:
+
+```sql
+select id, trigger_kind, trigger_ref, status
+from execution_runs
+where trigger_kind = 'inbound_message'
+  and trigger_ref = '<message_id>';
+```
+
+What to verify:
+
+- exactly one row exists for that trigger identity
+- replay resolves to the existing run instead of creating a second row
+
+### Scenario 4: Verify same-session FIFO lane behavior
+
+Send two messages quickly to the same session before running the worker:
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel_kind": "slack",
+    "channel_account_id": "acct-8",
+    "external_message_id": "msg-lane-001",
+    "sender_id": "sender-8",
+    "content": "first",
+    "peer_id": "peer-8"
+  }'
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel_kind": "slack",
+    "channel_account_id": "acct-8",
+    "external_message_id": "msg-lane-002",
+    "sender_id": "sender-8",
+    "content": "second",
+    "peer_id": "peer-8"
+  }'
+```
+
+Inspect session runs before worker execution:
+
+```bash
+curl http://127.0.0.1:8000/sessions/<session_id>/runs
+```
+
+Then run the worker once, inspect again, and run it a second time.
+
+What to verify:
+
+- both requests return `202`
+- both runs share the same `lane_key`
+- after the first worker pass, the earlier run is `completed` and the later run is still `queued`
+- after the second worker pass, the second run completes
+- transcript order stays `first`, assistant reply to first, `second`, assistant reply to second
+
+Useful query:
+
+```sql
+select id, message_id, lane_key, status, available_at, created_at
+from execution_runs
+where session_id = '<session_id>'
+order by created_at asc, id asc;
+```
+
+### Scenario 5: Verify global concurrency cap blocks an additional claim
+
+Restart the gateway with a one-slot global cap:
+
+```bash
+PYTHON_CLAW_EXECUTION_RUN_GLOBAL_CONCURRENCY=1 uv run uvicorn apps.gateway.main:app --reload
+```
+
+Create two different sessions by sending one message to each:
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel_kind": "slack",
+    "channel_account_id": "acct-9",
+    "external_message_id": "msg-cap-001",
+    "sender_id": "sender-9a",
+    "content": "first session",
+    "peer_id": "peer-9a"
+  }'
+```
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel_kind": "slack",
+    "channel_account_id": "acct-9",
+    "external_message_id": "msg-cap-002",
+    "sender_id": "sender-9b",
+    "content": "second session",
+    "peer_id": "peer-9b"
+  }'
+```
+
+Run the worker once and inspect:
+
+```sql
+select slot_key, execution_run_id, worker_id, lease_expires_at
+from global_run_leases
+order by slot_key asc;
+```
+
+```sql
+select id, session_id, status, worker_id, created_at
+from execution_runs
+where session_id in ('<session_id_1>', '<session_id_2>')
+order by created_at asc;
+```
+
+What to verify:
+
+- only one global lease slot exists while one run is active
+- only one of the two runs advances on the first worker pass
+- after another worker pass, the remaining queued run can execute
+
+### Scenario 6: Verify scheduler fire submission and replay safety
+
+Create a scheduled job for an existing session:
+
+```sql
+insert into scheduled_jobs (
+  id,
+  job_key,
+  agent_id,
+  target_kind,
+  session_id,
+  cron_expr,
+  payload_json,
+  enabled,
+  created_at,
+  updated_at
+)
+values (
+  gen_random_uuid()::text,
+  'job-qa-1',
+  'default-agent',
+  'session',
+  '<session_id>',
+  '0 * * * *',
+  '{"prompt":"scheduled ping"}',
+  1,
+  now(),
+  now()
+);
+```
+
+Submit the same fire twice:
+
+```bash
+uv run python - <<'PY'
+from datetime import datetime, timezone
+
+from apps.worker.scheduler import submit_job_once
+
+scheduled_for = datetime(2026, 3, 23, 18, 0, tzinfo=timezone.utc)
+print(submit_job_once(job_key="job-qa-1", scheduled_for=scheduled_for))
+print(submit_job_once(job_key="job-qa-1", scheduled_for=scheduled_for))
+PY
+```
+
+Expected result:
+
+- both submissions print the same `run_id`
+- exactly one scheduler trigger message is created
+- exactly one fire row exists for that `fire_key`
+
+Inspect the scheduler state:
+
+```sql
+select id, job_key, target_kind, session_id, payload_json, enabled, last_fired_at
+from scheduled_jobs
+where job_key = 'job-qa-1';
+```
+
+```sql
+select id, scheduled_job_id, fire_key, scheduled_for, status, execution_run_id, last_error
+from scheduled_job_fires
+where fire_key = 'job-qa-1:2026-03-23T18:00:00+00:00';
+```
+
+```sql
+select id, role, content, external_message_id, sender_id, created_at
+from messages
+where session_id = '<session_id>'
+  and sender_id = 'scheduler:job-qa-1'
+order by id asc;
+```
+
+What to verify:
+
+- scheduler trigger message has `role = 'user'`
+- scheduler trigger message has `external_message_id IS NULL`
+- `sender_id` is `scheduler:job-qa-1`
+- the fire row links to the created run and remains replay-safe
+
+### Tables To Inspect For Spec 005
+
+Look at these additional tables:
+
+- `execution_runs`
+- `session_run_leases`
+- `global_run_leases`
+- `scheduled_jobs`
+- `scheduled_job_fires`
+- `messages`
+- `inbound_dedupe`
+
+## Common Failure Signals For Spec 005
+
+- `POST /inbound/message` returns success but no `execution_runs` row exists
+- duplicate replay creates a second run for the same `trigger_kind` and `trigger_ref`
+- assistant output appears before any worker executes the queued run
+- a later run in the same session completes before an earlier queued run
+- lease rows remain stuck after the run is terminal
+- global concurrency exceeds the configured cap
+- scheduler replay creates multiple trigger messages or multiple fire rows for one `fire_key`
+- run diagnostics disagree with database state
 
 ### Tables To Inspect For Spec 004
 
@@ -882,12 +1293,17 @@ If you want a clean end-to-end manual QA flow, use this order:
 6. verify Spec 003 approval flow
 7. verify Spec 003 post-approval retry flow
 8. verify Spec 003 revocation and post-revocation retry flow
+9. verify Spec 004 continuity manifests and outbox jobs
+10. verify Spec 005 accept-and-queue, worker completion, and run diagnostics
+11. verify Spec 005 same-session FIFO and global-cap behavior
+12. verify Spec 005 scheduler fire replay and transcript provenance
 
 ## Common Failure Signals
 
 These are useful signs that something is wrong:
 
 - duplicate inbound deliveries create multiple inbound `messages` rows
+- inbound requests return `202` but no queued run exists
 - a governed `send` request executes before approval
 - approval succeeds but retry still cannot bind the governed tool
 - revocation succeeds but later turns still use the old approval

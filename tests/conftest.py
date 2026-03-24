@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from apps.gateway.deps import create_run_execution_service
 from apps.gateway.main import create_app
 from src.config.settings import Settings
 from src.db.base import Base
@@ -35,9 +36,27 @@ def settings(database_url: str) -> Settings:
 
 @pytest.fixture
 def app(settings: Settings, session_manager: DatabaseSessionManager):
-    return create_app(settings=settings, session_manager=session_manager)
+    app = create_app(settings=settings, session_manager=session_manager)
+    app.state.run_execution_service = create_run_execution_service(settings)
+    return app
 
 
 @pytest.fixture
 def client(app):
     return TestClient(app)
+
+
+@pytest.fixture
+def drain_queue(app, session_manager: DatabaseSessionManager):
+    def _drain(*, max_runs: int = 10) -> list[str]:
+        processed: list[str] = []
+        for _ in range(max_runs):
+            with session_manager.session() as db:
+                run_id = app.state.run_execution_service.process_next_run(db, worker_id="test-worker")
+                db.commit()
+            if run_id is None:
+                break
+            processed.append(run_id)
+        return processed
+
+    return _drain

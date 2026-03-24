@@ -18,7 +18,35 @@ class InboundMessageRequest(BaseModel):
 class InboundMessageResponse(BaseModel):
     session_id: str
     message_id: int
+    run_id: str
+    status: str
     dedupe_status: Literal["accepted", "duplicate"]
+
+
+class ExecutionRunResponse(BaseModel):
+    id: str
+    session_id: str
+    message_id: int | None
+    agent_id: str
+    trigger_kind: str
+    trigger_ref: str
+    lane_key: str
+    status: str
+    attempt_count: int
+    max_attempts: int
+    available_at: datetime
+    claimed_at: datetime | None
+    started_at: datetime | None
+    finished_at: datetime | None
+    worker_id: str | None
+    last_error: str | None
+    trace_id: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SessionRunPageResponse(BaseModel):
+    items: list[ExecutionRunResponse]
 
 
 class SessionResponse(BaseModel):

@@ -1,9 +1,13 @@
 # Tasks 005: Async Execution, Scheduler, Queueing, and Concurrency Lanes
 
-1. Add job/run tracking schema if required by the chosen queue design.
-2. Write tests for session-lane locking and global concurrency limits.
-3. Refactor inbound endpoint to persist then enqueue work.
-4. Implement background worker entrypoint for graph execution.
-5. Implement scheduler jobs that re-enter through the gateway contract.
-6. Add duplicate-work suppression around queue retries and scheduler replays.
-7. Add integration tests for accepted/queued flow, lane contention, and scheduler parity.
+1. Write high-risk failure-first tests for transactional inbound accept-and-enqueue behavior, duplicate trigger suppression, lease-expiry steal safety, and FIFO lane ordering so a visible turn can never commit without exactly one durable queued run.
+2. Add high-risk integration tests for accepted-and-queued non-blocking delivery, same-session contention, different-session parallelism under the global cap, stale-worker recovery, scheduler replay idempotency, scheduler transcript provenance, and execution-time refresh of policy and continuity state.
+3. Create additive migrations for `execution_runs`, `session_run_leases`, `scheduled_jobs`, and `scheduled_job_fires`, including all status enums, retry metadata, ownership fields, scheduler target fields, and the required uniqueness and lookup indexes.
+4. Implement persistence models, repositories, and repository tests for create-or-get run creation by `(trigger_kind, trigger_ref)`, FIFO eligible-run claiming, durable run transitions with attempt/error metadata, lane-lease acquire or refresh or release or stale recovery, scheduler fire create-or-get, and bounded run diagnostics reads.
+5. Extend `src/config/settings.py`, `apps/gateway/deps.py`, and domain schemas so queue, lease, retry, and global-concurrency settings are worker-safe, `.env`-driven, and exposed through `202 Accepted` plus read-only diagnostics contracts.
+6. Refactor the gateway-owned inbound acceptance path so Spec 001 dedupe persistence, canonical transcript append, queued run create-or-get, and replayable response identifiers commit in one transaction before returning `202 Accepted`.
+7. Implement the durable session concurrency service that enforces one active run per `session_id`, coordinates restart-safe global-cap checks before graph invocation, and never relies on process-local locks for correctness.
+8. Implement worker claim, lease heartbeat, retry classification, deterministic backoff, terminal-state persistence, and duplicate-safe recovery in the async execution service, while preserving Spec 004 after-turn `outbox_jobs` behavior instead of folding derived-state work into `execution_runs`.
+9. Implement scheduler repositories and services that load persisted jobs, create idempotent fire records, resolve `session` and `routing_tuple` targets deterministically through the routing/session services, persist canonical scheduler trigger transcript rows with `sender_id=scheduler:{job_key}`, and enqueue through the gateway-owned contract instead of calling graph code directly.
+10. Add read-only run diagnostics for `GET /runs/{run_id}` and `GET /sessions/{session_id}/runs`, including bounded ordering guarantees and explicit coverage that no public replay, cancel, or dead-letter mutation actions are introduced in this slice.
+11. Add structured observability and audit coverage for queue acceptance, claim latency, queue age, retries, lease recovery, scheduler fire submission, terminal outcomes, and dead-letter transitions so the implementation satisfies the constitution's observable-delivery requirement.

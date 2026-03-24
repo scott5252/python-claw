@@ -16,18 +16,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/inbound", tags=["inbound"])
 
 
-@router.post("/message", response_model=InboundMessageResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/message", response_model=InboundMessageResponse, status_code=status.HTTP_202_ACCEPTED)
 def post_inbound_message(
     payload: InboundMessageRequest,
     session_manager: DatabaseSessionManager = Depends(get_session_manager),
     service: SessionService = Depends(get_session_service),
 ) -> InboundMessageResponse:
     try:
-        with session_manager.session() as claim_db:
-            with session_manager.session() as work_db:
+        with session_manager.session() as db:
+            try:
                 result = service.process_inbound(
-                    claim_db=claim_db,
-                    work_db=work_db,
+                    db=db,
                     channel_kind=payload.channel_kind,
                     channel_account_id=payload.channel_account_id,
                     external_message_id=payload.external_message_id,
@@ -36,6 +35,10 @@ def post_inbound_message(
                     peer_id=payload.peer_id,
                     group_id=payload.group_id,
                 )
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
     except RoutingValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except IdempotencyConflictError as exc:
@@ -46,11 +49,14 @@ def post_inbound_message(
         "channel_account_id": payload.channel_account_id.strip(),
         "external_message_id": payload.external_message_id.strip(),
         "session_id": result.session_id,
+        "run_id": result.run_id,
         "status": result.dedupe_status,
     }
-    logger.info("inbound message processed", extra=log_payload)
+    logger.info("inbound message accepted", extra=log_payload)
     return InboundMessageResponse(
         session_id=result.session_id,
         message_id=result.message_id,
+        run_id=result.run_id,
+        status=result.status,
         dedupe_status=result.dedupe_status,  # type: ignore[arg-type]
     )
