@@ -29,6 +29,17 @@ class DedupeStatus(str, Enum):
     COMPLETED = "completed"
 
 
+class ExecutionRunStatus(str, Enum):
+    QUEUED = "queued"
+    CLAIMED = "claimed"
+    RUNNING = "running"
+    RETRY_WAIT = "retry_wait"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    DEAD_LETTER = "dead_letter"
+    CANCELLED = "cancelled"
+
+
 class SessionRecord(Base):
     __tablename__ = "sessions"
     __table_args__ = (
@@ -131,6 +142,110 @@ class InboundDedupeRecord(Base):
     message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id"), nullable=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ExecutionRunRecord(Base):
+    __tablename__ = "execution_runs"
+    __table_args__ = (
+        UniqueConstraint("trigger_kind", "trigger_ref", name="uq_execution_runs_trigger_identity"),
+        Index("ix_execution_runs_status_available_created_id", "status", "available_at", "created_at", "id"),
+        Index("ix_execution_runs_session_status_created", "session_id", "status", "created_at"),
+        Index("ix_execution_runs_lane_status_available", "lane_key", "status", "available_at"),
+        Index("ix_execution_runs_worker_status", "worker_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id"), nullable=True)
+    agent_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    trigger_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    trigger_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    lane_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    worker_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class SessionRunLeaseRecord(Base):
+    __tablename__ = "session_run_leases"
+    __table_args__ = (
+        UniqueConstraint("lane_key", name="uq_session_run_leases_lane_key"),
+        UniqueConstraint("execution_run_id", name="uq_session_run_leases_execution_run_id"),
+        Index("ix_session_run_leases_worker_expiry", "worker_id", "lease_expires_at"),
+    )
+
+    lane_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    execution_run_id: Mapped[str] = mapped_column(ForeignKey("execution_runs.id"), nullable=False)
+    worker_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class GlobalRunLeaseRecord(Base):
+    __tablename__ = "global_run_leases"
+    __table_args__ = (
+        UniqueConstraint("execution_run_id", name="uq_global_run_leases_execution_run_id"),
+        Index("ix_global_run_leases_worker_expiry", "worker_id", "lease_expires_at"),
+    )
+
+    slot_key: Mapped[str] = mapped_column(String(32), primary_key=True)
+    execution_run_id: Mapped[str] = mapped_column(ForeignKey("execution_runs.id"), nullable=False)
+    worker_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class ScheduledJobRecord(Base):
+    __tablename__ = "scheduled_jobs"
+    __table_args__ = (
+        UniqueConstraint("job_key", name="uq_scheduled_jobs_job_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    job_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    agent_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    session_id: Mapped[str | None] = mapped_column(ForeignKey("sessions.id"), nullable=True)
+    channel_kind: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    channel_account_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    peer_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    group_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    cron_expr: Mapped[str] = mapped_column(String(255), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class ScheduledJobFireRecord(Base):
+    __tablename__ = "scheduled_job_fires"
+    __table_args__ = (
+        UniqueConstraint("fire_key", name="uq_scheduled_job_fires_fire_key"),
+        Index("ix_scheduled_job_fires_job_scheduled_for", "scheduled_job_id", "scheduled_for"),
+        Index("ix_scheduled_job_fires_status_scheduled_for", "status", "scheduled_for"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    scheduled_job_id: Mapped[str] = mapped_column(ForeignKey("scheduled_jobs.id"), nullable=False)
+    fire_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    execution_run_id: Mapped[str | None] = mapped_column(ForeignKey("execution_runs.id"), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
 
 class GovernanceTranscriptEventRecord(Base):
