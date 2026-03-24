@@ -48,6 +48,7 @@ class ContextService:
         ]
         artifacts = repository.list_artifacts(db, session_id=session_id)
         governance_events = repository.list_governance_events(db, session_id=session_id)
+        attachments = repository.list_stored_message_attachments_for_message(db, message_id=message_id)
         summary = repository.get_latest_valid_summary_snapshot(
             db,
             session_id=session_id,
@@ -63,6 +64,7 @@ class ContextService:
             summary=summary,
             artifacts=artifacts,
             governance_events=governance_events,
+            attachments=attachments,
             overflow=None,
             degraded=False,
         )
@@ -117,6 +119,7 @@ class ContextService:
             summary=summary,
             artifacts=artifacts,
             governance_events=governance_events,
+            attachments=attachments,
             overflow={
                 "status": "retry",
                 "initial_transcript_count": len(transcript_messages),
@@ -163,6 +166,7 @@ class ContextService:
         summary: Any | None,
         artifacts: list[Any],
         governance_events: list[Any],
+        attachments: list[Any],
         overflow: dict[str, Any] | None,
         degraded: bool,
     ) -> dict[str, Any]:
@@ -196,6 +200,17 @@ class ContextService:
             "retrieval_ids": [],
             "assistant_tool_artifact_ids": [artifact.id for artifact in artifacts],
             "governance_artifact_ids": [event.id for event in governance_events],
+            "attachment_ids": [attachment.id for attachment in attachments],
+            "attachments": [
+                {
+                    "id": attachment.id,
+                    "media_kind": attachment.media_kind,
+                    "mime_type": attachment.mime_type,
+                    "storage_key": attachment.storage_key,
+                    "filename": attachment.filename,
+                }
+                for attachment in attachments
+            ],
             "overflow": overflow,
         }
 

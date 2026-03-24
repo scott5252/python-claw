@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+
+from src.sessions.repository import SessionRepository
+
 def inbound_payload(**overrides):
     payload = {
         "channel_kind": "slack",
@@ -102,3 +106,59 @@ def test_run_diagnostics_endpoints(client) -> None:
     session_runs = client.get(f"/sessions/{session_id}/runs")
     assert session_runs.status_code == 200
     assert session_runs.json()["items"][0]["id"] == run_id
+
+
+def test_inbound_accepts_canonical_attachments_without_inline_normalization(client, session_manager, tmp_path) -> None:
+    attachment_path = tmp_path / "attachment.txt"
+    attachment_path.write_text("hello attachment")
+    response = client.post(
+        "/inbound/message",
+        json=inbound_payload(
+            attachments=[
+                {
+                    "source_url": attachment_path.resolve().as_uri(),
+                    "mime_type": "text/plain",
+                    "filename": "attachment.txt",
+                    "provider_metadata": {"provider": "test"},
+                }
+            ]
+        ),
+    )
+    assert response.status_code == 202
+
+    with session_manager.session() as db:
+        rows = SessionRepository().list_inbound_attachments(db, message_id=response.json()["message_id"])
+        assert len(rows) == 1
+        assert rows[0].mime_type == "text/plain"
+        assert json.loads(rows[0].provider_metadata_json) == {"provider": "test"}
+
+
+def test_inbound_rejects_attachment_without_required_fields(client) -> None:
+    response = client.post(
+        "/inbound/message",
+        json=inbound_payload(
+            attachments=[
+                {
+                    "source_url": "",
+                    "mime_type": "text/plain",
+                }
+            ]
+        ),
+    )
+    assert response.status_code == 422
+
+
+def test_inbound_rejects_unbounded_provider_metadata(client) -> None:
+    response = client.post(
+        "/inbound/message",
+        json=inbound_payload(
+            attachments=[
+                {
+                    "source_url": "file:///tmp/example.txt",
+                    "mime_type": "text/plain",
+                    "provider_metadata": {"huge": "x" * 2500},
+                }
+            ]
+        ),
+    )
+    assert response.status_code == 422

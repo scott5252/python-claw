@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     execution_run_global_concurrency: int = 4
     session_runs_page_default_limit: int = 20
     session_runs_page_max_limit: int = 50
+    inbound_attachment_max_metadata_chars: int = 2000
+    media_storage_root: str = ".claw-media"
+    media_storage_bucket: str = "local-media"
+    media_retention_days: int = 30
+    media_allowed_schemes: str = "file,https"
+    media_allowed_mime_prefixes: str = "image/,audio/,text/,application/pdf"
+    media_max_bytes: int = 5242880
     remote_execution_enabled: bool = False
     node_runner_signing_key_id: str = "local-dev"
     node_runner_signing_secret: str = "local-dev-secret"

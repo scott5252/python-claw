@@ -12,7 +12,11 @@ from src.db.models import (
     ActiveResourceRecord,
     ContextManifestRecord,
     GovernanceTranscriptEventRecord,
+    InboundMessageAttachmentRecord,
     MessageRecord,
+    MessageAttachmentRecord,
+    OutboundDeliveryAttemptRecord,
+    OutboundDeliveryRecord,
     OutboxJobRecord,
     ResourceApprovalRecord,
     ResourceProposalRecord,
@@ -93,6 +97,124 @@ class SessionRepository:
         db.flush()
         return message
 
+    def append_inbound_attachments(
+        self,
+        db: Session,
+        *,
+        session_id: str,
+        message_id: int,
+        attachments: list[dict[str, Any]],
+    ) -> list[InboundMessageAttachmentRecord]:
+        rows: list[InboundMessageAttachmentRecord] = []
+        for ordinal, attachment in enumerate(attachments):
+            row = InboundMessageAttachmentRecord(
+                session_id=session_id,
+                message_id=message_id,
+                ordinal=ordinal,
+                external_attachment_id=attachment.get("external_attachment_id"),
+                source_url=attachment["source_url"],
+                mime_type=attachment["mime_type"],
+                filename=attachment.get("filename"),
+                byte_size=attachment.get("byte_size"),
+                provider_metadata_json=json.dumps(attachment.get("provider_metadata", {}), sort_keys=True),
+            )
+            db.add(row)
+            rows.append(row)
+        db.flush()
+        return rows
+
+    def list_inbound_attachments(self, db: Session, *, message_id: int) -> list[InboundMessageAttachmentRecord]:
+        stmt = (
+            select(InboundMessageAttachmentRecord)
+            .where(InboundMessageAttachmentRecord.message_id == message_id)
+            .order_by(InboundMessageAttachmentRecord.ordinal.asc(), InboundMessageAttachmentRecord.id.asc())
+        )
+        return list(db.scalars(stmt))
+
+    def list_message_attachments_for_message(self, db: Session, *, message_id: int) -> list[MessageAttachmentRecord]:
+        stmt = (
+            select(MessageAttachmentRecord)
+            .where(MessageAttachmentRecord.message_id == message_id)
+            .order_by(MessageAttachmentRecord.ordinal.asc(), MessageAttachmentRecord.id.asc())
+        )
+        return list(db.scalars(stmt))
+
+    def list_stored_message_attachments_for_message(
+        self,
+        db: Session,
+        *,
+        message_id: int,
+    ) -> list[MessageAttachmentRecord]:
+        inbound_rows = self.list_inbound_attachments(db, message_id=message_id)
+        stored: list[MessageAttachmentRecord] = []
+        for inbound in inbound_rows:
+            latest = self.get_latest_message_attachment_for_inbound(
+                db,
+                inbound_message_attachment_id=inbound.id,
+            )
+            if latest is not None and latest.normalization_status == "stored":
+                stored.append(latest)
+        stored.sort(key=lambda item: (item.ordinal, item.id))
+        return stored
+
+    def get_latest_message_attachment_for_inbound(
+        self,
+        db: Session,
+        *,
+        inbound_message_attachment_id: int,
+    ) -> MessageAttachmentRecord | None:
+        stmt = (
+            select(MessageAttachmentRecord)
+            .where(MessageAttachmentRecord.inbound_message_attachment_id == inbound_message_attachment_id)
+            .order_by(MessageAttachmentRecord.created_at.desc(), MessageAttachmentRecord.id.desc())
+        )
+        return db.scalar(stmt)
+
+    def append_message_attachment(
+        self,
+        db: Session,
+        *,
+        inbound_attachment_id: int,
+        message_id: int,
+        session_id: str,
+        ordinal: int,
+        external_attachment_id: str | None,
+        source_url: str,
+        storage_key: str | None,
+        storage_bucket: str | None,
+        mime_type: str,
+        media_kind: str,
+        filename: str | None,
+        byte_size: int | None,
+        sha256: str | None,
+        normalization_status: str,
+        retention_expires_at: datetime | None,
+        provider_metadata: dict[str, Any],
+        error_detail: str | None = None,
+    ) -> MessageAttachmentRecord:
+        record = MessageAttachmentRecord(
+            inbound_message_attachment_id=inbound_attachment_id,
+            message_id=message_id,
+            session_id=session_id,
+            ordinal=ordinal,
+            external_attachment_id=external_attachment_id,
+            source_url=source_url,
+            storage_key=storage_key,
+            storage_bucket=storage_bucket,
+            mime_type=mime_type,
+            media_kind=media_kind,
+            filename=filename,
+            byte_size=byte_size,
+            sha256=sha256,
+            normalization_status=normalization_status,
+            retention_expires_at=retention_expires_at,
+            provider_metadata_json=json.dumps(provider_metadata, sort_keys=True),
+            error_detail=error_detail,
+        )
+        db.add(record)
+        db.flush()
+        return record
+
     def append_artifact(
         self,
         db: Session,
@@ -150,7 +272,7 @@ class SessionRepository:
         session_id: str,
         correlation_id: str,
         payload: dict[str, Any],
-    ) -> SessionArtifactRecord:
+        ) -> SessionArtifactRecord:
         return self.append_artifact(
             db,
             session_id=session_id,
@@ -160,6 +282,167 @@ class SessionRepository:
             status="prepared",
             payload=payload,
         )
+
+    def list_outbound_intents_for_run(
+        self,
+        db: Session,
+        *,
+        session_id: str,
+        execution_run_id: str,
+    ) -> list[SessionArtifactRecord]:
+        artifacts = self.list_artifacts(db, session_id=session_id)
+        results: list[SessionArtifactRecord] = []
+        for artifact in artifacts:
+            if artifact.artifact_kind != "outbound_intent":
+                continue
+            payload = json.loads(artifact.payload_json)
+            if payload.get("execution_run_id") == execution_run_id:
+                results.append(artifact)
+        return results
+
+    def get_message_attachment(self, db: Session, *, attachment_id: int) -> MessageAttachmentRecord | None:
+        return db.get(MessageAttachmentRecord, attachment_id)
+
+    def create_or_get_outbound_delivery(
+        self,
+        db: Session,
+        *,
+        session_id: str,
+        execution_run_id: str,
+        outbound_intent_id: int,
+        channel_kind: str,
+        channel_account_id: str,
+        delivery_kind: str,
+        chunk_index: int,
+        chunk_count: int,
+        reply_to_external_id: str | None,
+        attachment_id: int | None,
+    ) -> OutboundDeliveryRecord:
+        existing = db.scalar(
+            select(OutboundDeliveryRecord).where(
+                OutboundDeliveryRecord.outbound_intent_id == outbound_intent_id,
+                OutboundDeliveryRecord.chunk_index == chunk_index,
+            )
+        )
+        if existing is not None:
+            return existing
+        record = OutboundDeliveryRecord(
+            session_id=session_id,
+            execution_run_id=execution_run_id,
+            outbound_intent_id=outbound_intent_id,
+            channel_kind=channel_kind,
+            channel_account_id=channel_account_id,
+            delivery_kind=delivery_kind,
+            chunk_index=chunk_index,
+            chunk_count=chunk_count,
+            reply_to_external_id=reply_to_external_id,
+            attachment_id=attachment_id,
+            status="pending",
+        )
+        db.add(record)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            existing = db.scalar(
+                select(OutboundDeliveryRecord).where(
+                    OutboundDeliveryRecord.outbound_intent_id == outbound_intent_id,
+                    OutboundDeliveryRecord.chunk_index == chunk_index,
+                )
+            )
+            if existing is None:
+                raise
+            return existing
+        return record
+
+    def create_outbound_delivery_attempt(
+        self,
+        db: Session,
+        *,
+        outbound_delivery_id: int,
+        provider_idempotency_key: str | None,
+    ) -> OutboundDeliveryAttemptRecord:
+        last_attempt = db.scalar(
+            select(OutboundDeliveryAttemptRecord)
+            .where(OutboundDeliveryAttemptRecord.outbound_delivery_id == outbound_delivery_id)
+            .order_by(
+                OutboundDeliveryAttemptRecord.attempt_number.desc(),
+                OutboundDeliveryAttemptRecord.id.desc(),
+            )
+        )
+        attempt = OutboundDeliveryAttemptRecord(
+            outbound_delivery_id=outbound_delivery_id,
+            attempt_number=1 if last_attempt is None else last_attempt.attempt_number + 1,
+            provider_idempotency_key=provider_idempotency_key,
+            status="started",
+        )
+        db.add(attempt)
+        db.flush()
+        return attempt
+
+    def mark_outbound_delivery_sent(
+        self,
+        db: Session,
+        *,
+        delivery_id: int,
+        attempt_id: int,
+        provider_message_id: str,
+    ) -> None:
+        delivery = db.get(OutboundDeliveryRecord, delivery_id)
+        attempt = db.get(OutboundDeliveryAttemptRecord, attempt_id)
+        if delivery is None or attempt is None:
+            raise RuntimeError("outbound delivery state missing")
+        delivery.status = "sent"
+        delivery.provider_message_id = provider_message_id
+        delivery.error_code = None
+        delivery.error_detail = None
+        attempt.status = "sent"
+        attempt.provider_message_id = provider_message_id
+        attempt.error_code = None
+        attempt.error_detail = None
+        db.flush()
+
+    def mark_outbound_delivery_failed(
+        self,
+        db: Session,
+        *,
+        delivery_id: int,
+        attempt_id: int,
+        error_code: str,
+        error_detail: str,
+    ) -> None:
+        delivery = db.get(OutboundDeliveryRecord, delivery_id)
+        attempt = db.get(OutboundDeliveryAttemptRecord, attempt_id)
+        if delivery is None or attempt is None:
+            raise RuntimeError("outbound delivery state missing")
+        delivery.status = "failed"
+        delivery.error_code = error_code
+        delivery.error_detail = error_detail
+        attempt.status = "failed"
+        attempt.error_code = error_code
+        attempt.error_detail = error_detail
+        db.flush()
+
+    def list_outbound_deliveries(self, db: Session, *, session_id: str) -> list[OutboundDeliveryRecord]:
+        stmt = (
+            select(OutboundDeliveryRecord)
+            .where(OutboundDeliveryRecord.session_id == session_id)
+            .order_by(OutboundDeliveryRecord.created_at.asc(), OutboundDeliveryRecord.id.asc())
+        )
+        return list(db.scalars(stmt))
+
+    def list_outbound_delivery_attempts(
+        self,
+        db: Session,
+        *,
+        delivery_id: int,
+    ) -> list[OutboundDeliveryAttemptRecord]:
+        stmt = (
+            select(OutboundDeliveryAttemptRecord)
+            .where(OutboundDeliveryAttemptRecord.outbound_delivery_id == delivery_id)
+            .order_by(OutboundDeliveryAttemptRecord.attempt_number.asc(), OutboundDeliveryAttemptRecord.id.asc())
+        )
+        return list(db.scalars(stmt))
 
     def append_governance_event(
         self,

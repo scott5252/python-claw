@@ -359,3 +359,154 @@ def test_outbox_worker_generates_additive_summary_snapshots(session_manager) -> 
     assert snapshot is not None
     assert snapshot.base_message_id == 1
     assert snapshot.through_message_id == 5
+
+
+def test_attachment_and_delivery_records_are_append_only_and_chunk_idempotent(session_manager, tmp_path) -> None:
+    repository = SessionRepository()
+    routing = normalize_routing_input(
+        RoutingInput(
+            channel_kind="slack",
+            channel_account_id="acct",
+            sender_id="sender",
+            peer_id="peer",
+        )
+    )
+
+    with session_manager.session() as db:
+        session = repository.get_or_create_session(db, routing)
+        message = repository.append_message(
+            db,
+            session,
+            role="user",
+            content="hello",
+            external_message_id="m1",
+            sender_id="sender",
+            last_activity_at=datetime.now(timezone.utc),
+        )
+        inbound = repository.append_inbound_attachments(
+            db,
+            session_id=session.id,
+            message_id=message.id,
+            attachments=[
+                {
+                    "source_url": (tmp_path / "a.txt").resolve().as_uri(),
+                    "mime_type": "text/plain",
+                    "provider_metadata": {"source": "test"},
+                }
+            ],
+        )[0]
+        failed = repository.append_message_attachment(
+            db,
+            inbound_attachment_id=inbound.id,
+            message_id=message.id,
+            session_id=session.id,
+            ordinal=0,
+            external_attachment_id=None,
+            source_url=inbound.source_url,
+            storage_key=None,
+            storage_bucket=None,
+            mime_type=inbound.mime_type,
+            media_kind="document",
+            filename=None,
+            byte_size=None,
+            sha256=None,
+            normalization_status="failed",
+            retention_expires_at=None,
+            provider_metadata={"source": "test"},
+            error_detail="temporary failure",
+        )
+        stored = repository.append_message_attachment(
+            db,
+            inbound_attachment_id=inbound.id,
+            message_id=message.id,
+            session_id=session.id,
+            ordinal=0,
+            external_attachment_id=None,
+            source_url=inbound.source_url,
+            storage_key="session/message/file.txt",
+            storage_bucket="bucket",
+            mime_type=inbound.mime_type,
+            media_kind="document",
+            filename="a.txt",
+            byte_size=12,
+            sha256="abc123",
+            normalization_status="stored",
+            retention_expires_at=datetime.now(timezone.utc),
+            provider_metadata={"source": "test"},
+        )
+        artifact = repository.append_outbound_intent(
+            db,
+            session_id=session.id,
+            correlation_id="corr-1",
+            payload={"text": "hello", "execution_run_id": "run-1"},
+        )
+        first_delivery = repository.create_or_get_outbound_delivery(
+            db,
+            session_id=session.id,
+            execution_run_id="run-1",
+            outbound_intent_id=artifact.id,
+            channel_kind="slack",
+            channel_account_id="acct",
+            delivery_kind="text_chunk",
+            chunk_index=0,
+            chunk_count=2,
+            reply_to_external_id=None,
+            attachment_id=None,
+        )
+        same_delivery = repository.create_or_get_outbound_delivery(
+            db,
+            session_id=session.id,
+            execution_run_id="run-1",
+            outbound_intent_id=artifact.id,
+            channel_kind="slack",
+            channel_account_id="acct",
+            delivery_kind="text_chunk",
+            chunk_index=0,
+            chunk_count=2,
+            reply_to_external_id=None,
+            attachment_id=None,
+        )
+        attempt_one = repository.create_outbound_delivery_attempt(
+            db,
+            outbound_delivery_id=first_delivery.id,
+            provider_idempotency_key="key-1",
+        )
+        repository.mark_outbound_delivery_failed(
+            db,
+            delivery_id=first_delivery.id,
+            attempt_id=attempt_one.id,
+            error_code="send_failed",
+            error_detail="network issue",
+        )
+        attempt_two = repository.create_outbound_delivery_attempt(
+            db,
+            outbound_delivery_id=first_delivery.id,
+            provider_idempotency_key="key-2",
+        )
+        repository.mark_outbound_delivery_sent(
+            db,
+            delivery_id=first_delivery.id,
+            attempt_id=attempt_two.id,
+            provider_message_id="provider-1",
+        )
+        db.commit()
+
+    with session_manager.session() as db:
+        latest = repository.get_latest_message_attachment_for_inbound(
+            db,
+            inbound_message_attachment_id=inbound.id,
+        )
+        stored_rows = repository.list_stored_message_attachments_for_message(db, message_id=message.id)
+        deliveries = repository.list_outbound_deliveries(db, session_id=session.id)
+        attempts = repository.list_outbound_delivery_attempts(db, delivery_id=first_delivery.id)
+
+    assert failed.id != stored.id
+    assert latest is not None
+    assert latest.id == stored.id
+    assert [row.id for row in stored_rows] == [stored.id]
+    assert first_delivery.id == same_delivery.id
+    assert len(deliveries) == 1
+    assert deliveries[0].status == "sent"
+    assert len(attempts) == 2
+    assert attempts[0].status == "failed"
+    assert attempts[1].status == "sent"

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import json
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -73,6 +74,7 @@ class SessionService:
         content: str,
         peer_id: str | None,
         group_id: str | None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> InboundProcessResult:
         routing = normalize_routing_input(
             RoutingInput(
@@ -124,6 +126,13 @@ class SessionService:
             sender_id=routing.sender_id,
             last_activity_at=now,
         )
+        if attachments:
+            self.repository.append_inbound_attachments(
+                db,
+                session_id=session.id,
+                message_id=message.id,
+                attachments=attachments,
+            )
         run = self.jobs_repository.create_or_get_execution_run(
             db,
             session_id=session.id,

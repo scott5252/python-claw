@@ -99,6 +99,58 @@ class MessageRecord(Base):
     session: Mapped["SessionRecord"] = relationship(back_populates="messages")
 
 
+class InboundMessageAttachmentRecord(Base):
+    __tablename__ = "inbound_message_attachments"
+    __table_args__ = (
+        Index("ix_inbound_message_attachments_message_ordinal", "message_id", "ordinal"),
+        Index("ix_inbound_message_attachments_session_created", "session_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), nullable=False)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    external_attachment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    byte_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    provider_metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class MessageAttachmentRecord(Base):
+    __tablename__ = "message_attachments"
+    __table_args__ = (
+        Index("ix_message_attachments_message_ordinal", "message_id", "ordinal"),
+        Index("ix_message_attachments_session_created", "session_id", "created_at"),
+        Index("ix_message_attachments_inbound_created", "inbound_message_attachment_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    inbound_message_attachment_id: Mapped[int] = mapped_column(
+        ForeignKey("inbound_message_attachments.id"),
+        nullable=False,
+    )
+    message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), nullable=False)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    external_attachment_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    storage_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    storage_bucket: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mime_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    media_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    byte_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    normalization_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    retention_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    provider_metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
 class SessionArtifactRecord(Base):
     __tablename__ = "session_artifacts"
     __table_args__ = (
@@ -420,6 +472,49 @@ class ContextManifestRecord(Base):
     message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), nullable=False)
     manifest_json: Mapped[str] = mapped_column(Text, nullable=False)
     degraded: Mapped[bool] = mapped_column(nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class OutboundDeliveryRecord(Base):
+    __tablename__ = "outbound_deliveries"
+    __table_args__ = (
+        UniqueConstraint("outbound_intent_id", "chunk_index", name="uq_outbound_deliveries_intent_chunk"),
+        Index("ix_outbound_deliveries_intent_chunk", "outbound_intent_id", "chunk_index"),
+        Index("ix_outbound_deliveries_session_created", "session_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    execution_run_id: Mapped[str] = mapped_column(ForeignKey("execution_runs.id"), nullable=False)
+    outbound_intent_id: Mapped[int] = mapped_column(ForeignKey("session_artifacts.id"), nullable=False)
+    channel_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    channel_account_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    delivery_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    reply_to_external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    attachment_id: Mapped[int | None] = mapped_column(ForeignKey("message_attachments.id"), nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class OutboundDeliveryAttemptRecord(Base):
+    __tablename__ = "outbound_delivery_attempts"
+    __table_args__ = (
+        UniqueConstraint("outbound_delivery_id", "attempt_number", name="uq_outbound_delivery_attempts_number"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    outbound_delivery_id: Mapped[int] = mapped_column(ForeignKey("outbound_deliveries.id"), nullable=False)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 

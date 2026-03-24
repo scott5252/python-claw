@@ -34,6 +34,7 @@ def post_inbound_message(
                     content=payload.content,
                     peer_id=payload.peer_id,
                     group_id=payload.group_id,
+                    attachments=[attachment.model_dump() for attachment in payload.attachments],
                 )
                 db.commit()
             except Exception:

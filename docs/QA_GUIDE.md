@@ -9,6 +9,8 @@ Right now it covers how to test the behaviors delivered by:
 - Spec 003: capability governance
 - Spec 004: context continuity
 - Spec 005: async queueing, workers, scheduler submission, and run diagnostics
+- Spec 006: remote node runner and sandboxing
+- Spec 007: channels, chunking, and media normalization
 
 The emphasis is on running the server, interacting with it through HTTP, and verifying both API behavior and database state.
 
@@ -27,6 +29,8 @@ The current HTTP surface is:
 The main write path is always `POST /inbound/message`.
 
 As of Spec 005, that write path is accept-and-queue. The gateway returns after the inbound message and queued run are durably stored. Assistant execution happens later when a worker claims the run.
+
+As of Spec 007, that same write path may also accept canonical attachment metadata. The attachment references are stored immediately, but normalization and outbound delivery happen later on the worker side.
 
 ## Before You Start
 
@@ -1607,6 +1611,288 @@ Look at these additional tables:
 - the audit row is missing even though the runner returned a result
 - `stdout_preview` or `stderr_preview` is unbounded or empty when terminal diagnostics should exist
 
+## Spec 007: Channels, Chunking, and Media Normalization
+
+Spec 007 adds three important local QA areas:
+
+- canonical inbound attachments on `POST /inbound/message`
+- worker-owned attachment normalization into durable media records
+- shared outbound dispatch with chunking and delivery auditing for `webchat`, `slack`, and `telegram`
+
+Current implementation notes:
+
+- the gateway still returns `202 Accepted` quickly even when attachments are present
+- accepted attachment inputs are stored first and normalized later by the worker
+- only normalized `stored` attachments are eligible for turn context or outbound media sends
+- large outbound responses are chunked after the assistant turn completes
+- outbound sends are recorded in `outbound_deliveries` and `outbound_delivery_attempts`
+
+### Scenario 1: Accept an inbound message with a canonical attachment
+
+Create a local test file from the project root:
+
+```bash
+mkdir -p /tmp/python-claw-qa
+printf 'qa attachment for spec 007\n' > /tmp/python-claw-qa/spec-007-note.txt
+```
+
+Send an inbound message with one attachment:
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel_kind": "telegram",
+    "channel_account_id": "acct-8",
+    "external_message_id": "msg-media-001",
+    "sender_id": "sender-8",
+    "content": "please inspect this attachment",
+    "peer_id": "peer-8",
+    "attachments": [
+      {
+        "source_url": "file:///tmp/python-claw-qa/spec-007-note.txt",
+        "mime_type": "text/plain",
+        "filename": "spec-007-note.txt",
+        "provider_metadata": {
+          "provider": "manual-qa"
+        }
+      }
+    ]
+  }'
+```
+
+Expected result before any worker runs:
+
+- HTTP `202`
+- response includes `session_id`, `message_id`, and `run_id`
+- the inbound user message exists immediately
+- the attachment input is stored immediately
+- no normalized attachment row exists yet until the worker runs
+
+Inspect the accepted attachment input:
+
+```sql
+select id, message_id, session_id, ordinal, external_attachment_id, source_url, mime_type, filename, byte_size, provider_metadata_json, created_at
+from inbound_message_attachments
+where message_id = <message_id>
+order by ordinal asc;
+```
+
+What to verify:
+
+- one `inbound_message_attachments` row exists for the inbound `message_id`
+- `source_url`, `mime_type`, and `filename` match the request
+- provider metadata was preserved in bounded JSON form
+- the gateway accepted the message without waiting on file download or storage
+
+### Scenario 2: Run the worker and verify normalization plus context manifest linkage
+
+Run the queue worker until it prints `None`.
+
+Then inspect normalized attachments:
+
+```sql
+select id, inbound_message_attachment_id, message_id, session_id, ordinal, storage_key, storage_bucket, mime_type, media_kind, filename, byte_size, sha256, normalization_status, retention_expires_at, error_detail, created_at
+from message_attachments
+where message_id = <message_id>
+order by id asc;
+```
+
+Inspect the newest manifest for the session:
+
+```sql
+select id, session_id, message_id, degraded, manifest_json, created_at
+from context_manifests
+where session_id = '<session_id>'
+order by id desc
+limit 1;
+```
+
+What to verify:
+
+- the attachment now has one terminal `message_attachments` row
+- `normalization_status` is `stored`
+- `storage_key`, `storage_bucket`, `media_kind`, and `sha256` are populated
+- the newest `context_manifests.manifest_json` contains `attachment_ids`
+- the manifest attachment list only references normalized attachments, not raw inbound attachment inputs
+
+### Scenario 3: Verify deterministic rejection for unsupported media
+
+Send an inbound request with a MIME type that is outside the allowed list:
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel_kind": "telegram",
+    "channel_account_id": "acct-8",
+    "external_message_id": "msg-media-002",
+    "sender_id": "sender-8",
+    "content": "this should be rejected as media",
+    "peer_id": "peer-8",
+    "attachments": [
+      {
+        "source_url": "file:///tmp/python-claw-qa/spec-007-note.txt",
+        "mime_type": "video/mp4",
+        "filename": "unsupported.mp4",
+        "provider_metadata": {
+          "provider": "manual-qa"
+        }
+      }
+    ]
+  }'
+```
+
+Run the worker once, then inspect:
+
+```sql
+select id, inbound_message_attachment_id, normalization_status, mime_type, media_kind, error_detail, created_at
+from message_attachments
+where message_id = <message_id>
+order by id asc;
+```
+
+What to verify:
+
+- the inbound request still returns HTTP `202`
+- normalization does not delete the canonical inbound message
+- the terminal `message_attachments` row is `rejected`
+- `error_detail` explains the validation failure
+- rejected attachments do not break the turn or silently become usable media
+
+### Scenario 4: Verify governed send now creates durable outbound delivery rows
+
+Use the Spec 003 approval flow for a fresh `slack` session until `send hello channel` is approved. Then retry the original governed request so it succeeds.
+
+Expected result after the worker runs:
+
+- the assistant transcript still ends with `Prepared outbound message: hello channel`
+- one outbound intent artifact exists
+- one logical outbound delivery row exists for the text send
+- one delivery-attempt row exists and is terminal `sent`
+
+Inspect the outbound delivery tables:
+
+```sql
+select id, session_id, execution_run_id, outbound_intent_id, channel_kind, channel_account_id, delivery_kind, chunk_index, chunk_count, reply_to_external_id, attachment_id, provider_message_id, status, error_code, error_detail, created_at
+from outbound_deliveries
+where session_id = '<session_id>'
+order by id asc;
+```
+
+```sql
+select id, outbound_delivery_id, attempt_number, provider_idempotency_key, status, provider_message_id, error_code, error_detail, created_at
+from outbound_delivery_attempts
+where outbound_delivery_id = <delivery_id>
+order by attempt_number asc;
+```
+
+What to verify:
+
+- `delivery_kind` is `text_chunk`
+- `chunk_index` starts at `0`
+- `chunk_count` matches the number of logical sends for that outbound intent
+- `status` is `sent`
+- the attempt row is append-only and linked to the logical delivery row
+
+### Scenario 5: Verify channel-aware chunking with a long outbound message
+
+For a clean manual QA pass, use `telegram` because it supports reply and media in this slice and has a larger text limit than `slack`. Create a long message that will still exceed a single-chunk limit by using the governed `send` flow with a very long body.
+
+From a shell, build a long command body:
+
+```bash
+LONG_TEXT="$(python - <<'PY'
+print('send ' + ('paragraph-one ' * 260) + '\n\n' + ('paragraph-two ' * 260))
+PY
+)"
+```
+
+Then submit it:
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"channel_kind\": \"telegram\",
+    \"channel_account_id\": \"acct-9\",
+    \"external_message_id\": \"msg-chunk-001\",
+    \"sender_id\": \"sender-9\",
+    \"content\": \"$LONG_TEXT\",
+    \"peer_id\": \"peer-9\"
+  }"
+```
+
+If this session has not already approved `send_message`, first complete the approval flow from Spec 003, then resend the same long `send ...` content and run the worker again.
+
+Inspect deliveries for that session:
+
+```sql
+select id, outbound_intent_id, delivery_kind, chunk_index, chunk_count, status, provider_message_id, created_at
+from outbound_deliveries
+where session_id = '<session_id>'
+order by chunk_index asc, id asc;
+```
+
+What to verify:
+
+- more than one `outbound_deliveries` row exists for the same outbound intent
+- all rows for that intent have `delivery_kind = 'text_chunk'`
+- `chunk_index` values are ordered and contiguous
+- every row for the logical send shares the same `chunk_count`
+- each chunk is independently auditable
+
+### Scenario 6: Verify malformed attachment payloads are rejected at the gateway boundary
+
+Send an attachment with a missing required field:
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel_kind": "slack",
+    "channel_account_id": "acct-10",
+    "external_message_id": "msg-bad-attachment-001",
+    "sender_id": "sender-10",
+    "content": "bad attachment payload",
+    "peer_id": "peer-10",
+    "attachments": [
+      {
+        "source_url": "",
+        "mime_type": "text/plain"
+      }
+    ]
+  }'
+```
+
+Expected result:
+
+- HTTP `422`
+- no inbound message row is created
+- no attachment rows are created
+
+### Tables To Inspect For Spec 007
+
+Look at these additional tables:
+
+- `inbound_message_attachments`
+- `message_attachments`
+- `outbound_deliveries`
+- `outbound_delivery_attempts`
+- `context_manifests`
+- `session_artifacts`
+
+## Common Failure Signals For Spec 007
+
+- `POST /inbound/message` blocks on attachment fetching instead of returning `202 Accepted`
+- inbound attachments are accepted but no `inbound_message_attachments` row is stored
+- the worker normalizes the same attachment repeatedly instead of reusing terminal state
+- a rejected attachment silently appears in turn context or outbound media sends
+- large outbound messages create no `outbound_deliveries` rows even though an outbound intent exists
+- chunk ordering is unstable or `chunk_count` differs across rows for the same logical send
+- a failed delivery attempt overwrites the original delivery record instead of appending a new attempt
+- raw directives leak through as visible adapter text instead of being stripped before send
+
 ### Tables To Inspect For Spec 004
 
 Look at these additional tables:
@@ -1645,6 +1931,7 @@ If you want a clean end-to-end manual QA flow, use this order:
 11. verify Spec 005 same-session FIFO and global-cap behavior
 12. verify Spec 005 scheduler fire replay and transcript provenance
 13. verify Spec 006 signed node-runner execution, duplicate replay safety, and fail-closed tamper rejection
+14. verify Spec 007 attachment acceptance, worker normalization, and outbound delivery auditing
 
 ## Common Failure Signals
 
@@ -1659,6 +1946,8 @@ These are useful signs that something is wrong:
 - tool execution succeeds but there are no `tool_audit_events`
 - signed internal execution succeeds but no `node_execution_audits` row exists
 - duplicate node-runner delivery creates a second logical execution attempt
+- attachment payloads are accepted but never appear in attachment tables
+- outbound intent creation succeeds but there are no outbound delivery audit rows after worker execution
 
 ## Updating This Guide Later
 

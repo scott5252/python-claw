@@ -40,6 +40,8 @@ class RunExecutionService:
     failure_classifier: FailureClassifier
     base_backoff_seconds: int
     max_backoff_seconds: int
+    media_processor: object | None = None
+    outbound_dispatcher: object | None = None
 
     def process_next_run(self, db: Session, *, worker_id: str | None = None) -> str | None:
         resolved_worker_id = worker_id or f"{socket.gethostname()}-worker"
@@ -72,6 +74,13 @@ class RunExecutionService:
             message = self.session_repository.get_message(db, message_id=run.message_id) if run.message_id else None
             if message is None:
                 raise RuntimeError("missing canonical transcript state for execution run")
+            if run.trigger_kind == "inbound_message" and self.media_processor is not None:
+                self.media_processor.normalize_message_attachments(
+                    db=db,
+                    repository=self.session_repository,
+                    session_id=run.session_id,
+                    message_id=message.id,
+                )
             state = graph.invoke(
                 db=db,
                 session_id=run.session_id,
@@ -82,6 +91,17 @@ class RunExecutionService:
                 user_text=message.content,
                 execution_run_id=run.id,
             )
+            if self.outbound_dispatcher is not None:
+                session = self.session_repository.get_session(db, run.session_id)
+                if session is None:
+                    raise RuntimeError("session not found for outbound dispatch")
+                self.outbound_dispatcher.dispatch_run(
+                    db=db,
+                    repository=self.session_repository,
+                    session=session,
+                    execution_run_id=run.id,
+                    assistant_text=state.response_text,
+                )
             self._enqueue_after_turn_jobs(
                 db,
                 session_id=run.session_id,

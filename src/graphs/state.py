@@ -33,6 +33,8 @@ class OutboundIntent:
     text: str
     channel_kind: str
     sender_id: str
+    media_refs: list[str] = field(default_factory=list)
+    reply_to_external_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -82,5 +84,6 @@ class AssistantState:
     degraded: bool = False
     tool_events: list[ToolEvent] = field(default_factory=list)
     response_text: str = ""
+    assistant_message_id: int | None = None
     needs_tools: bool = False
     awaiting_approval: bool = False

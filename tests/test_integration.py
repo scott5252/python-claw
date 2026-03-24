@@ -20,7 +20,9 @@ from src.db.models import (
     GlobalRunLeaseRecord,
     GovernanceTranscriptEventRecord,
     InboundDedupeRecord,
+    MessageAttachmentRecord,
     OutboxJobRecord,
+    OutboundDeliveryRecord,
     ResourceApprovalRecord,
     ResourceProposalRecord,
     ScheduledJobFireRecord,
@@ -450,6 +452,7 @@ def test_governed_capability_requires_approval_then_activates_on_later_turn(tmp_
         approvals = list(db.query(ResourceApprovalRecord).filter_by(proposal_id=proposal.id))
         active = list(db.query(ActiveResourceRecord).filter_by(proposal_id=proposal.id))
         artifacts = list(db.query(SessionArtifactRecord).filter_by(session_id=session_id).order_by(SessionArtifactRecord.id.asc()))
+        deliveries = list(db.query(OutboundDeliveryRecord).filter_by(session_id=session_id).order_by(OutboundDeliveryRecord.id.asc()))
         audits = list(db.query(ToolAuditEventRecord).filter_by(session_id=session_id).order_by(ToolAuditEventRecord.id.asc()))
         messages = SessionRepository().list_messages(db, session_id=session_id, limit=20, before_message_id=None)
 
@@ -459,6 +462,9 @@ def test_governed_capability_requires_approval_then_activates_on_later_turn(tmp_
     assert "Approved proposal" in messages[-3].content
     assert messages[-1].content == "Prepared outbound message: hello channel"
     assert [artifact.artifact_kind for artifact in artifacts[-2:]] == ["outbound_intent", "tool_result"]
+    assert len(deliveries) == 1
+    assert deliveries[0].delivery_kind == "text_chunk"
+    assert deliveries[0].status == "sent"
     assert any(audit.event_kind == "approval_decision" for audit in audits)
 
 
@@ -682,6 +688,63 @@ def test_governance_replay_survives_normalized_state_loss(tmp_path) -> None:
         messages = SessionRepository().list_messages(db, session_id=session_id, limit=20, before_message_id=None)
 
     assert messages[-1].content == "Prepared outbound message: hello channel"
+
+
+def test_inbound_attachments_are_normalized_before_context_manifest(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'attachments.db'}"
+    media_root = tmp_path / "media-store"
+    source_file = tmp_path / "note.txt"
+    source_file.write_text("attachment body")
+    settings = Settings(database_url=database_url, media_storage_root=str(media_root))
+    manager = DatabaseSessionManager(database_url)
+    Base.metadata.create_all(manager.engine)
+
+    app = create_app(settings=settings, session_manager=manager)
+    client = TestClient(app)
+
+    response = client.post(
+        "/inbound/message",
+        json={
+            "channel_kind": "slack",
+            "channel_account_id": "acct",
+            "external_message_id": "msg-1",
+            "sender_id": "sender",
+            "content": "hello with attachment",
+            "peer_id": "peer",
+            "attachments": [
+                {
+                    "source_url": source_file.resolve().as_uri(),
+                    "mime_type": "text/plain",
+                    "filename": "note.txt",
+                    "provider_metadata": {"provider": "test"},
+                }
+            ],
+        },
+    )
+    assert response.status_code == 202
+    drain_queue(manager, app.state.run_execution_service)
+
+    with manager.session() as db:
+        attachments = list(
+            db.query(MessageAttachmentRecord)
+            .filter_by(message_id=response.json()["message_id"])
+            .order_by(MessageAttachmentRecord.id.asc())
+        )
+        manifest = (
+            db.query(ContextManifestRecord)
+            .filter_by(session_id=response.json()["session_id"])
+            .order_by(ContextManifestRecord.id.desc())
+            .first()
+        )
+
+    assert len(attachments) == 1
+    assert attachments[0].normalization_status == "stored"
+    assert attachments[0].storage_key is not None
+    assert media_root.joinpath(attachments[0].storage_key).exists()
+    assert manifest is not None
+    manifest_payload = json.loads(manifest.manifest_json)
+    assert manifest_payload["attachment_ids"] == [attachments[0].id]
+    assert manifest_payload["attachments"][0]["storage_key"] == attachments[0].storage_key
 
 
 def test_scheduler_replay_reuses_fire_run_and_transcript_trigger(tmp_path) -> None:

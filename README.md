@@ -20,11 +20,13 @@ In simpler terms, this project is the backend skeleton for an AI assistant syste
 - decide what assistant action should happen next
 - use approved tools in a controlled way
 - queue work for asynchronous processing
+- normalize inbound attachments into safe runtime-owned media records
+- deliver completed outbound replies through channel-aware dispatch paths
 - support remote execution through a separate internal node-runner boundary
 
 ### What it does today
 
-The current implementation focuses on six delivered capability areas:
+The current implementation focuses on seven delivered capability areas:
 
 1. Gateway sessions and deterministic routing
 2. Runtime tools and typed tool execution
@@ -32,13 +34,14 @@ The current implementation focuses on six delivered capability areas:
 4. Context continuity and summary/outbox scaffolding
 5. Async queueing with worker-owned execution runs
 6. Remote node-runner execution with per-agent sandbox resolution
+7. Channel-aware outbound delivery, chunking, and first-pass media normalization
 
 ### What it does not do yet
 
 The project is still a foundation, not a finished end-user assistant platform. Important planned capabilities are still pending, including:
 
 - real provider-backed LLM integrations
-- outbound delivery adapters for real messaging platforms
+- real provider-backed transport APIs for Slack, Telegram, or web chat
 - richer retrieval and memory indexing
 - production-grade sandbox/container enforcement
 - sub-agent orchestration
@@ -64,7 +67,10 @@ That means the project keeps routing, session identity, policy decisions, persis
 - Session service: orchestrates persistence and run creation
 - Worker: claims queued runs and executes assistant turns
 - Assistant graph/runtime: performs the assistant decision flow
+- Media processor: normalizes accepted attachments before they enter turn context
 - Tool registry and policy layer: controls which tools are visible and executable
+- Outbound dispatcher: parses directives, chunks text, applies channel capability rules, and records delivery attempts
+- Channel adapters: thin transport-specific send interfaces for `webchat`, `slack`, and `telegram`
 - Database: stores sessions, messages, approvals, artifacts, runs, and audits
 - Node runner: isolated internal execution boundary for remote command execution
 - Sandbox service: resolves sandbox profile and workspace rules per agent/run
@@ -79,16 +85,21 @@ flowchart LR
     B --> E[Session Service]
     E --> F[(Execution Runs)]
     F --> G[Worker]
-    G --> H[Assistant Graph Runtime]
-    H --> I[Policy Service]
-    H --> J[Tool Registry]
-    H --> K[Context Service]
-    K --> D
-    J --> L[Local Safe Tools]
-    J --> M[Governed Remote Exec Tool]
-    M --> N[Node Runner]
-    N --> O[(Node Execution Audits)]
-    E --> P[(Governance and Artifacts)]
+    G --> H[Media Processor]
+    H --> D
+    G --> I[Assistant Graph Runtime]
+    I --> J[Policy Service]
+    I --> K[Tool Registry]
+    I --> L[Context Service]
+    L --> D
+    K --> M[Local Safe Tools]
+    K --> N[Governed Remote Exec Tool]
+    N --> O[Node Runner]
+    O --> P[(Node Execution Audits)]
+    G --> Q[Outbound Dispatcher]
+    Q --> R[Channel Adapters]
+    Q --> S[(Outbound Deliveries)]
+    E --> T[(Governance and Artifacts)]
 ```
 
 ### Runtime sequence for a normal inbound message
@@ -100,15 +111,20 @@ sequenceDiagram
     participant DB
     participant Worker
     participant Runtime
+    participant Channel
 
     Client->>Gateway: POST /inbound/message
-    Gateway->>DB: validate, dedupe, resolve/create session
+    Gateway->>DB: validate payload, dedupe, resolve/create session
     Gateway->>DB: append user message
+    Gateway->>DB: append canonical attachment inputs if present
     Gateway->>DB: create or reuse execution_run
     Gateway-->>Client: 202 Accepted + session_id + run_id
     Worker->>DB: claim queued run
+    Worker->>DB: normalize attachments to terminal states
     Worker->>Runtime: execute assistant turn
     Runtime->>DB: append assistant message, artifacts, manifests, audits
+    Worker->>DB: create outbound delivery records and attempts
+    Worker->>Channel: send chunked text and bounded media instructions
     Worker->>DB: mark run terminal state
 ```
 
@@ -132,6 +148,7 @@ Its responsibilities are:
 - enforce routing rules
 - claim idempotency records
 - persist inbound transcript messages
+- persist canonical inbound attachment references
 - create durable execution runs
 - return quickly with `202 Accepted`
 
@@ -141,7 +158,9 @@ After the gateway accepts work, the worker becomes responsible for execution. Th
 
 - claims queued runs
 - applies lane and global concurrency rules
+- performs first-pass attachment normalization for inbound-triggered runs
 - invokes the assistant runtime
+- dispatches outbound text and media after the assistant turn completes
 - persists results, errors, and diagnostics
 
 #### Assistant runtime
@@ -151,6 +170,7 @@ The current runtime is intentionally narrow and deterministic. It can:
 - return plain assistant text
 - call a safe local tool such as `echo_text`
 - call approval-governed tools such as `send_message`
+- prepare runtime-owned outbound intents that are dispatched after the turn
 - prepare a remote execution request when governed access exists
 
 The default model path today is a rule-based adapter, which means the architecture is ready for LLMs, but the default implementation is not yet provider-backed.
@@ -174,8 +194,29 @@ The platform keeps transcript history as the main source of truth. It also suppo
 - summary snapshots
 - context manifests
 - outbox jobs
+- normalized attachment references used during a turn
 
 This lets the system inspect how context was assembled for each turn and lays the groundwork for future summarization and retrieval workflows.
+
+#### Channels, chunking, and media handling
+
+The system now includes a shared outbound delivery layer for three supported channel kinds in this phase:
+
+- `webchat`
+- `slack`
+- `telegram`
+
+This layer is still gateway-owned and worker-driven. That means channel adapters remain thin. They do not invoke the graph, own orchestration, or parse assistant directives themselves.
+
+In practical terms, the platform now supports:
+
+- optional canonical `attachments` on `POST /inbound/message`
+- worker-side normalization of accepted attachments into safe stored media records
+- directive parsing for bounded reply and media instructions
+- deterministic post-turn chunking for large outbound text
+- append-only delivery and delivery-attempt auditing
+
+This is an important distinction for both non-developers and developers: the system now behaves more like a real multi-channel assistant, but it still does not provide true token-by-token streaming or production provider integrations in this phase.
 
 #### Remote node-runner and sandboxing
 
@@ -231,6 +272,8 @@ The database currently stores the system's durable state in tables such as:
 - `sessions`
 - `messages`
 - `inbound_dedupe`
+- `inbound_message_attachments`
+- `message_attachments`
 - `session_artifacts`
 - `tool_audit_events`
 - `governance_transcript_events`
@@ -243,16 +286,13 @@ The database currently stores the system's durable state in tables such as:
 - `global_run_leases`
 - `scheduled_jobs`
 - `scheduled_job_fires`
+- `outbound_deliveries`
+- `outbound_delivery_attempts`
 - `agent_sandbox_profiles`
 - `node_execution_audits`
-
-There are also continuity-oriented models in the codebase for:
-
 - `summary_snapshots`
 - `outbox_jobs`
 - `context_manifests`
-
-Important current note: those continuity tables are modeled in code and tests, but the README indicates their Alembic migration support is still incomplete.
 
 ### Current implementation boundaries
 
@@ -263,6 +303,10 @@ Implemented now:
 - idempotency and duplicate replay protection
 - worker-owned queued execution
 - approval-gated capability execution
+- canonical inbound attachment acceptance
+- worker-owned attachment normalization and safe local media staging
+- shared outbound dispatch with directive stripping and deterministic chunking
+- append-only outbound delivery auditing for `webchat`, `slack`, and `telegram`
 - signed internal node-runner requests
 - audit persistence for remote execution
 
@@ -270,7 +314,7 @@ Planned or partial:
 
 - true LLM provider integration
 - retrieval indexing and retrieval-assisted context assembly
-- outbound transport delivery
+- production transport API integrations beyond the current thin channel adapters
 - stronger production sandbox isolation
 - richer operator diagnostics and presence surfaces
 
@@ -314,6 +358,12 @@ Key variables include:
 - `PYTHON_CLAW_DEDUPE_STALE_AFTER_SECONDS`
 - `PYTHON_CLAW_RUNTIME_TRANSCRIPT_CONTEXT_LIMIT`
 - `PYTHON_CLAW_EXECUTION_RUN_GLOBAL_CONCURRENCY`
+- `PYTHON_CLAW_MEDIA_STORAGE_ROOT`
+- `PYTHON_CLAW_MEDIA_STORAGE_BUCKET`
+- `PYTHON_CLAW_MEDIA_RETENTION_DAYS`
+- `PYTHON_CLAW_MEDIA_ALLOWED_SCHEMES`
+- `PYTHON_CLAW_MEDIA_ALLOWED_MIME_PREFIXES`
+- `PYTHON_CLAW_MEDIA_MAX_BYTES`
 - `PYTHON_CLAW_REMOTE_EXECUTION_ENABLED`
 - `PYTHON_CLAW_NODE_RUNNER_SIGNING_KEY_ID`
 - `PYTHON_CLAW_NODE_RUNNER_SIGNING_SECRET`
@@ -362,7 +412,7 @@ Apply the schema with:
 uv run alembic upgrade head
 ```
 
-This creates the currently migrated database tables needed by the gateway, queueing, governance, and node-runner flows.
+This creates the currently migrated database tables needed by the gateway, queueing, governance, media normalization, outbound delivery auditing, and node-runner flows.
 
 ### Step 5: Start the gateway API
 
@@ -401,7 +451,8 @@ For local development, the usual flow is:
 1. Send an inbound message to the gateway
 2. Receive a `run_id`
 3. Run the worker pass
-4. Inspect the session messages and run state
+4. Inspect the session messages, attachment state, and run state
+5. If relevant, inspect outbound delivery records in the database
 
 ### Step 8: Run tests
 
@@ -419,6 +470,7 @@ uv run pytest tests/test_runtime.py
 uv run pytest tests/test_integration.py
 uv run pytest tests/test_async_queueing_coverage.py
 uv run pytest tests/test_node_sandbox.py
+uv run pytest tests/test_channels_media.py
 ```
 
 Note: the tests primarily use temporary SQLite fixtures, so they do not require local PostgreSQL or Redis to pass.
@@ -485,6 +537,37 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
   }'
 ```
 
+Send an inbound event with a canonical attachment:
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel_kind": "telegram",
+    "channel_account_id": "acct-1",
+    "external_message_id": "msg-attachment-1",
+    "sender_id": "sender-1",
+    "content": "please review this file",
+    "peer_id": "peer-1",
+    "attachments": [
+      {
+        "source_url": "file:///absolute/path/to/example.pdf",
+        "mime_type": "application/pdf",
+        "filename": "example.pdf",
+        "provider_metadata": {
+          "provider": "manual-test"
+        }
+      }
+    ]
+  }'
+```
+
+Important behavior note:
+
+- the gateway accepts and persists the attachment reference immediately
+- the worker performs normalization after the request has already returned `202 Accepted`
+- only normalized `stored` attachments are exposed back into turn context or outbound media sends
+
 Expected response shape:
 
 ```json
@@ -514,6 +597,63 @@ Read run diagnostics:
 ```bash
 curl http://127.0.0.1:8000/runs/<run_id>
 curl http://127.0.0.1:8000/sessions/<session_id>/runs
+```
+
+### Example: use the `webchat` adapter locally
+
+The current `webchat` adapter is a thin local channel adapter, not a full browser chat frontend. In local development, the easiest way to use it is to treat `webchat` as another `channel_kind` on the same gateway API and send messages through `POST /inbound/message`.
+
+This is useful when you want to test:
+
+- a browser-like direct-message channel identity
+- outbound chunking through a non-Slack, non-Telegram adapter
+- the shared dispatcher and adapter contracts without involving an external provider
+
+Send a basic `webchat` message:
+
+```bash
+curl -X POST http://127.0.0.1:8000/inbound/message \
+  -H "Content-Type: application/json" \
+  -d '{
+    "channel_kind": "webchat",
+    "channel_account_id": "local-webchat",
+    "external_message_id": "web-msg-1",
+    "sender_id": "browser-user-1",
+    "content": "hello from webchat",
+    "peer_id": "browser-user-1"
+  }'
+```
+
+Expected local flow:
+
+1. The gateway accepts the `webchat` message and returns `202 Accepted`.
+2. The worker later claims the queued run and executes the assistant turn.
+3. If the turn produces an outbound intent, the shared dispatcher routes it to the `webchat` adapter.
+4. Delivery is recorded in `outbound_deliveries` and `outbound_delivery_attempts`.
+
+In other words, `webchat` is currently exercised through the same gateway surface as the other channels. There is not yet a separate browser transport server, WebSocket feed, or UI bundle in this repository.
+
+### Webchat adapter flow
+
+```mermaid
+sequenceDiagram
+    participant Browser as Browser or Web Client
+    participant Gateway
+    participant DB
+    participant Worker
+    participant Runtime
+    participant Dispatcher
+    participant Webchat as Webchat Adapter
+
+    Browser->>Gateway: POST /inbound/message (channel_kind=webchat)
+    Gateway->>DB: persist inbound message and queued run
+    Gateway-->>Browser: 202 Accepted + session_id + run_id
+    Worker->>DB: claim queued run
+    Worker->>Runtime: execute assistant turn
+    Runtime->>DB: persist assistant message and outbound intent
+    Worker->>Dispatcher: dispatch completed turn output
+    Dispatcher->>Webchat: send text chunk or media instruction
+    Dispatcher->>DB: persist outbound delivery and attempt rows
 ```
 
 ### Example interaction patterns
@@ -549,6 +689,10 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
 ```
 
 In the governed case, the system may require approval before the action can be used or completed.
+
+Large outbound responses are now sent through the shared dispatcher after the assistant turn completes. If the text exceeds a channel's configured limit, it is split into deterministic chunks before send. The current phase supports bounded reply and media directives internally, but those directives are parsed and stripped by shared runtime code rather than being passed through as visible adapter commands.
+
+If you want to test this specifically with `webchat`, send the same kinds of inbound messages shown above, but use `"channel_kind": "webchat"` and then inspect the resulting transcript, run status, and outbound delivery rows after the worker executes.
 
 ### How sessions are determined
 
@@ -590,8 +734,8 @@ If you are not writing code, the simplest way to understand system behavior is:
 Developers will usually interact at three levels:
 
 - API level: send inbound requests and inspect sessions/runs
-- code level: modify routing, runtime, policies, tools, or execution components
-- persistence level: inspect durable state in PostgreSQL when debugging
+- code level: modify routing, runtime, policies, tools, media processing, or channel dispatch components
+- persistence level: inspect durable state in PostgreSQL when debugging, including attachment and outbound delivery records
 
 Recommended starting files for developers:
 
@@ -602,9 +746,19 @@ Recommended starting files for developers:
 - `src/jobs/service.py`
 - `src/graphs/assistant_graph.py`
 - `src/graphs/nodes.py`
+- `src/media/processor.py`
+- `src/channels/dispatch.py`
+- `src/channels/adapters/`
 - `src/policies/service.py`
 - `src/tools/registry.py`
 - `apps/node_runner/main.py`
+
+If you are specifically working on adapter behavior, start with:
+
+- `src/channels/adapters/webchat.py`
+- `src/channels/adapters/slack.py`
+- `src/channels/adapters/telegram.py`
+- `src/channels/adapters/base.py`
 
 ## Additional Useful Information
 
@@ -614,8 +768,9 @@ The current repository is intentionally narrow. A few important limitations to k
 
 - the default assistant behavior is rule-based, not backed by a live LLM provider
 - Redis is provisioned but not yet central to the request path
-- outbound delivery stops at intent/artifact creation rather than real channel dispatch
-- continuity support exists, but some migration support is still pending
+- outbound delivery is channel-aware and audited, but current adapters are still thin local implementations rather than production provider clients
+- media handling is limited to normalization, classification, safe storage references, and bounded outbound media dispatch
+- true incremental streaming is not implemented; this phase uses post-turn chunked delivery
 - remote execution policy and auditing are implemented more fully than sandbox enforcement
 
 ### Future specs and planned growth
@@ -630,18 +785,6 @@ The project already has a model adapter contract in `src/providers/models.py`. T
 - richer prompt/context assembly
 - tool-calling with real model providers
 - fallback, retry, and auth-profile handling
-
-#### Channels, media, and outbound delivery
-
-Spec 007 introduces the next major delivery slice:
-
-- outbound dispatcher abstraction
-- chunking for large responses
-- attachment normalization
-- media-safe handling
-- transport-specific adapter boundaries
-
-This will make the platform feel more like a real multi-channel assistant system.
 
 #### Observability and operational hardening
 

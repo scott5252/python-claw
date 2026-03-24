@@ -367,6 +367,9 @@ def execute_turn(*, db: Session, state: AssistantState, dependencies: GraphDepen
                             "text": result.outbound_intent.text,
                             "channel_kind": result.outbound_intent.channel_kind,
                             "sender_id": result.outbound_intent.sender_id,
+                            "media_refs": result.outbound_intent.media_refs,
+                            "reply_to_external_id": result.outbound_intent.reply_to_external_id,
+                            "execution_run_id": context.runtime_services.execution_run_id,
                         },
                     )
                     event = ToolEvent(
@@ -380,6 +383,8 @@ def execute_turn(*, db: Session, state: AssistantState, dependencies: GraphDepen
                                 "text": result.outbound_intent.text,
                                 "channel_kind": result.outbound_intent.channel_kind,
                                 "sender_id": result.outbound_intent.sender_id,
+                                "media_refs": result.outbound_intent.media_refs,
+                                "reply_to_external_id": result.outbound_intent.reply_to_external_id,
                             },
                         },
                     )
@@ -421,7 +426,7 @@ def execute_turn(*, db: Session, state: AssistantState, dependencies: GraphDepen
         else:
             state.response_text = model_result.response_text
 
-    dependencies.repository.append_message(
+    assistant_message = dependencies.repository.append_message(
         db,
         dependencies.repository.get_session(db, state.session_id),
         role="assistant",
@@ -430,5 +435,6 @@ def execute_turn(*, db: Session, state: AssistantState, dependencies: GraphDepen
         sender_id=state.agent_id,
         last_activity_at=datetime.now(timezone.utc),
     )
+    state.assistant_message_id = assistant_message.id
     dependencies.context_service.persist_manifest(db=db, repository=dependencies.repository, state=state)
     return state

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
 from src.config.settings import Settings
 from src.capabilities.repository import CapabilitiesRepository
+from src.channels.dispatch_registry import build_dispatcher
 from src.capabilities.activation import ActivationController
 from src.context.service import ContextService
 from src.db.session import DatabaseSessionManager
@@ -16,6 +19,7 @@ from src.jobs.service import FailureClassifier, RunExecutionService, SchedulerSe
 from src.observability.audit import ToolAuditSink
 from src.policies.service import PolicyService
 from src.providers.models import RuleBasedModelAdapter
+from src.media.processor import MediaProcessor
 from src.execution.audit import ExecutionAuditRepository
 from src.execution.contracts import NodeExecutionResult
 from src.execution.runtime import RemoteExecutionRuntime
@@ -139,6 +143,17 @@ def create_run_execution_service(settings: Settings) -> RunExecutionService:
         failure_classifier=FailureClassifier(),
         base_backoff_seconds=settings.execution_run_backoff_seconds,
         max_backoff_seconds=settings.execution_run_backoff_max_seconds,
+        media_processor=MediaProcessor(
+            storage_root=(Path(settings.media_storage_root)),
+            storage_bucket=settings.media_storage_bucket,
+            retention_days=settings.media_retention_days,
+            max_bytes=settings.media_max_bytes,
+            allowed_schemes=tuple(item.strip() for item in settings.media_allowed_schemes.split(",") if item.strip()),
+            allowed_mime_prefixes=tuple(
+                item.strip() for item in settings.media_allowed_mime_prefixes.split(",") if item.strip()
+            ),
+        ),
+        outbound_dispatcher=build_dispatcher(),
     )
 
 

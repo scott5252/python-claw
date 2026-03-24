@@ -1,9 +1,42 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+class CanonicalAttachmentInput(BaseModel):
+    external_attachment_id: str | None = None
+    source_url: str
+    mime_type: str
+    filename: str | None = None
+    byte_size: int | None = None
+    provider_metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("source_url", "mime_type")
+    @classmethod
+    def _require_non_empty(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("must be non-empty")
+        return trimmed
+
+    @field_validator("byte_size")
+    @classmethod
+    def _validate_byte_size(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("byte_size must be non-negative")
+        return value
+
+    @field_validator("provider_metadata")
+    @classmethod
+    def _validate_provider_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        encoded = json.dumps(value, sort_keys=True)
+        if len(encoded) > 2000:
+            raise ValueError("provider_metadata must be 2000 characters or fewer")
+        return value
 
 
 class InboundMessageRequest(BaseModel):
@@ -14,6 +47,7 @@ class InboundMessageRequest(BaseModel):
     content: str
     peer_id: str | None = None
     group_id: str | None = None
+    attachments: list[CanonicalAttachmentInput] = Field(default_factory=list)
 
 class InboundMessageResponse(BaseModel):
     session_id: str
