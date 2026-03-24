@@ -22,6 +22,7 @@ class AssistantGraph:
         channel_kind: str,
         sender_id: str,
         user_text: str,
+        execution_run_id: str | None = None,
     ) -> AssistantState:
         state = assemble_state(
             db=db,
@@ -33,6 +34,8 @@ class AssistantGraph:
             sender_id=sender_id,
             user_text=user_text,
         )
+        if execution_run_id is not None:
+            state.context_manifest["execution_run_id"] = execution_run_id
         return execute_turn(db=db, state=state, dependencies=self.dependencies)
 
 

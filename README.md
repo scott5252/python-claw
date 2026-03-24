@@ -1,6 +1,6 @@
 # python-claw
 
-`python-claw` is the foundation for a gateway-first assistant runtime inspired by the `001-gateway-sessions`, `002-runtime-tools`, `003-capability-governance`, and `004-context-continuity` specs in [`/specs/001-gateway-sessions/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/001-gateway-sessions/spec.md), [`/specs/002-runtime-tools/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/002-runtime-tools/spec.md), [`/specs/003-capability-governance/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/003-capability-governance/spec.md), and [`/specs/004-context-continuity/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/004-context-continuity/spec.md). The current implementation focuses on these things:
+`python-claw` is the foundation for a gateway-first assistant runtime inspired by the `001-gateway-sessions`, `002-runtime-tools`, `003-capability-governance`, `004-context-continuity`, `005-async-queueing`, and `006-node-sandbox` specs in [`/specs/001-gateway-sessions/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/001-gateway-sessions/spec.md), [`/specs/002-runtime-tools/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/002-runtime-tools/spec.md), [`/specs/003-capability-governance/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/003-capability-governance/spec.md), [`/specs/004-context-continuity/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/004-context-continuity/spec.md), [`/specs/005-async-queueing/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/005-async-queueing/spec.md), and [`/specs/006-node-sandbox/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/006-node-sandbox/spec.md). The current implementation focuses on these things:
 
 - a single FastAPI gateway entrypoint
 - deterministic routing into durable sessions
@@ -14,6 +14,9 @@
 - transcript-first context assembly with additive summary snapshots
 - per-turn persisted context manifests for inspection and replay analysis
 - post-turn outbox enqueueing for summaries, retrieval indexing, and continuity repair
+- durable queued execution runs, worker leasing, and run diagnostics
+- a separate internal node-runner service boundary for signed remote execution
+- per-agent sandbox profile resolution and durable node execution audits
 
 This README is written for a developer who needs to understand what was implemented, how to run it, and how to test it locally.
 
@@ -25,6 +28,9 @@ The application exposes:
 - `POST /inbound/message`
 - `GET /sessions/{session_id}`
 - `GET /sessions/{session_id}/messages`
+- `GET /sessions/{session_id}/governance/pending`
+- `GET /runs/{run_id}`
+- `GET /sessions/{session_id}/runs`
 
 The implemented flow for `POST /inbound/message` is:
 
@@ -33,11 +39,10 @@ The implemented flow for `POST /inbound/message` is:
 3. resolve or create the canonical session
 4. append one inbound `user` message
 5. finalize the dedupe record with the resulting `session_id` and `message_id`
-6. invoke the gateway-owned single-turn assistant runtime
-7. append one assistant transcript message
-8. persist any runtime tool artifacts and audit events created during the turn
-9. persist one inspectable context manifest for the turn
-10. enqueue additive post-turn continuity jobs
+6. create or reuse one durable `execution_runs` row for the turn
+7. return `202 Accepted` with `run_id` and queued status
+8. let a worker claim and execute the queued run through the gateway-owned runtime
+9. append the assistant transcript message plus runtime artifacts, manifests, and post-turn jobs during worker execution
 
 That behavior is implemented across:
 
@@ -52,9 +57,12 @@ That behavior is implemented across:
 - model adapter contract: [`src/providers/models.py`](/Users/scottcornell/src/projects/python-claw/src/providers/models.py)
 - audit sink: [`src/observability/audit.py`](/Users/scottcornell/src/projects/python-claw/src/observability/audit.py)
 - persistence layer: [`src/sessions/repository.py`](/Users/scottcornell/src/projects/python-claw/src/sessions/repository.py)
+- queueing and worker orchestration: [`src/jobs/repository.py`](/Users/scottcornell/src/projects/python-claw/src/jobs/repository.py), [`src/jobs/service.py`](/Users/scottcornell/src/projects/python-claw/src/jobs/service.py), [`apps/worker/jobs.py`](/Users/scottcornell/src/projects/python-claw/apps/worker/jobs.py)
+- remote execution contracts and runtime: [`src/execution/contracts.py`](/Users/scottcornell/src/projects/python-claw/src/execution/contracts.py), [`src/execution/runtime.py`](/Users/scottcornell/src/projects/python-claw/src/execution/runtime.py), [`src/tools/remote_exec.py`](/Users/scottcornell/src/projects/python-claw/src/tools/remote_exec.py)
+- node runner and sandbox resolution: [`apps/node_runner/main.py`](/Users/scottcornell/src/projects/python-claw/apps/node_runner/main.py), [`apps/node_runner/api/internal.py`](/Users/scottcornell/src/projects/python-claw/apps/node_runner/api/internal.py), [`apps/node_runner/policy.py`](/Users/scottcornell/src/projects/python-claw/apps/node_runner/policy.py), [`apps/node_runner/executor.py`](/Users/scottcornell/src/projects/python-claw/apps/node_runner/executor.py), [`src/sandbox/service.py`](/Users/scottcornell/src/projects/python-claw/src/sandbox/service.py), [`src/security/signing.py`](/Users/scottcornell/src/projects/python-claw/src/security/signing.py)
 - idempotency lifecycle: [`src/gateway/idempotency.py`](/Users/scottcornell/src/projects/python-claw/src/gateway/idempotency.py)
 - database schema: [`src/db/models.py`](/Users/scottcornell/src/projects/python-claw/src/db/models.py)
-- migrations: [`migrations/versions/20260322_001_gateway_sessions.py`](/Users/scottcornell/src/projects/python-claw/migrations/versions/20260322_001_gateway_sessions.py), [`migrations/versions/20260322_002_runtime_tools.py`](/Users/scottcornell/src/projects/python-claw/migrations/versions/20260322_002_runtime_tools.py), [`migrations/versions/20260322_003_capability_governance.py`](/Users/scottcornell/src/projects/python-claw/migrations/versions/20260322_003_capability_governance.py)
+- migrations: [`migrations/versions/20260322_001_gateway_sessions.py`](/Users/scottcornell/src/projects/python-claw/migrations/versions/20260322_001_gateway_sessions.py), [`migrations/versions/20260322_002_runtime_tools.py`](/Users/scottcornell/src/projects/python-claw/migrations/versions/20260322_002_runtime_tools.py), [`migrations/versions/20260322_003_capability_governance.py`](/Users/scottcornell/src/projects/python-claw/migrations/versions/20260322_003_capability_governance.py), [`migrations/versions/20260323_005_async_queueing.py`](/Users/scottcornell/src/projects/python-claw/migrations/versions/20260323_005_async_queueing.py), [`migrations/versions/20260324_006_node_sandbox.py`](/Users/scottcornell/src/projects/python-claw/migrations/versions/20260324_006_node_sandbox.py)
 
 ## Spec 002 Runtime Tools
 
@@ -259,6 +267,124 @@ If you want the shortest path to understanding Spec 004, read:
 5. [`src/context/outbox.py`](/Users/scottcornell/src/projects/python-claw/src/context/outbox.py)
 6. [`tests/test_repository.py`](/Users/scottcornell/src/projects/python-claw/tests/test_repository.py) and [`tests/test_integration.py`](/Users/scottcornell/src/projects/python-claw/tests/test_integration.py)
 
+## Spec 005 Async Queueing
+
+Spec 005 moves assistant execution out of the request thread and into durable `execution_runs` rows processed by a worker. The key idea is that the gateway still owns intake, routing, transcript persistence, and idempotency, but user-visible turn execution now happens asynchronously under lease-controlled worker ownership.
+
+The runtime shape is still intentionally narrow in this spec:
+
+- inbound acceptance and graph execution are split
+- one durable run is created per trigger identity
+- same-session work is serialized by lane leases
+- global concurrency is bounded by explicit global lease slots
+- scheduler fires reuse the same execution-run system
+
+### What A Developer Needs To Know
+
+The important implementation boundary is:
+
+- `SessionService` accepts inbound work and creates durable `execution_runs`
+- `RunExecutionService` is the worker-side owner of claiming, running, retrying, and completing runs
+- `JobsRepository` owns run state transitions, lease acquisition, and replay-safe trigger identity
+- `SessionConcurrencyService` wraps the lane and global lease rules introduced by this spec
+- `apps/worker/jobs.py` is the narrow entry point for processing one eligible run
+- the graph runtime still runs through the same `AssistantGraph`, but only after a worker claims the run
+
+In the current workspace, queueing behavior is intentionally concrete:
+
+- `POST /inbound/message` returns `202 Accepted`
+- the response includes `run_id` and the run's initial `queued` status
+- transcript shows the inbound `user` message before the worker runs
+- assistant output appears only after a worker claims and completes the queued run
+- scheduler submissions create canonical user-role trigger messages and then reuse the same run pipeline
+
+### Runtime Flow
+
+For each accepted inbound message, the application now does this:
+
+1. normalize routing, claim dedupe, and append the inbound `user` message
+2. create or reuse one durable `execution_runs` row keyed by the trigger identity
+3. return `202 Accepted` with the run metadata
+4. let a worker claim the next eligible run subject to lane and global lease rules
+5. execute the assistant graph for the canonical transcript message
+6. persist terminal run state plus any runtime artifacts and post-turn jobs
+
+The queueing records introduced by Spec 005 are:
+
+- `execution_runs` for durable queued and terminal run state
+- `session_run_leases` for same-session FIFO ownership
+- `global_run_leases` for bounded global concurrency
+- `scheduled_jobs` and `scheduled_job_fires` for replay-safe scheduler submission
+
+### Files To Read First
+
+If you want the shortest path to understanding Spec 005, read:
+
+1. [`specs/005-async-queueing/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/005-async-queueing/spec.md)
+2. [`src/sessions/service.py`](/Users/scottcornell/src/projects/python-claw/src/sessions/service.py)
+3. [`src/jobs/repository.py`](/Users/scottcornell/src/projects/python-claw/src/jobs/repository.py)
+4. [`src/jobs/service.py`](/Users/scottcornell/src/projects/python-claw/src/jobs/service.py)
+5. [`src/sessions/concurrency.py`](/Users/scottcornell/src/projects/python-claw/src/sessions/concurrency.py)
+6. [`apps/worker/jobs.py`](/Users/scottcornell/src/projects/python-claw/apps/worker/jobs.py), [`apps/worker/scheduler.py`](/Users/scottcornell/src/projects/python-claw/apps/worker/scheduler.py), and [`tests/test_async_queueing_coverage.py`](/Users/scottcornell/src/projects/python-claw/tests/test_async_queueing_coverage.py)
+
+## Spec 006 Remote Node Runner And Per-Agent Sandboxing
+
+Spec 006 separates orchestration from privileged execution by introducing a fail-closed node-runner boundary. The key idea is that the gateway and workers still own policy, approval refresh, and request construction, but host execution now happens through one signed internal request contract with deterministic sandbox resolution and durable node execution audits.
+
+The runtime shape is still intentionally narrow in this spec:
+
+- remote execution remains approval-gated and typed
+- requests use argv semantics only
+- request signing and replay protection are mandatory
+- duplicate delivery reuses one logical execution attempt keyed by `request_id`
+- sandbox isolation is scaffolded, but container-backed enforcement is not fully implemented yet in this workspace
+
+### What A Developer Needs To Know
+
+The important implementation boundary is:
+
+- `TypedAction` now includes `remote_exec` as a governed `node_command_template` capability
+- `RemoteExecutionRuntime` constructs one canonical signed `NodeExecRequest` from approved template data, exact invocation parameters, and sandbox resolution
+- `ToolRegistry` can bind the remote-exec tool, but only when remote execution is enabled and an exact active approval exists
+- `NodeRunnerPolicy` independently verifies signatures, freshness, argv derivation, executable allowlists, and sandbox consistency before execution
+- `NodeRunnerExecutor` is execution-only and records terminal state through `node_execution_audits`
+- `SandboxService` resolves deterministic `off`, `shared`, or `agent` mode metadata plus one canonical workspace root
+
+In the current workspace, remote-execution behavior is intentionally concrete:
+
+- `/bin/echo` is the main allowlisted example executable used in tests and manual QA
+- the gateway runtime can sign and dispatch a request directly to the node-runner policy and executor path
+- duplicate delivery of the same signed request returns the existing persisted state
+- tampered requests fail closed before execution
+- container-backed sandbox metadata exists, but the actual container backend is only scaffolded so current execution still focuses on signed request, audit, and resolution contracts
+
+### Runtime Flow
+
+For one approved remote-execution attempt, the application now does this:
+
+1. refresh execution-time approval and policy state on the worker-owned path
+2. load the immutable approved `node_command_template`
+3. derive the canonical invocation parameters, final argv, sandbox mode, sandbox key, workspace root, and workspace mount mode
+4. derive one stable `request_id` from `(execution_run_id, tool_call_id, execution_attempt_number)`
+5. sign the canonical request and dispatch it to the node runner
+6. let the node runner insert-or-reuse the audit row, verify policy, execute if allowed, and return the persisted state
+
+The records introduced by Spec 006 are:
+
+- `node_execution_audits` for replay-safe execution attempts and terminal diagnostics
+- `agent_sandbox_profiles` for per-agent default mode, shared profile key, and timeout ceilings
+
+### Files To Read First
+
+If you want the shortest path to understanding Spec 006, read:
+
+1. [`specs/006-node-sandbox/spec.md`](/Users/scottcornell/src/projects/python-claw/specs/006-node-sandbox/spec.md)
+2. [`src/execution/contracts.py`](/Users/scottcornell/src/projects/python-claw/src/execution/contracts.py)
+3. [`src/execution/runtime.py`](/Users/scottcornell/src/projects/python-claw/src/execution/runtime.py)
+4. [`apps/node_runner/policy.py`](/Users/scottcornell/src/projects/python-claw/apps/node_runner/policy.py)
+5. [`apps/node_runner/executor.py`](/Users/scottcornell/src/projects/python-claw/apps/node_runner/executor.py)
+6. [`src/execution/audit.py`](/Users/scottcornell/src/projects/python-claw/src/execution/audit.py), [`src/sandbox/service.py`](/Users/scottcornell/src/projects/python-claw/src/sandbox/service.py), and [`tests/test_node_sandbox.py`](/Users/scottcornell/src/projects/python-claw/tests/test_node_sandbox.py)
+
 ## How To Read The Code
 
 If you want the fastest path through the codebase, read it in this order:
@@ -303,9 +429,16 @@ The current database tables are:
 - `resource_versions`: immutable proposed content versions
 - `resource_approvals`: exact-match approval and revocation state
 - `active_resources`: activation and revocation state
+- `execution_runs`: durable queued and terminal worker-owned turn execution
+- `session_run_leases`: same-session FIFO lease ownership
+- `global_run_leases`: bounded global concurrency slots
+- `scheduled_jobs`: durable scheduler definitions
+- `scheduled_job_fires`: replay-safe scheduler fire records
 - `summary_snapshots`: additive versioned summaries for continuity compaction
 - `outbox_jobs`: post-commit summary, retrieval, and repair jobs
 - `context_manifests`: persisted per-turn assembly manifests
+- `agent_sandbox_profiles`: per-agent sandbox defaults and timeout ceilings
+- `node_execution_audits`: signed remote-execution attempt and terminal audit state
 
 Important current behaviors:
 
@@ -316,6 +449,8 @@ Important current behaviors:
 - summary selection prefers the latest valid snapshot whose covered range is strictly before the current message
 - context manifests are retained with a bounded per-session history
 - approval visibility can be replayed from governance transcript events if normalized approval rows are missing
+- duplicate inbound deliveries reuse the same execution trigger identity instead of creating a second run
+- duplicate node-runner deliveries reuse the same `request_id` audit row instead of starting a second process
 
 ## Environment Setup
 
@@ -411,6 +546,12 @@ The main variables you will care about are:
 - `PYTHON_CLAW_MESSAGES_PAGE_DEFAULT_LIMIT`
 - `PYTHON_CLAW_MESSAGES_PAGE_MAX_LIMIT`
 - `PYTHON_CLAW_RUNTIME_TRANSCRIPT_CONTEXT_LIMIT`
+- `PYTHON_CLAW_EXECUTION_RUN_LEASE_SECONDS`
+- `PYTHON_CLAW_EXECUTION_RUN_GLOBAL_CONCURRENCY`
+- `PYTHON_CLAW_REMOTE_EXECUTION_ENABLED`
+- `PYTHON_CLAW_NODE_RUNNER_SIGNING_KEY_ID`
+- `PYTHON_CLAW_NODE_RUNNER_SIGNING_SECRET`
+- `PYTHON_CLAW_NODE_RUNNER_ALLOWED_EXECUTABLES`
 
 Compose-specific values in the same `.env` file are:
 
@@ -456,8 +597,15 @@ After the migration runs, the database should contain:
 - `resource_versions`
 - `resource_approvals`
 - `active_resources`
+- `execution_runs`
+- `session_run_leases`
+- `global_run_leases`
+- `scheduled_jobs`
+- `scheduled_job_fires`
+- `agent_sandbox_profiles`
+- `node_execution_audits`
 
-Current note for Spec 004: the ORM models and tests already include `summary_snapshots`, `outbox_jobs`, and `context_manifests`, but there is not yet a `004` Alembic migration under [`migrations/versions`](/Users/scottcornell/src/projects/python-claw/migrations/versions). If you rely on Alembic alone against PostgreSQL today, those three continuity tables will not be created until that migration is added.
+Current note for continuity tables: the ORM models and tests include `summary_snapshots`, `outbox_jobs`, and `context_manifests`, but there is not yet a `004` Alembic migration under [`migrations/versions`](/Users/scottcornell/src/projects/python-claw/migrations/versions). If you rely on Alembic alone against PostgreSQL today, those three continuity tables will not be created until that migration is added.
 
 ## How To Run The Application
 
@@ -500,6 +648,8 @@ Example response:
 {
   "session_id": "2f9f0d1f-1ab2-4d55-a4d8-0fcbf0fd1df7",
   "message_id": 1,
+  "run_id": "d7bb6bc6-0b0f-4c0f-89fc-45126377b2d0",
+  "status": "queued",
   "dedupe_status": "accepted"
 }
 ```
@@ -546,6 +696,29 @@ Read back transcript history:
 curl "http://127.0.0.1:8000/sessions/<session_id>/messages?limit=50"
 ```
 
+Read back run diagnostics:
+
+```bash
+curl http://127.0.0.1:8000/runs/<run_id>
+curl http://127.0.0.1:8000/sessions/<session_id>/runs
+```
+
+Run one worker pass locally:
+
+```bash
+uv run python - <<'PY'
+from apps.worker.jobs import run_once
+
+print(run_once())
+PY
+```
+
+Start the internal node runner locally when working on Spec 006:
+
+```bash
+uv run uvicorn apps.node_runner.main:app --reload --port 8010
+```
+
 ## How To Test The Code
 
 Sync dev dependencies first:
@@ -571,6 +744,8 @@ The tests currently use temporary SQLite databases created by pytest fixtures, s
 - [`tests/test_runtime.py`](/Users/scottcornell/src/projects/python-claw/tests/test_runtime.py): graph branching, policy-aware tool binding, and no fabricated success on tool failure
 - [`tests/test_api.py`](/Users/scottcornell/src/projects/python-claw/tests/test_api.py): inbound acceptance, duplicate replay, invalid routing, session history with assistant replies, and dedupe isolation across channels
 - [`tests/test_integration.py`](/Users/scottcornell/src/projects/python-claw/tests/test_integration.py): restart-safe session reuse, replay after restart, stale recovery, governed-tool flows, overflow degradation with continuity-repair enqueueing, and governance replay after normalized-state loss
+- [`tests/test_async_queueing_coverage.py`](/Users/scottcornell/src/projects/python-claw/tests/test_async_queueing_coverage.py): queued-run creation, worker execution, run diagnostics, FIFO lane behavior, and scheduler submission coverage
+- [`tests/test_node_sandbox.py`](/Users/scottcornell/src/projects/python-claw/tests/test_node_sandbox.py): stable request identity, signed request verification, deny-by-default remote tool binding, duplicate delivery reuse, and node-runner execution audit coverage
 
 Useful commands during development:
 
@@ -579,6 +754,8 @@ uv run pytest tests/test_runtime.py
 uv run pytest tests/test_api.py
 uv run pytest tests/test_integration.py
 uv run pytest tests/test_routing.py -q
+uv run pytest tests/test_async_queueing_coverage.py
+uv run pytest tests/test_node_sandbox.py
 ```
 
 ## Current Limitations
@@ -587,7 +764,7 @@ This repository is intentionally still at the foundation stage of the broader ar
 
 - the assistant runtime is single-turn only
 - the default model is a local rule-based adapter, not a provider-backed model
-- tools are local and safe only; there is no remote execution
+- remote execution exists only as a tightly scoped, approval-gated internal capability rather than a broad user-facing shell surface
 - outbound messaging stops at persisted intent creation; no transport dispatch layer exists yet
 - Redis is provisioned, but not yet used by the application code
 - tests validate behavior mostly against SQLite fixtures rather than a live PostgreSQL instance
@@ -595,5 +772,6 @@ This repository is intentionally still at the foundation stage of the broader ar
 - summary generation is a simple local heuristic worker, not a provider-backed summarization pipeline
 - the deterministic compaction path currently retries with at most one summary message plus a short tail, rather than a richer retrieval or chunking strategy
 - the continuity tables from Spec 004 are present in ORM models and tests, but Alembic migration support for them is still pending
+- the node-runner contract and audit flow are implemented, but the container backend is still scaffold-only rather than full production isolation
 
 That means the code is already useful for validating routing, session identity, transcript persistence, idempotent webhook handling, and the first runtime/tooling slice, but it is not yet a full multi-provider, multi-turn assistant platform.

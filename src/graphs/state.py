@@ -52,6 +52,10 @@ class ModelTurnResult:
 @dataclass(frozen=True)
 class ToolRuntimeServices:
     clock: Any | None = None
+    db: Any | None = None
+    execution_run_id: str | None = None
+    remote_execution_runtime: Any | None = None
+    policy_service: Any | None = None
 
 
 @dataclass(frozen=True)

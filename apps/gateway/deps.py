@@ -4,6 +4,7 @@ from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
 from src.config.settings import Settings
+from src.capabilities.repository import CapabilitiesRepository
 from src.capabilities.activation import ActivationController
 from src.context.service import ContextService
 from src.db.session import DatabaseSessionManager
@@ -15,12 +16,20 @@ from src.jobs.service import FailureClassifier, RunExecutionService, SchedulerSe
 from src.observability.audit import ToolAuditSink
 from src.policies.service import PolicyService
 from src.providers.models import RuleBasedModelAdapter
+from src.execution.audit import ExecutionAuditRepository
+from src.execution.contracts import NodeExecutionResult
+from src.execution.runtime import RemoteExecutionRuntime
+from src.sandbox.service import SandboxService
+from src.security.signing import SigningService
 from src.sessions.concurrency import SessionConcurrencyService
 from src.sessions.repository import SessionRepository
 from src.sessions.service import SessionService
 from src.tools.local_safe import create_echo_text_tool
 from src.tools.messaging import create_send_message_tool
+from src.tools.remote_exec import create_remote_exec_tool
 from src.tools.registry import ToolRegistry
+from apps.node_runner.executor import NodeRunnerExecutor
+from apps.node_runner.policy import NodeRunnerPolicy
 
 
 def get_settings(request: Request) -> Settings:
@@ -39,20 +48,61 @@ def get_db(
 
 
 def build_assistant_graph(settings: Settings, repository: SessionRepository):
+    capability_repository = CapabilitiesRepository()
+    signing_service = SigningService({settings.node_runner_signing_key_id: settings.node_runner_signing_secret})
+    audit_repository = ExecutionAuditRepository()
+    sandbox_service = SandboxService(settings=settings, capabilities_repository=capability_repository)
+    runner_policy = NodeRunnerPolicy(
+        settings=settings,
+        signing_service=signing_service,
+        capabilities_repository=capability_repository,
+        sandbox_service=sandbox_service,
+        audit_repository=audit_repository,
+    )
+    runner_executor = NodeRunnerExecutor(audit_repository=audit_repository)
+
+    def runner_client(db: Session, signed_request):
+        decision = runner_policy.authorize(db, signed_request=signed_request)
+        if decision.should_execute:
+            return runner_executor.execute(db, record=decision.record, request=signed_request.request)
+        record = runner_executor.audit_repository.get_by_request_id(db, request_id=signed_request.request.request_id)
+        if record is None:
+            raise RuntimeError("node audit record missing after policy decision")
+        return NodeExecutionResult(
+            request_id=record.request_id,
+            status=record.status,
+            exit_code=record.exit_code,
+            stdout_preview=record.stdout_preview,
+            stderr_preview=record.stderr_preview,
+            stdout_truncated=record.stdout_truncated,
+            stderr_truncated=record.stderr_truncated,
+            deny_reason=record.deny_reason,
+        )
+
+    remote_runtime = RemoteExecutionRuntime(
+        settings=settings,
+        capabilities_repository=capability_repository,
+        sandbox_service=sandbox_service,
+        signing_service=signing_service,
+        runner_client=runner_client,
+    )
+    policy_service = PolicyService(remote_execution_enabled=settings.remote_execution_enabled)
     return GraphFactory(
         GraphDependencies(
             repository=repository,
-            policy_service=PolicyService(),
+            policy_service=policy_service,
             model=RuleBasedModelAdapter(),
             tool_registry=ToolRegistry(
                 factories={
                     "echo_text": create_echo_text_tool,
                     "send_message": create_send_message_tool,
+                    "remote_exec": create_remote_exec_tool,
                 }
             ),
             audit_sink=ToolAuditSink(),
             activation_controller=ActivationController(repository=repository),
             context_service=ContextService(context_window=settings.runtime_transcript_context_limit),
+            remote_execution_runtime=remote_runtime,
         )
     ).build()
 

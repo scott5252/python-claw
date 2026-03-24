@@ -44,6 +44,7 @@ class TurnClassification:
 @dataclass
 class PolicyService:
     denied_capabilities: set[str] = field(default_factory=set)
+    remote_execution_enabled: bool = False
 
     def classify_turn(self, *, user_text: str) -> TurnClassification:
         lowered = user_text.strip().lower()
@@ -112,6 +113,8 @@ class PolicyService:
 
     def is_tool_allowed(self, *, context: ToolRuntimeContext, capability_name: str) -> bool:
         if capability_name in self.denied_capabilities:
+            return False
+        if capability_name == "remote_exec" and not self.remote_execution_enabled:
             return False
 
         typed_action = get_typed_action(capability_name)

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from src.context.service import ContextService
 from src.graphs.prompts import render_prompt
-from src.graphs.state import AssistantState, ToolEvent, ToolRuntimeContext
+from src.graphs.state import AssistantState, ToolEvent, ToolRuntimeContext, ToolRuntimeServices
 from src.observability.audit import ToolAuditEvent
 from src.policies.service import ApprovalMatch, TurnClassification
 from src.tools.registry import ToolRegistry
@@ -23,6 +23,7 @@ class GraphDependencies:
     audit_sink: Any
     activation_controller: Any
     context_service: ContextService
+    remote_execution_runtime: Any | None = None
 
 
 def assemble_state(
@@ -57,6 +58,7 @@ def _build_context(*, state: AssistantState, dependencies: GraphDependencies, db
         user_text=state.user_text,
     )
     policy_context["prompt"] = render_prompt(state)
+    existing_services = dependencies.model.runtime_services()
     return ToolRuntimeContext(
         session_id=state.session_id,
         message_id=state.message_id,
@@ -64,7 +66,13 @@ def _build_context(*, state: AssistantState, dependencies: GraphDependencies, db
         channel_kind=state.channel_kind,
         sender_id=state.sender_id,
         policy_context=policy_context,
-        runtime_services=dependencies.model.runtime_services(),
+        runtime_services=ToolRuntimeServices(
+            clock=getattr(existing_services, "clock", None),
+            db=db,
+            execution_run_id=state.context_manifest.get("execution_run_id"),
+            remote_execution_runtime=dependencies.remote_execution_runtime,
+            policy_service=dependencies.policy_service,
+        ),
     )
 
 

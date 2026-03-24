@@ -25,6 +25,13 @@ TYPED_ACTIONS: dict[str, TypedAction] = {
         description="Send an outbound message through the local messaging adapter.",
         requires_approval=True,
     ),
+    "remote_exec": TypedAction(
+        typed_action_id="tool.remote_exec",
+        capability_name="remote_exec",
+        description="Execute an approved remote node command template.",
+        requires_approval=True,
+        resource_kind="node_command_template",
+    ),
 }
 
 

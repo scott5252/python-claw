@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     execution_run_global_concurrency: int = 4
     session_runs_page_default_limit: int = 20
     session_runs_page_max_limit: int = 50
+    remote_execution_enabled: bool = False
+    node_runner_signing_key_id: str = "local-dev"
+    node_runner_signing_secret: str = "local-dev-secret"
+    node_runner_request_ttl_seconds: int = 30
+    node_runner_timeout_ceiling_seconds: int = 30
+    node_runner_allow_off_mode: bool = False
+    node_runner_allowed_executables: str = "/bin/echo,/usr/bin/env"
+    sandbox_workspace_root: str = ".claw-sandboxes"
+    sandbox_shared_base_key: str = "shared-default"
 
     model_config = SettingsConfigDict(
         env_prefix="PYTHON_CLAW_",

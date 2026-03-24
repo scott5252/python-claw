@@ -80,6 +80,7 @@ class RunExecutionService:
                 channel_kind=self.session_repository.get_session_channel_kind(db, session_id=run.session_id),
                 sender_id=message.sender_id,
                 user_text=message.content,
+                execution_run_id=run.id,
             )
             self._enqueue_after_turn_jobs(
                 db,

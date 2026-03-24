@@ -1260,6 +1260,353 @@ Look at these additional tables:
 - scheduler replay creates multiple trigger messages or multiple fire rows for one `fire_key`
 - run diagnostics disagree with database state
 
+## Spec 006: Remote Node Runner and Per-Agent Sandboxing
+
+Spec 006 adds a separate node-runner execution boundary, signed internal execution requests, per-agent sandbox profile resolution, and durable node execution audit rows.
+
+Current implementation notes:
+
+- the node runner is available as a separate FastAPI app at `apps.node_runner.main:app`
+- the gateway runtime can construct signed remote-exec requests, but this workspace does not yet expose a normal end-user prompt flow that proposes and approves `remote_exec`
+- manual QA for this spec is therefore internal-service and database driven
+- the signed-request, duplicate-delivery, allowlist, timeout, and audit contracts are implemented now
+- the container backend is only scaffolded in this workspace, so manual QA should focus on request verification, auditability, workspace resolution, and fail-closed behavior rather than real container isolation
+
+### Scenario 1: Start the gateway and node-runner with remote execution enabled
+
+Start the gateway in one terminal:
+
+```bash
+PYTHON_CLAW_REMOTE_EXECUTION_ENABLED=true \
+PYTHON_CLAW_NODE_RUNNER_SIGNING_KEY_ID=qa-key \
+PYTHON_CLAW_NODE_RUNNER_SIGNING_SECRET=qa-secret \
+PYTHON_CLAW_NODE_RUNNER_ALLOWED_EXECUTABLES=/bin/echo \
+uv run uvicorn apps.gateway.main:app --reload
+```
+
+Start the node runner in a second terminal:
+
+```bash
+PYTHON_CLAW_REMOTE_EXECUTION_ENABLED=true \
+PYTHON_CLAW_NODE_RUNNER_SIGNING_KEY_ID=qa-key \
+PYTHON_CLAW_NODE_RUNNER_SIGNING_SECRET=qa-secret \
+PYTHON_CLAW_NODE_RUNNER_ALLOWED_EXECUTABLES=/bin/echo \
+uv run uvicorn apps.node_runner.main:app --reload --port 8010
+```
+
+Expected result:
+
+- both services start cleanly
+- the gateway still serves `GET /health`
+- the node runner accepts internal requests on port `8010`
+
+What to verify:
+
+- the same signing key id and secret are configured on both services
+- the allowed executable list is explicit and narrow
+- remote execution stays disabled unless `PYTHON_CLAW_REMOTE_EXECUTION_ENABLED=true`
+
+### Scenario 2: Seed one approved remote-exec capability and sandbox profile
+
+Create a session, one user message, one sandbox profile, and one approved `node_command_template`:
+
+```bash
+uv run python - <<'PY'
+from datetime import datetime, timezone
+
+from src.capabilities.repository import CapabilitiesRepository
+from src.db.base import Base
+from src.db.session import DatabaseSessionManager
+from src.routing.service import RoutingInput, normalize_routing_input
+from src.sessions.repository import SessionRepository
+from src.config.settings import get_settings
+
+settings = get_settings()
+manager = DatabaseSessionManager(settings.database_url)
+Base.metadata.create_all(manager.engine)
+
+session_repo = SessionRepository()
+cap_repo = CapabilitiesRepository()
+
+with manager.session() as db:
+    routing = normalize_routing_input(
+        RoutingInput(
+            channel_kind="web",
+            channel_account_id="acct-qa-006",
+            sender_id="sender-qa-006",
+            peer_id="peer-qa-006",
+        )
+    )
+    session = session_repo.get_or_create_session(db, routing)
+    message = session_repo.append_message(
+        db,
+        session,
+        role="user",
+        content="remote exec qa seed",
+        external_message_id="msg-qa-006-seed",
+        sender_id="sender-qa-006",
+        last_activity_at=datetime.now(timezone.utc),
+    )
+    cap_repo.upsert_agent_sandbox_profile(
+        db,
+        agent_id="agent-qa-006",
+        default_mode="agent",
+        shared_profile_key="shared-default",
+        allow_off_mode=False,
+        max_timeout_seconds=5,
+    )
+    proposal, version, approval, active = cap_repo.create_remote_exec_capability(
+        db,
+        session_id=session.id,
+        message_id=message.id,
+        agent_id="agent-qa-006",
+        requested_by="sender-qa-006",
+        approver_id="sender-qa-006",
+        template_payload={
+            "capability_name": "remote_exec",
+            "executable": "/bin/echo",
+            "argv_template": ["{text}"],
+            "env_allowlist": [],
+            "working_dir": None,
+            "workspace_binding_kind": "session",
+            "fixed_workspace_key": None,
+            "workspace_mount_mode": "read_write",
+            "typed_action_id": "tool.remote_exec",
+            "sandbox_profile_key": "default",
+            "timeout_seconds": 5,
+        },
+        invocation_arguments={"text": "hello from qa"},
+    )
+    db.commit()
+    print("session_id=", session.id)
+    print("message_id=", message.id)
+    print("proposal_id=", proposal.id)
+    print("resource_version_id=", version.id)
+    print("approval_id=", approval.id)
+    print("active_resource_id=", active.id)
+PY
+```
+
+Expected result:
+
+- one session and one transcript message are created
+- one `agent_sandbox_profiles` row exists for `agent-qa-006`
+- one approved and active `node_command_template` capability exists for the exact parameter payload `{"text":"hello from qa"}`
+
+Inspect the seeded approval state:
+
+```sql
+select id, agent_id, default_mode, shared_profile_key, allow_off_mode, max_timeout_seconds
+from agent_sandbox_profiles
+where agent_id = 'agent-qa-006';
+```
+
+```sql
+select id, session_id, agent_id, resource_kind, current_state, latest_version_id
+from resource_proposals
+where agent_id = 'agent-qa-006'
+order by created_at desc;
+```
+
+```sql
+select id, proposal_id, content_hash, resource_payload
+from resource_versions
+where id = '<resource_version_id>';
+```
+
+```sql
+select id, proposal_id, resource_version_id, typed_action_id, canonical_params_hash, revoked_at
+from resource_approvals
+where id = '<approval_id>';
+```
+
+```sql
+select id, proposal_id, resource_version_id, typed_action_id, canonical_params_hash, activation_state
+from active_resources
+where id = '<active_resource_id>';
+```
+
+What to verify:
+
+- `resource_kind = 'node_command_template'`
+- the version payload includes `/bin/echo`, `workspace_binding_kind = 'session'`, and `typed_action_id = 'tool.remote_exec'`
+- the approval is exact-match scoped to the approved invocation parameters
+- the active resource is in `activation_state = 'active'`
+
+### Scenario 3: Send one valid signed request to the node runner
+
+Construct and submit a signed internal request:
+
+```bash
+uv run python - <<'PY'
+import json
+import urllib.request
+
+from src.capabilities.repository import CapabilitiesRepository
+from src.config.settings import get_settings
+from src.db.session import DatabaseSessionManager
+from src.execution.contracts import NodeCommandTemplate, RemoteInvocation, build_exec_request, derive_argv
+from src.sandbox.service import SandboxService
+from src.security.signing import SigningService
+
+settings = get_settings()
+manager = DatabaseSessionManager(settings.database_url)
+cap_repo = CapabilitiesRepository()
+
+resource_version_id = "<resource_version_id>"
+approval_id = "<approval_id>"
+session_id = "<session_id>"
+message_id = <message_id>
+agent_id = "agent-qa-006"
+
+with manager.session() as db:
+    version = cap_repo.get_resource_version(db, resource_version_id=resource_version_id)
+    template = NodeCommandTemplate.from_payload(__import__("json").loads(version.resource_payload))
+    sandbox = SandboxService(settings=settings, capabilities_repository=cap_repo).resolve(
+        db,
+        agent_id=agent_id,
+        session_id=session_id,
+        template=template,
+    )
+    invocation = RemoteInvocation(
+        arguments={"text": "hello from qa"},
+        env={},
+        working_dir=None,
+        timeout_seconds=5,
+    )
+    request = build_exec_request(
+        execution_run_id="run-qa-006-1",
+        tool_call_id="tool-qa-006-1",
+        execution_attempt_number=1,
+        session_id=session_id,
+        message_id=message_id,
+        agent_id=agent_id,
+        approval_id=approval_id,
+        resource_version_id=version.id,
+        resource_payload_hash=version.content_hash,
+        invocation=invocation,
+        argv=derive_argv(template=template, arguments={"text": "hello from qa"}),
+        sandbox_mode=sandbox.sandbox_mode,
+        sandbox_key=sandbox.sandbox_key,
+        workspace_root=sandbox.workspace_root,
+        workspace_mount_mode=sandbox.workspace_mount_mode,
+        typed_action_id="tool.remote_exec",
+        ttl_seconds=30,
+    )
+    signed = SigningService({settings.node_runner_signing_key_id: settings.node_runner_signing_secret}).build_signed_request(
+        key_id=settings.node_runner_signing_key_id,
+        request_payload=request.to_payload(),
+    )
+
+request = urllib.request.Request(
+    "http://127.0.0.1:8010/internal/node/exec",
+    data=json.dumps(signed.signed_payload()).encode("utf-8"),
+    headers={"Content-Type": "application/json"},
+    method="POST",
+)
+with urllib.request.urlopen(request, timeout=10) as response:
+    print(response.status)
+    print(json.loads(response.read().decode("utf-8")))
+PY
+```
+
+Expected result:
+
+- HTTP `200`
+- response includes `request_id`
+- `status` is `completed`
+- `stdout_preview` contains `hello from qa`
+
+Inspect the audit row:
+
+```sql
+select request_id, execution_run_id, tool_call_id, execution_attempt_number, session_id, agent_id, sandbox_mode, sandbox_key, workspace_root, workspace_mount_mode, typed_action_id, status, deny_reason, exit_code, stdout_preview, stderr_preview
+from node_execution_audits
+where request_id = '<request_id>';
+```
+
+What to verify:
+
+- the runner persisted one audit row before returning the terminal state
+- `status = 'completed'`
+- `typed_action_id = 'tool.remote_exec'`
+- `sandbox_mode`, `sandbox_key`, `workspace_root`, and `workspace_mount_mode` are populated deterministically
+- `stdout_preview` is bounded and inspectable from the database
+
+### Scenario 4: Replay the exact same signed request and verify duplicate safety
+
+Submit the exact same signed payload again.
+
+Expected result:
+
+- HTTP `200`
+- the same `request_id` is returned
+- the current persisted status is returned
+- no second process is started
+
+Verify in SQL:
+
+```sql
+select request_id, count(*)
+from node_execution_audits
+where request_id = '<request_id>'
+group by request_id;
+```
+
+What to verify:
+
+- the count remains `1`
+- duplicate delivery reused the persisted row instead of creating a second execution attempt
+
+### Scenario 5: Tamper with the request and verify fail-closed rejection
+
+Resend the same signed payload, but change one field after signing, for example change `argv` from `["/bin/echo", "hello from qa"]` to `["/bin/echo", "tampered"]`.
+
+You can do that by taking the previous Python snippet and mutating `signed.signed_payload()["request"]["argv"]` before the `POST`.
+
+Expected result:
+
+- HTTP `200`
+- the returned audit status is `rejected`
+- `deny_reason` indicates signature verification failure or replay payload mismatch
+
+Inspect the audit row:
+
+```sql
+select request_id, status, deny_reason, exit_code, stdout_preview, stderr_preview
+from node_execution_audits
+where request_id = '<request_id>';
+```
+
+What to verify:
+
+- the node runner rejects the request before execution
+- no successful stdout is recorded for the tampered request
+- request verification is fail-closed even when the original request id was known
+
+### Tables To Inspect For Spec 006
+
+Look at these additional tables:
+
+- `agent_sandbox_profiles`
+- `node_execution_audits`
+- `resource_proposals`
+- `resource_versions`
+- `resource_approvals`
+- `active_resources`
+- `messages`
+
+## Common Failure Signals For Spec 006
+
+- the node runner accepts a request with a modified payload after signing
+- duplicate delivery creates a second `node_execution_audits` row for the same `request_id`
+- `request_id` changes for the same logical `(execution_run_id, tool_call_id, execution_attempt_number)` attempt
+- the runner executes a non-allowlisted executable
+- sandbox metadata is missing or changes nondeterministically between identical requests
+- an unapproved or revoked `node_command_template` can still be executed
+- the audit row is missing even though the runner returned a result
+- `stdout_preview` or `stderr_preview` is unbounded or empty when terminal diagnostics should exist
+
 ### Tables To Inspect For Spec 004
 
 Look at these additional tables:
@@ -1297,6 +1644,7 @@ If you want a clean end-to-end manual QA flow, use this order:
 10. verify Spec 005 accept-and-queue, worker completion, and run diagnostics
 11. verify Spec 005 same-session FIFO and global-cap behavior
 12. verify Spec 005 scheduler fire replay and transcript provenance
+13. verify Spec 006 signed node-runner execution, duplicate replay safety, and fail-closed tamper rejection
 
 ## Common Failure Signals
 
@@ -1309,6 +1657,8 @@ These are useful signs that something is wrong:
 - revocation succeeds but later turns still use the old approval
 - transcript rows imply work happened but no matching artifacts or governance records exist
 - tool execution succeeds but there are no `tool_audit_events`
+- signed internal execution succeeds but no `node_execution_audits` row exists
+- duplicate node-runner delivery creates a second logical execution attempt
 
 ## Updating This Guide Later
 

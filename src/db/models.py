@@ -40,6 +40,15 @@ class ExecutionRunStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class NodeExecutionStatus(str, Enum):
+    RECEIVED = "received"
+    REJECTED = "rejected"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+
+
 class SessionRecord(Base):
     __tablename__ = "sessions"
     __table_args__ = (
@@ -412,3 +421,61 @@ class ContextManifestRecord(Base):
     manifest_json: Mapped[str] = mapped_column(Text, nullable=False)
     degraded: Mapped[bool] = mapped_column(nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class NodeExecutionAuditRecord(Base):
+    __tablename__ = "node_execution_audits"
+    __table_args__ = (
+        UniqueConstraint("request_id", name="uq_node_execution_audits_request_id"),
+        Index("ix_node_execution_audits_execution_run_created", "execution_run_id", "created_at"),
+        Index("ix_node_execution_audits_session_created", "session_id", "created_at"),
+        Index("ix_node_execution_audits_agent_created", "agent_id", "created_at"),
+        Index("ix_node_execution_audits_status_created", "status", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    execution_run_id: Mapped[str | None] = mapped_column(ForeignKey("execution_runs.id"), nullable=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    execution_attempt_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id"), nullable=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    agent_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    requester_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    sandbox_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    sandbox_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    workspace_root: Mapped[str] = mapped_column(String(1024), nullable=False)
+    workspace_mount_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    command_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    typed_action_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    approval_id: Mapped[str | None] = mapped_column(ForeignKey("resource_approvals.id"), nullable=True)
+    resource_version_id: Mapped[str | None] = mapped_column(ForeignKey("resource_versions.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    deny_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stdout_preview: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    stderr_preview: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    stdout_truncated: Mapped[bool] = mapped_column(nullable=False, default=False)
+    stderr_truncated: Mapped[bool] = mapped_column(nullable=False, default=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class AgentSandboxProfileRecord(Base):
+    __tablename__ = "agent_sandbox_profiles"
+    __table_args__ = (
+        UniqueConstraint("agent_id", name="uq_agent_sandbox_profiles_agent_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    agent_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    default_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    shared_profile_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    allow_off_mode: Mapped[bool] = mapped_column(nullable=False, default=False)
+    max_timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
