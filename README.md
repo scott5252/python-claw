@@ -5,7 +5,7 @@ This document translates the current project knowledge into a format that works 
 - technical non-developers who need to understand what the solution is
 - developers who need to run it, inspect it, and extend it
 
-This guide is intended to evolve as additional specs are completed. It reflects the project as it exists today and also highlights the next planned areas of growth, including LLM connectivity and future sub-agent support.
+This guide is intended to evolve as additional specs are completed. It reflects the project as it exists today and also highlights the next planned areas of growth, including deeper LLM capabilities and future sub-agent support.
 
 ## 1. Overview
 
@@ -27,7 +27,7 @@ In simpler terms, this project is the backend skeleton for an AI assistant syste
 
 ### What it does today
 
-The current implementation focuses on eight delivered capability areas:
+The current implementation focuses on nine delivered capability areas:
 
 1. Gateway sessions and deterministic routing
 2. Runtime tools and typed tool execution
@@ -37,12 +37,12 @@ The current implementation focuses on eight delivered capability areas:
 6. Remote node-runner execution with per-agent sandbox resolution
 7. Channel-aware outbound delivery, chunking, and first-pass media normalization
 8. Observability, diagnostics, health or readiness, and operational hardening
+9. Provider-backed LLM runtime with backend-owned prompt assembly and approval-safe tool routing
 
 ### What it does not do yet
 
 The project is still a foundation, not a finished end-user assistant platform. Important planned capabilities are still pending, including:
 
-- real provider-backed LLM integrations
 - real provider-backed transport APIs for Slack, Telegram, or web chat
 - richer retrieval and memory indexing
 - production-grade sandbox/container enforcement
@@ -189,7 +189,12 @@ The current runtime is intentionally narrow and deterministic. It can:
 - prepare runtime-owned outbound intents that are dispatched after the turn
 - prepare a remote execution request when governed access exists
 
-The default model path today is a rule-based adapter, which means the architecture is ready for LLMs, but the default implementation is not yet provider-backed.
+The runtime now supports two execution modes behind the same model adapter seam:
+
+- a default `rule_based` mode that remains safe for local development and CI
+- an explicit provider-backed mode that uses backend-authored prompt payloads, bounded provider retries, and translation back into the existing `ModelTurnResult` and `ToolRequest` contracts
+
+Even in provider-backed mode, tool execution, approval creation, artifact persistence, context-manifest ownership, and outbound dispatch all remain backend-owned. The model may suggest tools, but it does not execute them directly.
 
 #### Governance and approvals
 
@@ -338,7 +343,6 @@ Implemented now:
 
 Planned or partial:
 
-- true LLM provider integration
 - retrieval indexing and retrieval-assisted context assembly
 - production transport API integrations beyond the current thin channel adapters
 - stronger production sandbox isolation
@@ -384,6 +388,18 @@ Key variables include:
 - `PYTHON_CLAW_DEDUPE_RETENTION_DAYS`
 - `PYTHON_CLAW_DEDUPE_STALE_AFTER_SECONDS`
 - `PYTHON_CLAW_RUNTIME_TRANSCRIPT_CONTEXT_LIMIT`
+- `PYTHON_CLAW_RUNTIME_MODE`
+- `PYTHON_CLAW_LLM_PROVIDER`
+- `PYTHON_CLAW_LLM_API_KEY`
+- `PYTHON_CLAW_LLM_BASE_URL`
+- `PYTHON_CLAW_LLM_MODEL`
+- `PYTHON_CLAW_LLM_TIMEOUT_SECONDS`
+- `PYTHON_CLAW_LLM_MAX_RETRIES`
+- `PYTHON_CLAW_LLM_TEMPERATURE`
+- `PYTHON_CLAW_LLM_MAX_OUTPUT_TOKENS`
+- `PYTHON_CLAW_LLM_TOOL_CALL_MODE`
+- `PYTHON_CLAW_LLM_MAX_TOOL_REQUESTS_PER_TURN`
+- `PYTHON_CLAW_LLM_DISABLE_TOOLS`
 - `PYTHON_CLAW_EXECUTION_RUN_GLOBAL_CONCURRENCY`
 - `PYTHON_CLAW_MEDIA_STORAGE_ROOT`
 - `PYTHON_CLAW_MEDIA_STORAGE_BUCKET`
@@ -428,6 +444,19 @@ PYTHON_CLAW_DIAGNOSTICS_ADMIN_BEARER_TOKEN=change-me
 PYTHON_CLAW_DIAGNOSTICS_INTERNAL_SERVICE_TOKEN=change-me-internal
 PYTHON_CLAW_HEALTH_READY_REQUIRES_AUTH=true
 ```
+
+For local scaffold mode, leave `PYTHON_CLAW_RUNTIME_MODE=rule_based`.
+
+To enable provider-backed turns, set at minimum:
+
+```text
+PYTHON_CLAW_RUNTIME_MODE=provider
+PYTHON_CLAW_LLM_PROVIDER=openai
+PYTHON_CLAW_LLM_API_KEY=your-key
+PYTHON_CLAW_LLM_MODEL=gpt-4o-mini
+```
+
+If provider mode is selected without the required credentials, startup fails closed rather than silently falling back to the rule-based adapter.
 
 ### Step 3: Start local infrastructure
 
@@ -522,12 +551,13 @@ Useful targeted commands:
 uv run pytest tests/test_api.py
 uv run pytest tests/test_runtime.py
 uv run pytest tests/test_integration.py
+uv run pytest tests/test_provider_runtime.py
 uv run pytest tests/test_async_queueing_coverage.py
 uv run pytest tests/test_node_sandbox.py
 uv run pytest tests/test_channels_media.py
 ```
 
-Note: the tests primarily use temporary SQLite fixtures, so they do not require local PostgreSQL or Redis to pass.
+Note: the tests primarily use temporary SQLite fixtures and provider fakes, so they do not require local PostgreSQL, Redis, or live provider credentials to pass.
 
 ### Setup checklist
 
@@ -845,7 +875,8 @@ If you are specifically working on adapter behavior, start with:
 
 The current repository is intentionally narrow. A few important limitations to keep in mind:
 
-- the default assistant behavior is rule-based, not backed by a live LLM provider
+- the default assistant behavior remains `rule_based` unless configuration explicitly selects provider mode
+- the first provider-backed path is intentionally bounded: no token streaming, no retrieval, no attachment-content understanding, and no multi-provider orchestration yet
 - Redis is provisioned but not yet central to the request path
 - outbound delivery is channel-aware and audited, but current adapters are still thin local implementations rather than production provider clients
 - media handling is limited to normalization, classification, safe storage references, and bounded outbound media dispatch
@@ -858,12 +889,22 @@ The roadmap already points toward several next-stage capabilities.
 
 #### LLM integration
 
-The project already has a model adapter contract in `src/providers/models.py`. Today it uses a rule-based adapter, but this boundary is where future provider-backed LLM integrations will plug in. Future specs are expected to expand:
+The project now has a provider-backed model path behind the existing adapter contract in `src/providers/models.py`.
 
-- provider authentication and model selection
-- richer prompt/context assembly
-- tool-calling with real model providers
-- fallback, retry, and auth-profile handling
+Today that LLM layer includes:
+
+- explicit runtime selection between `rule_based` and provider-backed execution
+- backend-owned typed prompt assembly in `src/graphs/prompts.py`
+- bounded provider execution metadata persisted through context manifests and observability surfaces
+- provider-suggested tool requests translated back into backend-owned contracts
+- approval-safe handling where governed model-suggested tools create proposals instead of executing without exact approval
+
+Future work is still expected in areas such as:
+
+- richer retrieval and memory-aware prompt assembly
+- streaming responses and partial output persistence
+- additional provider support and auth-profile management
+- attachment-content understanding and multimodal reasoning
 
 #### Observability and operational hardening
 
@@ -898,7 +939,7 @@ This document should be updated whenever:
 - a new spec is completed
 - a new API surface is added
 - the setup flow changes
-- LLM support becomes provider-backed
+- LLM runtime behavior, settings, or provider support changes materially
 - sub-agent orchestration becomes part of the committed scope
 
 Until then, treat this guide as the human-readable companion to the evolving specs and codebase.
