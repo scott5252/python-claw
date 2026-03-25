@@ -200,6 +200,12 @@ Verify readiness:
 curl $BASE/health/ready -H "$AUTH"
 ```
 
+Equivalent one-line form:
+
+```bash
+curl $BASE/health/ready -H 'Authorization: Bearer change-me'
+```
+
 Expected result:
 
 - HTTP 200
@@ -570,8 +576,14 @@ What it proves:
 
 ### Step 14: Show continuity diagnostics for the session
 
+If you have not already done so, set a shell variable first:
+
 ```bash
-curl -s $BASE/diagnostics/sessions/<SESSION_ID>/continuity -H "$AUTH"
+SESSION_ID=<the session_id from the first inbound response>
+```
+
+```bash
+curl -s $BASE/diagnostics/sessions/$SESSION_ID/continuity -H "$AUTH"
 ```
 
 Expected result:
@@ -584,6 +596,11 @@ What it proves:
 
 - context assembly happened and was persisted
 - the session has inspectable continuity state
+
+Troubleshooting:
+
+- if this returns `404 Not Found`, make sure you replaced the placeholder with a real session ID from the earlier inbound response
+- if this and Step 15 both return `404 Not Found`, the process on `127.0.0.1:8000` is likely not the current gateway app, so restart Terminal A with `uv run uvicorn apps.gateway.main:app --reload`
 
 ### Step 15: Show overall run diagnostics
 
@@ -660,6 +677,7 @@ from src.capabilities.repository import CapabilitiesRepository
 from src.config.settings import get_settings
 from src.db.base import Base
 from src.db.session import DatabaseSessionManager
+from src.jobs.repository import JobsRepository
 from src.routing.service import RoutingInput, normalize_routing_input
 from src.sessions.repository import SessionRepository
 
@@ -669,6 +687,7 @@ Base.metadata.create_all(manager.engine)
 
 session_repo = SessionRepository()
 cap_repo = CapabilitiesRepository()
+jobs_repo = JobsRepository()
 
 with manager.session() as db:
     routing = normalize_routing_input(
@@ -719,9 +738,20 @@ with manager.session() as db:
         },
         invocation_arguments={"text": "hello from remote exec demo"},
     )
+    run = jobs_repo.create_or_get_execution_run(
+        db,
+        session_id=session.id,
+        message_id=message.id,
+        agent_id="default-agent",
+        trigger_kind="inbound_message",
+        trigger_ref=str(message.id),
+        lane_key=session.id,
+        max_attempts=3,
+    )
     db.commit()
     print("session_id=", session.id)
     print("message_id=", message.id)
+    print("execution_run_id=", run.id)
     print("resource_version_id=", version.id)
     print("approval_id=", approval.id)
 PY
@@ -731,19 +761,21 @@ Write down:
 
 - `session_id`
 - `message_id`
+- `execution_run_id`
 - `resource_version_id`
 - `approval_id`
 
 What is happening in the system:
 
 1. A session and transcript message are created for traceability.
-2. A sandbox profile row is written to `agent_sandbox_profiles`.
-3. A `node_command_template` resource is created and approved through:
+2. A queued `execution_runs` row is created so the node runner can persist an audit row that points at a real parent run.
+3. A sandbox profile row is written to `agent_sandbox_profiles`.
+4. A `node_command_template` resource is created and approved through:
    - `resource_proposals`
    - `resource_versions`
    - `resource_approvals`
    - `active_resources`
-4. This approval is exact-match scoped to the parameter payload `{"text":"hello from remote exec demo"}`.
+5. This approval is exact-match scoped to the parameter payload `{"text":"hello from remote exec demo"}`.
 
 ### Step 17: Send one valid signed request to the node runner
 
@@ -769,6 +801,7 @@ resource_version_id = "<RESOURCE_VERSION_ID>"
 approval_id = "<APPROVAL_ID>"
 session_id = "<SESSION_ID>"
 message_id = <MESSAGE_ID>
+execution_run_id = "<EXECUTION_RUN_ID>"
 agent_id = "default-agent"
 
 with manager.session() as db:
@@ -787,7 +820,7 @@ with manager.session() as db:
         timeout_seconds=5,
     )
     request = build_exec_request(
-        execution_run_id="remote-demo-run-1",
+        execution_run_id=execution_run_id,
         tool_call_id="remote-demo-tool-1",
         execution_attempt_number=1,
         session_id=session_id,

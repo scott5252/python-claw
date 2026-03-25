@@ -1,0 +1,662 @@
+{
+  "info": {
+    "_postman_id": "b5f9d0f4-ac5c-4127-9947-79dad0128b6e",
+    "name": "Python-Claw",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "41171391"
+  },
+  "item": [
+    {
+      "name": "Health Live",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/health/live",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "health",
+            "live"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Health Ready",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/health/ready",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "health",
+            "ready"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 1",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var jsonData = pm.response.json();",
+              "",
+              "pm.environment.set(\"session_id\", jsonData.session_id);",
+              "pm.environment.set(\"run_id\", jsonData.run_id);",
+              "pm.environment.set(\"trace_id\", jsonData.trace_id);"
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"channel_kind\": \"webchat\",\n    \"channel_account_id\": \"bike-shop-demo\",\n    \"external_message_id\": \"demo-msg-1\",\n    \"sender_id\": \"employee-alex\",\n    \"content\": \"send Hello Maya, your bike repair order BR-1042 is complete and ready for pickup today before 6 PM.\",\n    \"peer_id\": \"customer-maya\"\n  }",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE}}/inbound/message",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "inbound",
+            "message"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 3",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              ""
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/sessions/{{session_id}}/messages?limit=10",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "sessions",
+            "{{session_id}}",
+            "messages"
+          ],
+          "query": [
+            {
+              "key": "limit",
+              "value": "10"
+            }
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 4",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var jsonData = pm.response.json();",
+              "",
+              "pm.environment.set(\"proposal_id\", jsonData.proposal_id);"
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/sessions/{{session_id}}/governance/pending",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "sessions",
+            "{{session_id}}",
+            "governance",
+            "pending"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 5",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              ""
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"channel_kind\": \"webchat\",\n    \"channel_account_id\": \"bike-shop-demo\",\n    \"external_message_id\": \"demo-msg-2\",\n    \"sender_id\": \"employee-alex\",\n    \"content\": \"approve {{proposal_id}}\",\n    \"peer_id\": \"customer-maya\"\n  }",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE}}/inbound/message",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "inbound",
+            "message"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 7",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              ""
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/sessions/{{session_id}}/messages?limit=10",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "sessions",
+            "{{session_id}}",
+            "messages"
+          ],
+          "query": [
+            {
+              "key": "limit",
+              "value": "10"
+            }
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 8",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var jsonData = pm.response.json();",
+              "",
+              "pm.environment.set(\"run_id\", jsonData.run_id);"
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"channel_kind\": \"webchat\",\n    \"channel_account_id\": \"bike-shop-demo\",\n    \"external_message_id\": \"demo-msg-3\",\n    \"sender_id\": \"employee-alex\",\n    \"content\": \"send Hello Maya, your bike repair order BR-1042 is complete and ready for pickup today before 6 PM.\",\n    \"peer_id\": \"customer-maya\"\n  }",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE}}/inbound/message",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "inbound",
+            "message"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 10",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              ""
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/sessions/{{session_id}}/messages?limit=10",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "sessions",
+            "{{session_id}}",
+            "messages"
+          ],
+          "query": [
+            {
+              "key": "limit",
+              "value": "10"
+            }
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 11",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              ""
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/sessions/{{session_id}}",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "sessions",
+            "{{session_id}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 12",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              ""
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/sessions/{{session_id}}/runs",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "sessions",
+            "{{session_id}}",
+            "runs"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 13",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              ""
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          },
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/diagnostics/deliveries",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "diagnostics",
+            "deliveries"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 14",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              ""
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          },
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/diagnostics/sessions/{{session_id}}/continuity",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "diagnostics",
+            "sessions",
+            "{{session_id}}",
+            "continuity"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 15",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              ""
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          },
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/diagnostics/runs",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "diagnostics",
+            "runs"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 15.5 Start Node Runner",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              ""
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "http://127.0.0.1:8010/health/live",
+          "protocol": "http",
+          "host": [
+            "127",
+            "0",
+            "0",
+            "1"
+          ],
+          "port": "8010",
+          "path": [
+            "health",
+            "live"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 19",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              ""
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          },
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/diagnostics/node-executions",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "diagnostics",
+            "node-executions"
+          ]
+        }
+      },
+      "response": []
+    }
+  ]
+}
