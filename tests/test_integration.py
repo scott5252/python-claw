@@ -290,7 +290,7 @@ def test_stale_claimed_recovery_and_history_paging(tmp_path) -> None:
     assert any(item["content"] == "Received: one" for item in body_two["items"])
 
 
-def test_unapproved_tool_request_fails_closed_and_records_failure(tmp_path) -> None:
+def test_unapproved_tool_request_creates_governance_proposal_without_tool_artifact(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'unapproved.db'}"
     settings = Settings(database_url=database_url)
     manager = DatabaseSessionManager(database_url)
@@ -348,11 +348,13 @@ def test_unapproved_tool_request_fails_closed_and_records_failure(tmp_path) -> N
 
     with manager.session() as db:
         artifacts = list(db.query(SessionArtifactRecord).filter_by(session_id=session_id).order_by(SessionArtifactRecord.id.asc()))
+        proposals = list(db.query(ResourceProposalRecord).filter_by(session_id=session_id).order_by(ResourceProposalRecord.id.asc()))
         messages = SessionRepository().list_messages(db, session_id=session_id, limit=5, before_message_id=None)
 
-    assert [artifact.artifact_kind for artifact in artifacts] == ["tool_proposal", "tool_result"]
-    assert json.loads(artifacts[-1].payload_json)["error"] == "tool not available in runtime context"
-    assert messages[-1].content == "I could not complete that tool request."
+    assert artifacts == []
+    assert len(proposals) == 1
+    assert proposals[0].current_state == "pending_approval"
+    assert "Approval required for `send_message`" in messages[-1].content
 
 
 def test_governed_capability_requires_approval_then_activates_on_later_turn(tmp_path) -> None:

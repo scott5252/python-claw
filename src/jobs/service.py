@@ -13,6 +13,7 @@ from src.graphs.assistant_graph import AssistantGraph
 from src.jobs.repository import JobsRepository
 from src.observability.failures import classify_failure
 from src.observability.logging import build_event, emit_event
+from src.providers.models import ProviderError
 from src.sessions.concurrency import SessionConcurrencyService
 from src.sessions.repository import SessionRepository
 from src.config.settings import Settings
@@ -31,6 +32,8 @@ class RetryDecision:
 
 class FailureClassifier:
     def classify(self, exc: Exception) -> RetryDecision:
+        if isinstance(exc, ProviderError):
+            return RetryDecision(retryable=exc.retryable, reason=exc.detail)
         if isinstance(exc, RuntimeError):
             return RetryDecision(retryable=False, reason=str(exc))
         return RetryDecision(retryable=True, reason=str(exc))

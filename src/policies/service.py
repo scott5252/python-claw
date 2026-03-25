@@ -111,32 +111,31 @@ class PolicyService:
             "active_approvals": approvals,
         }
 
-    def is_tool_allowed(self, *, context: ToolRuntimeContext, capability_name: str) -> bool:
+    def is_tool_visible(self, *, context: ToolRuntimeContext, capability_name: str) -> bool:
+        _ = context
         if capability_name in self.denied_capabilities:
             return False
         if capability_name == "remote_exec" and not self.remote_execution_enabled:
             return False
 
         typed_action = get_typed_action(capability_name)
-        if typed_action is None:
-            return False
-        if not typed_action.requires_approval:
-            return True
+        return typed_action is not None
 
-        classification: TurnClassification | None = context.policy_context.get("classification")
-        if classification is None or classification.capability_name != capability_name or classification.arguments is None:
-            return False
-        approval_key = self.approval_lookup_key(
+    def is_tool_allowed(self, *, context: ToolRuntimeContext, capability_name: str) -> bool:
+        return self.is_tool_visible(context=context, capability_name=capability_name)
+
+    def has_exact_approval(
+        self,
+        *,
+        context: ToolRuntimeContext,
+        capability_name: str,
+        arguments: dict[str, Any],
+    ) -> bool:
+        return self.get_matching_approval(
+            context=context,
             capability_name=capability_name,
-            arguments=classification.arguments,
-        )
-        if approval_key is None:
-            return False
-        typed_action_id, canonical_params_hash = approval_key
-        approval = context.policy_context.get("approval_map", {}).get(
-            (capability_name, typed_action_id, canonical_params_hash)
-        )
-        return approval is not None
+            arguments=arguments,
+        ) is not None
 
     def get_matching_approval(
         self,

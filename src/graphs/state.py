@@ -5,6 +5,26 @@ from typing import Any
 
 
 @dataclass(frozen=True)
+class PromptToolDefinition:
+    name: str
+    description: str
+    argument_guidance: dict[str, Any] = field(default_factory=dict)
+    requires_approval: bool = False
+    governance_hint: str | None = None
+
+
+@dataclass(frozen=True)
+class PromptPayload:
+    system_instructions: str
+    conversation: list[dict[str, Any]]
+    attachments: list[dict[str, Any]]
+    tools: list[PromptToolDefinition]
+    approval_guidance: str
+    response_contract: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ConversationMessage:
     role: str
     content: str
@@ -45,10 +65,20 @@ class ToolResultPayload:
 
 
 @dataclass(frozen=True)
+class RejectedToolRequest:
+    correlation_id: str
+    capability_name: str | None
+    arguments: dict[str, Any]
+    error: str
+
+
+@dataclass(frozen=True)
 class ModelTurnResult:
     needs_tools: bool
     tool_requests: list[ToolRequest]
     response_text: str
+    execution_metadata: dict[str, Any] = field(default_factory=dict)
+    rejected_tool_requests: list[RejectedToolRequest] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -81,6 +111,7 @@ class AssistantState:
     user_text: str
     messages: list[ConversationMessage]
     context_manifest: dict[str, Any] = field(default_factory=dict)
+    llm_prompt: PromptPayload | None = None
     degraded: bool = False
     tool_events: list[ToolEvent] = field(default_factory=list)
     response_text: str = ""

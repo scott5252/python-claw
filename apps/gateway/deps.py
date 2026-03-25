@@ -20,7 +20,7 @@ from src.observability.audit import ToolAuditSink
 from src.observability.diagnostics import DiagnosticsService
 from src.observability.health import HealthService
 from src.policies.service import PolicyService
-from src.providers.models import RuleBasedModelAdapter
+from src.providers.models import ProviderBackedModelAdapter, RuleBasedModelAdapter
 from src.media.processor import MediaProcessor
 from src.execution.audit import ExecutionAuditRepository
 from src.execution.contracts import NodeExecutionResult
@@ -36,6 +36,14 @@ from src.tools.remote_exec import create_remote_exec_tool
 from src.tools.registry import ToolRegistry
 from apps.node_runner.executor import NodeRunnerExecutor
 from apps.node_runner.policy import NodeRunnerPolicy
+
+
+def _build_model_adapter(settings: Settings):
+    if settings.runtime_mode == "rule_based":
+        return RuleBasedModelAdapter()
+    if settings.runtime_mode == "provider":
+        return ProviderBackedModelAdapter(settings=settings)
+    raise ValueError(f"unsupported runtime mode: {settings.runtime_mode}")
 
 
 def get_settings(request: Request) -> Settings:
@@ -97,7 +105,7 @@ def build_assistant_graph(settings: Settings, repository: SessionRepository):
         GraphDependencies(
             repository=repository,
             policy_service=policy_service,
-            model=RuleBasedModelAdapter(),
+            model=_build_model_adapter(settings),
             tool_registry=ToolRegistry(
                 factories={
                     "echo_text": create_echo_text_tool,

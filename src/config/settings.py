@@ -1,6 +1,7 @@
 from functools import lru_cache
 
 from dotenv import find_dotenv, load_dotenv
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv(find_dotenv(usecwd=True), override=False)
@@ -15,6 +16,18 @@ class Settings(BaseSettings):
     messages_page_max_limit: int = 100
     default_agent_id: str = "default-agent"
     runtime_transcript_context_limit: int = 20
+    runtime_mode: str = "rule_based"
+    llm_provider: str = "openai"
+    llm_api_key: str | None = None
+    llm_base_url: str | None = None
+    llm_model: str = "gpt-4o-mini"
+    llm_timeout_seconds: int = 30
+    llm_max_retries: int = 1
+    llm_temperature: float = 0.2
+    llm_max_output_tokens: int | None = 512
+    llm_tool_call_mode: str = "auto"
+    llm_max_tool_requests_per_turn: int = 4
+    llm_disable_tools: bool = False
     execution_run_lease_seconds: int = 60
     execution_run_max_attempts: int = 5
     execution_run_backoff_seconds: int = 5
@@ -61,6 +74,24 @@ class Settings(BaseSettings):
         env_prefix="PYTHON_CLAW_",
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def validate_runtime_settings(self) -> "Settings":
+        if self.runtime_mode not in {"rule_based", "provider"}:
+            raise ValueError("runtime_mode must be one of: rule_based, provider")
+        if self.llm_tool_call_mode not in {"auto", "none"}:
+            raise ValueError("llm_tool_call_mode must be one of: auto, none")
+        if self.llm_timeout_seconds <= 0:
+            raise ValueError("llm_timeout_seconds must be greater than 0")
+        if self.llm_max_retries < 0:
+            raise ValueError("llm_max_retries must be greater than or equal to 0")
+        if self.llm_max_tool_requests_per_turn <= 0:
+            raise ValueError("llm_max_tool_requests_per_turn must be greater than 0")
+        if self.llm_max_output_tokens is not None and self.llm_max_output_tokens <= 0:
+            raise ValueError("llm_max_output_tokens must be greater than 0 when set")
+        if self.runtime_mode == "provider" and not self.llm_api_key:
+            raise ValueError("llm_api_key is required when runtime_mode=provider")
+        return self
 
 
 @lru_cache

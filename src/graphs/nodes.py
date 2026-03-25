@@ -7,11 +7,12 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from src.context.service import ContextService
-from src.graphs.prompts import render_prompt
-from src.graphs.state import AssistantState, ToolEvent, ToolRuntimeContext, ToolRuntimeServices
+from src.graphs.prompts import build_prompt_payload
+from src.graphs.state import AssistantState, RejectedToolRequest, ToolEvent, ToolRuntimeContext, ToolRuntimeServices
 from src.observability.audit import ToolAuditEvent
 from src.policies.service import ApprovalMatch, TurnClassification
 from src.tools.registry import ToolRegistry
+from src.tools.typed_actions import get_typed_action
 
 
 @dataclass
@@ -57,7 +58,6 @@ def _build_context(*, state: AssistantState, dependencies: GraphDependencies, db
         agent_id=state.agent_id,
         user_text=state.user_text,
     )
-    policy_context["prompt"] = render_prompt(state)
     existing_services = dependencies.model.runtime_services()
     return ToolRuntimeContext(
         session_id=state.session_id,
@@ -235,6 +235,106 @@ def _handle_awaiting_approval(
     return state
 
 
+def _persist_provider_metadata(*, state: AssistantState, model_result: Any) -> None:
+    if not model_result.execution_metadata:
+        return
+    state.context_manifest["model_execution"] = {
+        key: model_result.execution_metadata.get(key)
+        for key in (
+            "provider_name",
+            "model_name",
+            "prompt_strategy_id",
+            "tool_call_mode",
+            "provider_attempt_count",
+            "semantic_fallback_kind",
+        )
+    }
+
+
+def _request_requires_approval(*, capability_name: str) -> bool:
+    typed_action = get_typed_action(capability_name)
+    return bool(typed_action and typed_action.requires_approval)
+
+
+def _handle_governed_tool_request(
+    *,
+    db: Session,
+    state: AssistantState,
+    dependencies: GraphDependencies,
+    request: Any,
+) -> ToolEvent:
+    proposal, version = dependencies.repository.create_governance_proposal(
+        db,
+        session_id=state.session_id,
+        message_id=state.message_id,
+        agent_id=state.agent_id,
+        requested_by=state.sender_id,
+        capability_name=request.capability_name,
+        arguments=request.arguments,
+    )
+    packet = dependencies.repository.get_proposal_packet(db, proposal_id=proposal.id)
+    _record_governance_audit(
+        db=db,
+        dependencies=dependencies,
+        session_id=state.session_id,
+        correlation_id=proposal.id,
+        capability_name=request.capability_name,
+        event_kind="approval_requested",
+        status="pending_approval",
+        payload={
+            "proposal_id": proposal.id,
+            "resource_version_id": version.id,
+            "content_hash": version.content_hash,
+            "typed_action_id": packet["typed_action_id"],
+            "canonical_params_hash": packet["canonical_params_hash"],
+            "llm_originated": True,
+        },
+    )
+    state.awaiting_approval = True
+    state.response_text = (
+        f"Approval required for `{request.capability_name}`. "
+        f"Proposal `{proposal.id}` is waiting for approval. "
+        f"Reply `approve {proposal.id}` to activate it."
+    )
+    return ToolEvent(
+        correlation_id=proposal.id,
+        capability_name=request.capability_name,
+        status="awaiting_approval",
+        arguments=request.arguments,
+        outcome={"proposal_id": proposal.id},
+    )
+
+
+def _record_rejected_tool_request(
+    *,
+    db: Session,
+    state: AssistantState,
+    dependencies: GraphDependencies,
+    rejected: RejectedToolRequest,
+) -> ToolEvent:
+    capability_name = rejected.capability_name or "unknown"
+    event = ToolEvent(
+        correlation_id=rejected.correlation_id,
+        capability_name=capability_name,
+        status="failed",
+        arguments=rejected.arguments,
+        error=rejected.error,
+    )
+    if rejected.capability_name is not None:
+        dependencies.repository.append_tool_event(db, session_id=state.session_id, event=event)
+    _record_governance_audit(
+        db=db,
+        dependencies=dependencies,
+        session_id=state.session_id,
+        correlation_id=rejected.correlation_id,
+        capability_name=capability_name,
+        event_kind="result",
+        status="failed",
+        payload={"arguments": rejected.arguments, "error": rejected.error, "semantic": True},
+    )
+    return event
+
+
 def execute_turn(*, db: Session, state: AssistantState, dependencies: GraphDependencies) -> AssistantState:
     if state.degraded:
         state.response_text = (
@@ -289,13 +389,44 @@ def execute_turn(*, db: Session, state: AssistantState, dependencies: GraphDepen
             context=context,
             policy_service=dependencies.policy_service,
         )
+        state.llm_prompt = build_prompt_payload(
+            state=state,
+            visible_tools=list(bound_tools.values()),
+            tool_call_mode="none" if getattr(dependencies, "settings", None) and dependencies.settings.llm_disable_tools else "auto",
+        )
         model_result = dependencies.model.complete_turn(
             state=state,
             available_tools=sorted(bound_tools.keys()),
         )
         state.needs_tools = model_result.needs_tools
+        _persist_provider_metadata(state=state, model_result=model_result)
+
+        for rejected in model_result.rejected_tool_requests:
+            state.tool_events.append(
+                _record_rejected_tool_request(
+                    db=db,
+                    state=state,
+                    dependencies=dependencies,
+                    rejected=rejected,
+                )
+            )
 
         for request in model_result.tool_requests:
+            if _request_requires_approval(capability_name=request.capability_name) and not dependencies.policy_service.has_exact_approval(
+                context=context,
+                capability_name=request.capability_name,
+                arguments=request.arguments,
+            ):
+                state.tool_events.append(
+                    _handle_governed_tool_request(
+                        db=db,
+                        state=state,
+                        dependencies=dependencies,
+                        request=request,
+                    )
+                )
+                continue
+
             dependencies.repository.append_tool_proposal(db, session_id=state.session_id, request=request)
             tool = bound_tools.get(request.capability_name)
             if tool is None:
@@ -415,15 +546,17 @@ def execute_turn(*, db: Session, state: AssistantState, dependencies: GraphDepen
             )
 
         if model_result.needs_tools:
-            if any(event.status == "succeeded" for event in state.tool_events):
+            if state.awaiting_approval:
+                pass
+            elif any(event.status == "succeeded" for event in state.tool_events):
                 state.response_text = "\n".join(
                     event.outcome["content"]
                     for event in state.tool_events
                     if event.outcome is not None and "content" in event.outcome
                 )
-            else:
+            elif not state.response_text:
                 state.response_text = "I could not complete that tool request."
-        else:
+        elif not state.response_text:
             state.response_text = model_result.response_text
 
     assistant_message = dependencies.repository.append_message(

@@ -3,6 +3,16 @@ from __future__ import annotations
 
 def classify_failure(*, error_code: str | None = None, error_detail: str | None = None, exc: Exception | None = None) -> str:
     detail = " ".join(part for part in [error_code, error_detail, str(exc) if exc is not None else None] if part).lower()
+    if "provider_timeout" in detail:
+        return "timeout"
+    if "provider_auth" in detail:
+        return "dependency_unavailable"
+    if "provider_rate_limited" in detail:
+        return "dependency_unavailable"
+    if "provider_unavailable" in detail:
+        return "dependency_unavailable"
+    if "provider_malformed_response" in detail or "provider_tool_schema_error" in detail:
+        return "validation"
     if "timeout" in detail:
         return "timeout"
     if "approval" in detail:
