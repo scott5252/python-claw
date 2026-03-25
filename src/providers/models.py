@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import random
+import time
 from dataclasses import dataclass, field
 from uuid import uuid4
 
@@ -124,16 +126,17 @@ class RuleBasedModelAdapter(ModelAdapter):
 
 
 def map_provider_exception(exc: Exception) -> ProviderError:
-    detail = str(exc).lower()
-    if isinstance(exc, httpx.TimeoutException) or "timeout" in detail:
-        return ProviderError(category="provider_timeout", retryable=True, detail="provider request timed out")
-    if isinstance(exc, httpx.ConnectError) or "unavailable" in detail or "connection" in detail:
-        return ProviderError(category="provider_unavailable", retryable=True, detail="provider unavailable")
-    if "auth" in detail or "unauthorized" in detail or "api key" in detail:
-        return ProviderError(category="provider_auth", retryable=False, detail="provider authentication failed")
-    if "rate limit" in detail or "429" in detail:
-        return ProviderError(category="provider_rate_limited", retryable=True, detail="provider rate limited")
-    return ProviderError(category="provider_unexpected_internal", retryable=False, detail="provider request failed")
+    detail = str(exc)
+    lowered = detail.lower()
+    if isinstance(exc, httpx.TimeoutException) or "timeout" in lowered:
+        return ProviderError(category="provider_timeout", retryable=True, detail=f"provider request timed out: {detail}")
+    if isinstance(exc, httpx.ConnectError) or "unavailable" in lowered or "connection" in lowered:
+        return ProviderError(category="provider_unavailable", retryable=True, detail=f"provider unavailable: {detail}")
+    if "auth" in lowered or "unauthorized" in lowered or "api key" in lowered:
+        return ProviderError(category="provider_auth", retryable=False, detail=f"provider authentication failed: {detail}")
+    if "rate limit" in lowered or "429" in lowered:
+        return ProviderError(category="provider_rate_limited", retryable=True, detail=f"provider rate limited: {detail}")
+    return ProviderError(category="provider_unexpected_internal", retryable=False, detail=f"provider request failed: {detail}")
 
 
 def _serialize_prompt(state: AssistantState) -> dict[str, object]:
@@ -214,12 +217,19 @@ class ProviderBackedModelAdapter(ModelAdapter):
     settings: Settings
     client: ProviderClient | None = None
     _default_client: ProviderClient = field(init=False, repr=False)
+    _base_retry_delay_seconds: float = field(default=1.0, init=False, repr=False)
+    _max_retry_delay_seconds: float = field(default=16.0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._default_client = OpenAIResponsesClient()
 
     def runtime_services(self) -> ToolRuntimeServices:
         return ToolRuntimeServices()
+
+    def _retry_delay_seconds(self, *, attempt_number: int) -> float:
+        delay = min(self._max_retry_delay_seconds, self._base_retry_delay_seconds * (2 ** max(attempt_number - 1, 0)))
+        jitter = random.uniform(0.0, 0.25 * delay)
+        return delay + jitter
 
     def complete_turn(self, *, state: AssistantState, available_tools: list[str]) -> ModelTurnResult:
         prompt = _serialize_prompt(state)
@@ -241,6 +251,7 @@ class ProviderBackedModelAdapter(ModelAdapter):
                 )
             except ProviderError as exc:
                 if exc.retryable and attempts <= self.settings.llm_max_retries:
+                    time.sleep(self._retry_delay_seconds(attempt_number=attempts))
                     continue
                 raise
 

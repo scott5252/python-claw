@@ -36,5 +36,7 @@ def test_trace_helper_reuses_existing_trace_id() -> None:
 def test_failure_classification_and_bounded_preview_are_stable() -> None:
     assert classify_failure(error_code="adapter_send_failed") == "delivery_failed"
     assert classify_failure(error_detail="dependency unavailable") == "dependency_unavailable"
+    assert classify_failure(error_detail="provider rate limited") == "dependency_unavailable"
+    assert classify_failure(error_detail="provider authentication failed") == "dependency_unavailable"
     assert bounded_preview("abcdef", enabled=True, max_chars=3) == "abc..."
     assert redact_value("cookie", "secret") == "[redacted]"

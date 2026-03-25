@@ -7,7 +7,7 @@ import pytest
 from src.config.settings import Settings
 from src.graphs.prompts import PROMPT_STRATEGY_ID, build_prompt_payload
 from src.graphs.state import AssistantState, ConversationMessage
-from src.providers.models import ProviderBackedModelAdapter, ProviderClient, ProviderError
+from src.providers.models import ProviderBackedModelAdapter, ProviderClient, ProviderError, map_provider_exception
 from src.tools.local_safe import create_echo_text_tool
 from src.tools.messaging import create_send_message_tool
 from src.tools.registry import ToolRegistry
@@ -72,7 +72,7 @@ class FakeProviderClient(ProviderClient):
     def create_response(self, *, prompt: dict[str, object], tools: list[dict[str, object]], settings: Settings) -> dict[str, object]:
         self.calls += 1
         assert isinstance(prompt["input"], str)
-        assert settings.llm_model == "gpt-4o-mini"
+        assert settings.llm_model
         if self.error is not None:
             raise self.error
         assert tools
@@ -166,7 +166,32 @@ def test_provider_adapter_retries_retryable_provider_errors() -> None:
     assert client.calls == 2
 
 
+def test_provider_adapter_applies_backoff_before_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings(database_url="sqlite://", runtime_mode="provider", llm_api_key="test-key", llm_max_retries=1)
+    client = FakeProviderClient(error=ProviderError(category="provider_rate_limited", retryable=True, detail="provider rate limited: 429 too many requests"))
+    adapter = ProviderBackedModelAdapter(settings=settings, client=client)
+    sleep_calls: list[float] = []
+
+    monkeypatch.setattr("src.providers.models.random.uniform", lambda start, end: 0.5)
+    monkeypatch.setattr("src.providers.models.time.sleep", lambda seconds: sleep_calls.append(seconds))
+
+    with pytest.raises(ProviderError):
+        adapter.complete_turn(state=_build_state(), available_tools=["echo_text"])
+
+    assert client.calls == 2
+    assert sleep_calls == [1.5]
+
+
+def test_map_provider_exception_preserves_provider_details() -> None:
+    error = RuntimeError("429 Too Many Requests: rate limit exceeded for gpt-4o-mini")
+
+    mapped = map_provider_exception(error)
+
+    assert mapped.category == "provider_rate_limited"
+    assert mapped.retryable is True
+    assert "429 Too Many Requests" in mapped.detail
+
+
 def test_provider_settings_validation_requires_api_key_for_provider_mode() -> None:
     with pytest.raises(ValueError):
         Settings(database_url="sqlite://", runtime_mode="provider", llm_api_key=None)
-

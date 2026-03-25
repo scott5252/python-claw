@@ -326,6 +326,14 @@ What is happening in the system:
 7. The worker persists a `context_manifests` row that includes bounded model-execution metadata.
 8. The worker completes the run.
 
+Troubleshooting note for provider rate limits:
+
+- If the run fails with an error like `provider rate limited`, the request did reach the real provider path, but the provider rejected it with a quota or rate-limit response.
+- The current implementation now uses bounded retry backoff with jitter for retryable provider failures, so one `429` should no longer trigger an immediate tight retry loop.
+- The most useful worker log fields to inspect are `event_name`, `error`, `failure_category`, `execution_run_id`, and `trace_id`.
+- A provider-side throttle will usually appear as `event_name="execution_run.failed"` with `error` containing `provider rate limited` and `failure_category` mapped to a dependency/provider failure instead of a generic internal error.
+- If this happens repeatedly, check `PYTHON_CLAW_LLM_API_KEY`, project billing or quota, model access for `PYTHON_CLAW_LLM_MODEL`, and any custom `PYTHON_CLAW_LLM_BASE_URL` proxy or compatible endpoint.
+
 ### Step 3: Read the chat transcript
 
 In Terminal C, run:
