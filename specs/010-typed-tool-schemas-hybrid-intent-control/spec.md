@@ -106,6 +106,12 @@ Decision:
 ## Data Model Changes
 - No new canonical business-state tables are required for this slice.
 - No governance lifecycle tables change in this slice.
+- Governed schema identity for approval matching and replay must have one authoritative durable source:
+  - `tool_schema_name`
+  - `tool_schema_version`
+- The authoritative durable source for governed schema identity in this slice is the governed resource payload stored on `resource_versions.resource_payload`.
+- Approval rows, active-resource rows, proposal packets, tool events, manifests, and audit payloads may mirror schema identity additively for lookup, diagnostics, and replay performance, but they must not become a competing source of truth.
+- If a replay, approval lookup, or proposal-packet path needs schema identity and a mirrored field is absent, the implementation must derive it from the governed resource payload rather than inventing a default.
 - Existing append-only artifact, manifest, and audit payloads may grow additively to persist bounded schema metadata such as:
   - `tool_schema_name`
   - `tool_schema_version`
@@ -139,6 +145,7 @@ Decision:
 - The provider-visible `remote_exec` schema must describe only approval-relevant invocation arguments.
 - Runtime-owned execution envelope fields such as `tool_call_id` and `execution_attempt_number` are not part of the provider-visible tool schema and are not part of approval identity.
 - Tool implementations must receive typed validated request objects or a validated canonical payload produced from those objects, rather than raw unvalidated model output dictionaries.
+- For governed tools, the schema-identity values used by approval matching and replay must be the same values persisted in the governed resource payload; mirrored copies in approval or audit records are additive only.
 
 ### Tool Registry Contract
 - `src/tools/registry.py` remains the sole binding surface for executable tools.
@@ -174,6 +181,8 @@ Decision:
 - `PromptPayload.tools` from Spec 009 may evolve additively in this slice, but prompt assembly must no longer rely on a prompt-only `argument_guidance` shape that can drift from execution-time validation.
 - A provider adapter may reformat the bound-tool exposure into provider-native JSON, but it must not recreate tool descriptions, required fields, or argument semantics from separate prompt hints.
 - If a tool is visible in prompt guidance for a provider-backed turn, the same bound-tool exposure entry must also be the basis for provider schema export and execution-time validation for that turn.
+- The canonical bound-tool exposure contract in this slice must be carried on `AssistantState` as a backend-owned per-turn structure rather than inferred later from `available_tools: list[str]` alone.
+- `ModelAdapter.complete_turn(...)` may keep the existing `available_tools: list[str]` parameter for backward compatibility, but provider-backed execution in this slice must consume the bound-tool exposure entries carried on `AssistantState` as the authoritative source for tool meaning and schema export.
 
 ### Provider Tool-Schema Contract
 - `src/providers/models.py` must consume backend-owned tool schema metadata from the registry rather than inferring schemas from prompt hints or hard-coded assumptions.
@@ -204,6 +213,7 @@ Decision:
   - high-risk control commands are classified deterministically before provider invocation
   - backend validation remains authoritative even for LLM-suggested tools
 - The model may help interpret a normal user request such as “send this to the channel” into a tool call, but it may not decide whether approval commands, revocations, or exact approval matching semantics are valid.
+- When a deterministic non-administrative shortcut is retained, it must emit the same raw request envelope shape used by provider-backed tool calls and then enter the shared validation path before proposal creation, approval matching, execution, or append-only tool-event persistence.
 
 ### Validation and Canonicalization Contract
 - Validation happens before any tool executes and before approval matching is evaluated for governed tools.
@@ -221,6 +231,19 @@ Decision:
 - Approval matching, proposal hashing, proposal-packet rendering, and exact-match enforcement must all use canonical arguments produced after schema validation.
 - For governed tools, exact approval identity must also include `tool_schema_name` and `tool_schema_version` so schema changes cannot silently reuse approvals created under older argument semantics.
 - The chosen extras behavior and schema-version behavior must be consistent between provider-requested tools, deterministic tool paths, governance proposal creation, and execution-time approval enforcement.
+- The runtime must distinguish between:
+  - raw untrusted tool-call input
+  - validated typed request data
+  - canonical validated arguments used for approvals, proposal identity, and audit
+- This slice may preserve the existing raw `ToolRequest.arguments` shape for compatibility, but graph execution must create one graph-owned validated-call representation before any approval lookup, proposal creation, or tool invocation occurs.
+- The validated-call representation must carry at minimum:
+  - `capability_name`
+  - `tool_schema_name`
+  - `tool_schema_version`
+  - validated typed request object or equivalent typed payload
+  - `canonical_arguments_json`
+  - `canonical_arguments_hash`
+- Tool events and audit records may persist both bounded raw input and canonical validated arguments when helpful, but canonical validated arguments are the only arguments that may participate in approval identity, proposal hashing, or governed execution decisions.
 
 ### Tool Execution Contract
 - `src/graphs/nodes.py` remains the only component that executes tools.
@@ -235,6 +258,8 @@ Decision:
 - Governed tool requests such as `remote_exec` must create proposals and exact-match approvals using canonical validated arguments only.
 - If a deterministic non-administrative shortcut produces a tool request, it must enter this same execution flow before any proposal creation or execution occurs.
 - A validation failure must never create an approval record, activate a resource, or execute a tool.
+- The graph may keep compatibility with existing raw request contracts, but it must be the component that materializes the validated-call representation and passes typed validated input into the tool implementation.
+- Tool implementations must not be responsible for stripping provider-visible extras, removing backend-owned envelope fields, or re-canonicalizing approval arguments internally.
 
 ### Error Handling Contract
 - Invalid tool arguments must become bounded assistant-visible guidance rather than generic runtime crashes.
@@ -248,6 +273,7 @@ Decision:
 - Assistant-visible guidance for validation failure should explain what is missing or invalid without exposing internal stack traces or secret data.
 - Malformed semantic output from the provider remains a safe-completion path, not an unsafe execution path.
 - Transport-class provider failures remain governed by Spec 009 failure semantics and are not redefined by this spec.
+- If raw provider output is preserved in a failure record, it must be bounded and must remain non-authoritative; any canonical argument fields recorded for that failure must come from successful backend validation only.
 
 ### Backward-Compatibility Contract
 - The runtime must preserve the current high-level behavior of:
@@ -257,6 +283,25 @@ Decision:
   - deterministic `approve` and `revoke` handling
 - The main behavioral change in this slice is stricter validation and clearer error reporting, not a new approval model or new tool-authority boundary.
 - Existing append-only persistence and worker-owned execution responsibilities remain unchanged.
+- The slice may add a new graph-owned validated-call helper type and a bound-tool exposure carrier on `AssistantState`, but it must preserve compatibility with the existing high-level `ModelTurnResult`, `ToolRequest`, and worker-owned execution flow from Specs 002 and 009.
+
+## Clarifications
+- The canonical implementation path for this slice is a minimal additive one rather than a full runtime redesign.
+- Governed schema identity is sourced from `resource_versions.resource_payload` and may be mirrored elsewhere additively, but replay and exact approval matching must remain semantically anchored to that payload.
+- One backend-owned `BoundToolExposure`-style per-turn carrier on `AssistantState` is the authoritative source for:
+  - prompt-visible tool guidance
+  - provider-facing tool schema export
+  - graph-time validation and canonicalization lookup
+- `available_tools: list[str]` may remain as a compatibility filter for adapters, but it is not sufficient by itself to define tool semantics in this slice.
+- The shared runtime flow is:
+  - receive raw tool-call input from a provider or deterministic shortcut
+  - resolve the matching bound-tool exposure
+  - validate into a typed request object
+  - build canonical validated arguments
+  - perform approval lookup or proposal creation using schema identity plus canonical validated arguments
+  - invoke the tool with typed validated input plus backend-owned runtime metadata
+- For `remote_exec`, the provider-visible request shape in this slice is one flat open-key map of approval-relevant invocation arguments whose values are limited to scalar JSON values.
+- Backend-owned execution envelope metadata for `remote_exec`, including `tool_call_id` and `execution_attempt_number`, must be injected by the backend after validation and must not appear in provider-visible schemas, canonical approval arguments, governed proposal identity, or approval matching keys.
 
 ## Runtime Invariants
 - Every tool that executes in provider-backed mode is validated against one explicit backend-owned input schema first.

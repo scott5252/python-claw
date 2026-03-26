@@ -22,10 +22,13 @@
 - Every executable tool in this slice exposes one explicit backend-owned typed input schema with deterministic validation and canonicalization.
 - `echo_text` and `send_message` reject unknown fields fail-closed, while `remote_exec` uses one explicit open-key invocation schema with documented allowed scalar JSON value types and reserved-key exclusions.
 - One canonical bound-tool exposure shape feeds prompt-visible tool guidance, provider-native tool definitions, and runtime validation for a turn.
+- The canonical bound-tool exposure shape is carried on `AssistantState` for the turn and is not reconstructed later from prompt-only hints or from `available_tools: list[str]` alone.
 - Provider adapters receive backend-authored schemas and perform only coarse malformed-envelope screening; `src/graphs/nodes.py` remains the authoritative validation and canonicalization boundary.
 - Governed approval identity includes canonical validated arguments plus `tool_schema_name` and `tool_schema_version`, while `typed_action_id` remains stable across schema revisions.
+- Governed schema identity is sourced durably from the governed resource payload on `resource_versions.resource_payload`, with any mirrored fields elsewhere treated as additive only.
 - Deterministic `approve` and `revoke` handling remains in `src/policies/service.py`, and any deterministic non-administrative shortcut is normalized into the same shared tool-request validation and execution path as provider-backed requests.
 - Schema-invalid requests never execute, never create approvals, and never create governed proposals.
+- The graph materializes one validated-call representation before approval lookup, proposal creation, or invocation, while preserving compatibility with the existing `ToolRequest` and `ModelTurnResult` contracts where practical.
 
 ## Migration Order
 1. Prefer no schema migration if existing append-only tool-event, manifest, and observability payloads can already store bounded validation metadata.
@@ -63,6 +66,11 @@
   - serialize validated objects deterministically
   - use that serialization for approval lookup, proposal packets, hashes, and audit payloads
   - include `tool_schema_name` and `tool_schema_version` in governed approval identity inputs without changing `typed_action_id`
+- Keep the post-validation contract explicit without forcing a full runtime redesign:
+  - preserve raw request compatibility where helpful
+  - create one graph-owned validated-call helper after schema validation succeeds
+  - pass typed validated input to tool implementations
+  - persist canonical validated arguments for approval and governance identity
 - Tighten error handling without changing run ownership:
   - schema failures should complete safely with assistant guidance
   - provider transport failures should keep Spec 009 retry semantics
@@ -96,7 +104,7 @@
 
 ### Runtime and Policy Contracts
 - `src/graphs/state.py`
-  - grow tool-definition, bound-tool exposure, or tool-error helper types additively if the runtime needs explicit schema-validation result structures
+  - grow tool-definition, bound-tool exposure, validated-call, or tool-error helper types additively if the runtime needs explicit schema-validation result structures
   - preserve `ToolRequest`, `ToolEvent`, and `ModelTurnResult` compatibility where possible
 - `src/graphs/nodes.py`
   - treat provider and deterministic tool arguments as untrusted raw input until bound-schema validation succeeds
@@ -114,6 +122,7 @@
 ### Provider and Prompt Contracts
 - `src/providers/models.py`
   - replace ad hoc provider tool-schema construction with registry-owned schema export from the bound-tool exposure contract
+  - consume bound-tool exposure entries carried on `AssistantState` as the authoritative provider-schema source, while keeping `available_tools` as a compatibility filter only
   - keep malformed-tool-call handling bounded and safe
   - limit provider-side screening to coarse malformed-envelope checks such as unknown tool names, non-object arguments, and request-count overflow
   - distinguish provider malformed structure from backend schema-validation failure for observability
@@ -133,6 +142,7 @@
 ## Risk Areas
 - Provider-facing schemas drifting away from execution-time validation if two different schema-generation paths exist
 - Approval mismatches caused by hashing raw tool arguments or omitting schema identity from governed approval matching
+- Approval replay ambiguity if schema identity is mirrored in multiple places without one durable authoritative source
 - Silent acceptance of unknown extra fields that alter approval identity or tool semantics
 - `remote_exec` open-key schemas accidentally admitting non-scalar or reserved runtime-owned fields
 - Overloading prompt tool guidance until it becomes a second conflicting schema source
@@ -155,6 +165,7 @@
   - `remote_exec` open-key allowed-value and reserved-key enforcement
   - canonical serialization stability
   - schema-version approval identity changes without `typed_action_id` drift
+  - governed approval replay using schema identity sourced from governed resource payload
   - registry schema exposure, prompt guidance, and provider export alignment through one bound-tool exposure entry
   - provider coarse-screening behavior versus graph-authoritative validation behavior
   - deterministic control-intent classification
@@ -167,6 +178,7 @@
   - schema-valid but unapproved governed request proposal creation
   - schema-invalid governed request creates neither approval nor proposal
   - backend-owned execution envelope metadata stays out of provider-visible schemas and approval hashes
+  - graph-owned validated-call representation is created before approval lookup or invocation
 - Integration:
   - provider-backed tool turn with schema-valid arguments
   - malformed provider tool payload safe completion
