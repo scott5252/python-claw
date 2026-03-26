@@ -13,7 +13,7 @@ from src.db.models import (
     ResourceProposalRecord,
     ResourceVersionRecord,
 )
-from src.policies.service import canonicalize_params, hash_payload
+from src.policies.service import build_approval_identity_hash, canonicalize_params, default_tool_schema_identity, hash_payload
 
 
 @dataclass
@@ -64,6 +64,12 @@ class CapabilitiesRepository:
         template_payload: dict,
         invocation_arguments: dict,
     ) -> tuple[ResourceProposalRecord, ResourceVersionRecord, ResourceApprovalRecord, ActiveResourceRecord]:
+        resolved_schema_name, resolved_schema_version = default_tool_schema_identity("remote_exec")
+        template_payload = {
+            **template_payload,
+            "tool_schema_name": template_payload.get("tool_schema_name", resolved_schema_name),
+            "tool_schema_version": template_payload.get("tool_schema_version", resolved_schema_version),
+        }
         proposal = ResourceProposalRecord(
             session_id=session_id,
             message_id=message_id,
@@ -87,13 +93,29 @@ class CapabilitiesRepository:
         db.flush()
         proposal.latest_version_id = version.id
         canonical_params_json = canonicalize_params(invocation_arguments)
+        tool_schema_name = template_payload["tool_schema_name"]
+        tool_schema_version = template_payload["tool_schema_version"]
         approval = ResourceApprovalRecord(
             proposal_id=proposal.id,
             resource_version_id=version.id,
-            approval_packet_hash=hash_payload(f"{proposal.id}:{version.id}:{canonical_params_json}"),
+            approval_packet_hash=hash_payload(
+                canonicalize_params(
+                    {
+                        "proposal_id": proposal.id,
+                        "resource_version_id": version.id,
+                        "tool_schema_name": tool_schema_name,
+                        "tool_schema_version": tool_schema_version,
+                        "canonical_params_json": canonical_params_json,
+                    }
+                )
+            ),
             typed_action_id=template_payload["typed_action_id"],
             canonical_params_json=canonical_params_json,
-            canonical_params_hash=hash_payload(canonical_params_json),
+            canonical_params_hash=build_approval_identity_hash(
+                tool_schema_name=tool_schema_name,
+                tool_schema_version=tool_schema_version,
+                canonical_arguments_json=canonical_params_json,
+            ),
             scope_kind="session_agent",
             approver_id=approver_id,
             approved_at=datetime.now(timezone.utc),

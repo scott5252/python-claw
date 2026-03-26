@@ -27,7 +27,7 @@ from src.db.models import (
     SummarySnapshotRecord,
 )
 from src.graphs.state import ConversationMessage, ToolEvent, ToolRequest
-from src.policies.service import canonicalize_params, hash_payload
+from src.policies.service import build_approval_identity_hash, canonicalize_params, default_tool_schema_identity, hash_payload
 from src.routing.service import RoutingResult
 from src.tools.typed_actions import get_typed_action
 
@@ -239,6 +239,9 @@ class SessionRepository:
         return artifact
 
     def append_tool_proposal(self, db: Session, *, session_id: str, request: ToolRequest) -> SessionArtifactRecord:
+        payload: dict[str, Any] = {"arguments": request.arguments}
+        if request.metadata:
+            payload["metadata"] = request.metadata
         return self.append_artifact(
             db,
             session_id=session_id,
@@ -246,7 +249,7 @@ class SessionRepository:
             correlation_id=request.correlation_id,
             capability_name=request.capability_name,
             status="requested",
-            payload={"arguments": request.arguments},
+            payload=payload,
         )
 
     def append_tool_event(self, db: Session, *, session_id: str, event: ToolEvent) -> SessionArtifactRecord:
@@ -255,6 +258,8 @@ class SessionRepository:
             payload["outcome"] = event.outcome
         if event.error is not None:
             payload["error"] = event.error
+        if event.metadata:
+            payload["metadata"] = event.metadata
         return self.append_artifact(
             db,
             session_id=session_id,
@@ -487,14 +492,23 @@ class SessionRepository:
         requested_by: str,
         capability_name: str,
         arguments: dict[str, Any],
+        tool_schema_name: str | None = None,
+        tool_schema_version: str | None = None,
     ) -> tuple[ResourceProposalRecord, ResourceVersionRecord]:
         typed_action = get_typed_action(capability_name)
         if typed_action is None:
             raise ValueError(f"unknown capability: {capability_name}")
+        resolved_schema_name, resolved_schema_version = default_tool_schema_identity(capability_name)
+        if tool_schema_name is None:
+            tool_schema_name = resolved_schema_name
+        if tool_schema_version is None:
+            tool_schema_version = resolved_schema_version
 
         payload = {
             "capability_name": capability_name,
             "typed_action_id": typed_action.typed_action_id,
+            "tool_schema_name": tool_schema_name,
+            "tool_schema_version": tool_schema_version,
             "arguments": arguments,
         }
         payload_json = canonicalize_params(payload)
@@ -506,6 +520,8 @@ class SessionRepository:
             agent_id=agent_id,
             capability_name=capability_name,
             arguments=arguments,
+            tool_schema_name=tool_schema_name,
+            tool_schema_version=tool_schema_version,
             states=("pending_approval",),
         )
         if existing is not None:
@@ -550,6 +566,8 @@ class SessionRepository:
             payload={
                 "capability_name": capability_name,
                 "typed_action_id": typed_action.typed_action_id,
+                "tool_schema_name": tool_schema_name,
+                "tool_schema_version": tool_schema_version,
                 "content_hash": content_hash,
                 "arguments": arguments,
             },
@@ -564,6 +582,8 @@ class SessionRepository:
             payload={
                 "capability_name": capability_name,
                 "typed_action_id": typed_action.typed_action_id,
+                "tool_schema_name": tool_schema_name,
+                "tool_schema_version": tool_schema_version,
                 "arguments": arguments,
                 "current_state": proposal.current_state,
             },
@@ -578,16 +598,25 @@ class SessionRepository:
         agent_id: str,
         capability_name: str,
         arguments: dict[str, Any],
+        tool_schema_name: str | None,
+        tool_schema_version: str | None,
         states: tuple[str, ...],
     ) -> ResourceProposalRecord | None:
         typed_action = get_typed_action(capability_name)
         if typed_action is None:
             return None
+        resolved_schema_name, resolved_schema_version = default_tool_schema_identity(capability_name)
+        if tool_schema_name is None:
+            tool_schema_name = resolved_schema_name
+        if tool_schema_version is None:
+            tool_schema_version = resolved_schema_version
 
         payload_json = canonicalize_params(
             {
                 "capability_name": capability_name,
                 "typed_action_id": typed_action.typed_action_id,
+                "tool_schema_name": tool_schema_name,
+                "tool_schema_version": tool_schema_version,
                 "arguments": arguments,
             }
         )
@@ -626,8 +655,14 @@ class SessionRepository:
 
         payload = json.loads(version.resource_payload)
         typed_action_id = payload["typed_action_id"]
+        tool_schema_name = payload["tool_schema_name"]
+        tool_schema_version = payload["tool_schema_version"]
         canonical_params_json = canonicalize_params(payload["arguments"])
-        canonical_params_hash = hash_payload(canonical_params_json)
+        canonical_params_hash = build_approval_identity_hash(
+            tool_schema_name=tool_schema_name,
+            tool_schema_version=tool_schema_version,
+            canonical_arguments_json=canonical_params_json,
+        )
         approved_at = datetime.now(timezone.utc)
         packet_json = canonicalize_params(
             {
@@ -635,6 +670,8 @@ class SessionRepository:
                 "resource_version_id": version.id,
                 "content_hash": version.content_hash,
                 "typed_action_id": typed_action_id,
+                "tool_schema_name": tool_schema_name,
+                "tool_schema_version": tool_schema_version,
                 "canonical_params_json": canonical_params_json,
                 "canonical_params_hash": canonical_params_hash,
                 "scope_kind": "session_agent",
@@ -683,6 +720,8 @@ class SessionRepository:
                 "decision": "approved",
                 "approver_id": approver_id,
                 "typed_action_id": typed_action_id,
+                "tool_schema_name": tool_schema_name,
+                "tool_schema_version": tool_schema_version,
                 "canonical_params_hash": canonical_params_hash,
             },
         )
@@ -847,6 +886,8 @@ class SessionRepository:
                     "resource_version_id": version.id,
                     "content_hash": version.content_hash,
                     "typed_action_id": approval.typed_action_id,
+                    "tool_schema_name": payload["tool_schema_name"],
+                    "tool_schema_version": payload["tool_schema_version"],
                     "canonical_params_json": approval.canonical_params_json,
                     "canonical_params_hash": approval.canonical_params_hash,
                     "active_resource_id": active.id,
@@ -876,8 +917,14 @@ class SessionRepository:
             "content_hash": version.content_hash,
             "typed_action_id": payload["typed_action_id"],
             "capability_name": payload["capability_name"],
+            "tool_schema_name": payload["tool_schema_name"],
+            "tool_schema_version": payload["tool_schema_version"],
             "canonical_params_json": canonical_params_json,
-            "canonical_params_hash": hash_payload(canonical_params_json),
+            "canonical_params_hash": build_approval_identity_hash(
+                tool_schema_name=payload["tool_schema_name"],
+                tool_schema_version=payload["tool_schema_version"],
+                canonical_arguments_json=canonical_params_json,
+            ),
             "scope_kind": "session_agent",
         }
 
@@ -907,6 +954,8 @@ class SessionRepository:
                     "resource_version_id": version.id,
                     "capability_name": payload["capability_name"],
                     "typed_action_id": payload["typed_action_id"],
+                    "tool_schema_name": payload["tool_schema_name"],
+                    "tool_schema_version": payload["tool_schema_version"],
                     "content_hash": version.content_hash,
                     "canonical_params": canonical_params,
                     "canonical_params_json": canonical_params_json,
@@ -1175,7 +1224,13 @@ class SessionRepository:
             version_payload = json.loads(version.resource_payload)
             typed_action_id = payload.get("typed_action_id") or version_payload.get("typed_action_id")
             canonical_params_json = canonicalize_params(version_payload["arguments"])
-            canonical_params_hash = payload.get("canonical_params_hash") or hash_payload(canonical_params_json)
+            tool_schema_name = payload.get("tool_schema_name") or version_payload["tool_schema_name"]
+            tool_schema_version = payload.get("tool_schema_version") or version_payload["tool_schema_version"]
+            canonical_params_hash = payload.get("canonical_params_hash") or build_approval_identity_hash(
+                tool_schema_name=tool_schema_name,
+                tool_schema_version=tool_schema_version,
+                canonical_arguments_json=canonical_params_json,
+            )
             key = (proposal.id, version.id, typed_action_id, canonical_params_hash)
             if event.event_kind == "approval_decision" and payload.get("decision") == "approved":
                 active[key] = {
@@ -1184,6 +1239,8 @@ class SessionRepository:
                     "resource_version_id": version.id,
                     "content_hash": version.content_hash,
                     "typed_action_id": typed_action_id,
+                    "tool_schema_name": tool_schema_name,
+                    "tool_schema_version": tool_schema_version,
                     "canonical_params_json": canonical_params_json,
                     "canonical_params_hash": canonical_params_hash,
                     "active_resource_id": event.active_resource_id or f"replay-active-{proposal.id}",

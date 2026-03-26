@@ -14,9 +14,12 @@ def classify_failure(*, error_code: str | None = None, error_detail: str | None 
     if (
         "provider_malformed_response" in detail
         or "provider malformed response" in detail
+        or "malformed_tool_payload" in detail
         or "provider_tool_schema_error" in detail
         or "provider tool schema error" in detail
     ):
+        return "validation"
+    if "invalid_tool_arguments" in detail or "invalid arguments for `" in detail:
         return "validation"
     if "timeout" in detail:
         return "timeout"

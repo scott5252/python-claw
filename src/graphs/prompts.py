@@ -2,27 +2,12 @@ from __future__ import annotations
 
 from src.graphs.state import AssistantState, PromptPayload, PromptToolDefinition
 from src.tools.registry import ToolDefinition
-from src.tools.typed_actions import get_typed_action
 
 
 PROMPT_STRATEGY_ID = "provider-runtime-v1"
 
-
-def _argument_guidance(capability_name: str) -> dict[str, str]:
-    if capability_name in {"echo_text", "send_message"}:
-        return {"text": "string"}
-    if capability_name == "remote_exec":
-        return {
-            "command": "string",
-            "tool_call_id": "string optional",
-            "execution_attempt_number": "integer optional",
-        }
-    return {}
-
-
-def _governance_hint(capability_name: str) -> str | None:
-    typed_action = get_typed_action(capability_name)
-    if typed_action is None or not typed_action.requires_approval:
+def _governance_hint(tool: ToolDefinition) -> str | None:
+    if not tool.requires_approval:
         return None
     return "This capability requires an exact backend approval before it can execute."
 
@@ -42,9 +27,12 @@ def build_prompt_payload(*, state: AssistantState, visible_tools: list[ToolDefin
         PromptToolDefinition(
             name=tool.capability_name,
             description=tool.description,
-            argument_guidance=_argument_guidance(tool.capability_name),
-            requires_approval=bool(get_typed_action(tool.capability_name) and get_typed_action(tool.capability_name).requires_approval),
-            governance_hint=_governance_hint(tool.capability_name),
+            usage_guidance=tool.usage_guidance,
+            input_schema=tool.provider_input_schema,
+            tool_schema_name=tool.tool_schema_name,
+            schema_version=tool.schema_version,
+            requires_approval=tool.requires_approval,
+            governance_hint=_governance_hint(tool),
         )
         for tool in visible_tools
     ]

@@ -97,19 +97,6 @@ class RuleBasedModelAdapter(ModelAdapter):
                 response_text="",
             )
 
-        if lowered.startswith("send ") and "send_message" in available_tools:
-            return ModelTurnResult(
-                needs_tools=True,
-                tool_requests=[
-                    ToolRequest(
-                        correlation_id=str(uuid4()),
-                        capability_name="send_message",
-                        arguments={"text": text[5:]},
-                    )
-                ],
-                response_text="",
-            )
-
         return ModelTurnResult(
             needs_tools=False,
             tool_requests=[],
@@ -155,7 +142,10 @@ def _serialize_prompt(state: AssistantState) -> dict[str, object]:
             {
                 "name": tool.name,
                 "description": tool.description,
-                "argument_guidance": tool.argument_guidance,
+                "usage_guidance": tool.usage_guidance,
+                "input_schema": tool.input_schema,
+                "tool_schema_name": tool.tool_schema_name,
+                "schema_version": tool.schema_version,
                 "requires_approval": tool.requires_approval,
                 "governance_hint": tool.governance_hint,
             }
@@ -169,24 +159,34 @@ def _serialize_prompt(state: AssistantState) -> dict[str, object]:
 
 
 def _tool_schema_for_prompt(state: AssistantState, available_tools: list[str]) -> list[dict[str, object]]:
-    if state.llm_prompt is None:
+    if state.bound_tools:
+        bound_tools = state.bound_tools
+    elif state.llm_prompt is not None:
+        bound_tools = {
+            tool.name: type(
+                "PromptTool",
+                (),
+                {
+                    "capability_name": tool.name,
+                    "description": tool.description,
+                    "provider_input_schema": tool.input_schema,
+                },
+            )()
+            for tool in state.llm_prompt.tools
+        }
+    else:
         return []
-    prompt_tools = {tool.name: tool for tool in state.llm_prompt.tools}
     schemas: list[dict[str, object]] = []
     for name in available_tools:
-        tool = prompt_tools.get(name)
+        tool = bound_tools.get(name)
         if tool is None:
             continue
         schemas.append(
             {
                 "type": "function",
-                "name": tool.name,
+                "name": tool.capability_name,
                 "description": tool.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": {key: {"type": "string", "description": value} for key, value in tool.argument_guidance.items()},
-                    "additionalProperties": True,
-                },
+                "parameters": tool.provider_input_schema,
             }
         )
     return schemas
@@ -330,23 +330,12 @@ class ProviderBackedModelAdapter(ModelAdapter):
                 )
                 semantic_fallback_kind = "rejected_tool_request"
                 continue
-            if "text" in _tool_schema_for_prompt(state, [raw_name])[0]["parameters"]["properties"] and "text" not in arguments:
-                rejected_tool_requests.append(
-                    RejectedToolRequest(
-                        correlation_id=str(raw_call_id),
-                        capability_name=raw_name,
-                        arguments=arguments,
-                        error="missing required argument: text",
-                    )
-                )
-                semantic_fallback_kind = "rejected_tool_request"
-                continue
-
             tool_requests.append(
                 ToolRequest(
                     correlation_id=str(raw_call_id),
                     capability_name=raw_name,
                     arguments=arguments,
+                    metadata={"source": "provider"},
                 )
             )
 

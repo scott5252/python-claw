@@ -17,7 +17,7 @@ from src.execution.contracts import (
     build_exec_request,
     derive_argv,
 )
-from src.policies.service import ApprovalMatch, canonicalize_params, hash_payload
+from src.policies.service import ApprovalMatch, build_approval_identity_hash, canonicalize_params, default_tool_schema_identity
 from src.sandbox.service import SandboxService
 from src.security.signing import SigningService
 
@@ -53,7 +53,14 @@ class RemoteExecutionRuntime:
             working_dir=template.working_dir,
             timeout_seconds=template.timeout_seconds,
         )
-        if hash_payload(canonicalize_params(arguments)) != approval.canonical_params_hash:
+        version_payload = json.loads(version.resource_payload)
+        tool_schema_name = version_payload.get("tool_schema_name", default_tool_schema_identity("remote_exec")[0])
+        tool_schema_version = version_payload.get("tool_schema_version", default_tool_schema_identity("remote_exec")[1])
+        if build_approval_identity_hash(
+            tool_schema_name=tool_schema_name,
+            tool_schema_version=tool_schema_version,
+            canonical_arguments_json=canonicalize_params(arguments),
+        ) != approval.canonical_params_hash:
             raise PermissionError("missing exact approval for requested action")
         sandbox = self.sandbox_service.resolve(
             db,

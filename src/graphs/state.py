@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.tools.registry import ToolDefinition
 
 
 @dataclass(frozen=True)
 class PromptToolDefinition:
     name: str
     description: str
-    argument_guidance: dict[str, Any] = field(default_factory=dict)
+    usage_guidance: str
+    input_schema: dict[str, Any] = field(default_factory=dict)
+    tool_schema_name: str = ""
+    schema_version: str = ""
     requires_approval: bool = False
     governance_hint: str | None = None
 
@@ -36,6 +42,7 @@ class ToolRequest:
     correlation_id: str
     capability_name: str
     arguments: dict[str, Any]
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -46,6 +53,7 @@ class ToolEvent:
     arguments: dict[str, Any]
     outcome: dict[str, Any] | None = None
     error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -70,6 +78,28 @@ class RejectedToolRequest:
     capability_name: str | None
     arguments: dict[str, Any]
     error: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ToolValidationIssue:
+    field_path: str
+    message: str
+
+
+@dataclass(frozen=True)
+class ValidatedToolCall:
+    correlation_id: str
+    capability_name: str
+    tool_schema_name: str
+    schema_version: str
+    typed_action_id: str | None
+    requires_approval: bool
+    raw_arguments: dict[str, Any]
+    validated_request: Any
+    canonical_arguments: dict[str, Any]
+    canonical_arguments_json: str
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -118,3 +148,4 @@ class AssistantState:
     assistant_message_id: int | None = None
     needs_tools: bool = False
     awaiting_approval: bool = False
+    bound_tools: dict[str, ToolDefinition] = field(default_factory=dict)

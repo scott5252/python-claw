@@ -28,6 +28,7 @@ def session_manager(database_url: str) -> DatabaseSessionManager:
 def settings(database_url: str) -> Settings:
     return Settings(
         database_url=database_url,
+        runtime_mode="rule_based",
         dedupe_stale_after_seconds=1,
         messages_page_default_limit=2,
         messages_page_max_limit=3,
