@@ -444,6 +444,88 @@ class SummarySnapshotRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
+class SessionMemoryRecord(Base):
+    __tablename__ = "session_memories"
+    __table_args__ = (
+        Index("ix_session_memories_session_status_created", "session_id", "status", "created_at"),
+        Index("ix_session_memories_source_message_status", "source_message_id", "status"),
+        Index("ix_session_memories_source_summary_status", "source_summary_snapshot_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    memory_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    confidence: Mapped[float | None] = mapped_column(nullable=True)
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id"), nullable=True)
+    source_summary_snapshot_id: Mapped[int | None] = mapped_column(ForeignKey("summary_snapshots.id"), nullable=True)
+    source_base_message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id"), nullable=True)
+    source_through_message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id"), nullable=True)
+    derivation_strategy_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class RetrievalRecord(Base):
+    __tablename__ = "retrieval_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "source_kind",
+            "source_id",
+            "chunk_index",
+            "content_hash",
+            "derivation_strategy_id",
+            name="uq_retrieval_records_chunk_identity",
+        ),
+        Index("ix_retrieval_records_session_source_created", "session_id", "source_kind", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id"), nullable=True)
+    source_summary_snapshot_id: Mapped[int | None] = mapped_column(ForeignKey("summary_snapshots.id"), nullable=True)
+    source_memory_id: Mapped[int | None] = mapped_column(ForeignKey("session_memories.id"), nullable=True)
+    source_attachment_extraction_id: Mapped[int | None] = mapped_column(ForeignKey("attachment_extractions.id"), nullable=True)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    ranking_metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    derivation_strategy_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class AttachmentExtractionRecord(Base):
+    __tablename__ = "attachment_extractions"
+    __table_args__ = (
+        UniqueConstraint(
+            "attachment_id",
+            "extractor_kind",
+            "derivation_strategy_id",
+            name="uq_attachment_extractions_identity",
+        ),
+        Index("ix_attachment_extractions_session_status_created", "session_id", "status", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    attachment_id: Mapped[int] = mapped_column(ForeignKey("message_attachments.id"), nullable=False)
+    extractor_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    derivation_strategy_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    content_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
 class OutboxJobRecord(Base):
     __tablename__ = "outbox_jobs"
     __table_args__ = (
@@ -460,6 +542,7 @@ class OutboxJobRecord(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     trace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     failure_category: Mapped[str | None] = mapped_column(String(64), nullable=True)

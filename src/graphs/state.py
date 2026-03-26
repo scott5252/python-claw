@@ -24,6 +24,7 @@ class PromptPayload:
     system_instructions: str
     conversation: list[dict[str, Any]]
     attachments: list[dict[str, Any]]
+    context_sections: list[dict[str, Any]]
     tools: list[PromptToolDefinition]
     approval_guidance: str
     response_contract: str
@@ -35,6 +36,64 @@ class ConversationMessage:
     role: str
     content: str
     sender_id: str
+
+
+@dataclass(frozen=True)
+class SummaryContext:
+    snapshot_id: int
+    summary_text: str
+    base_message_id: int
+    through_message_id: int
+
+
+@dataclass(frozen=True)
+class MemoryContextItem:
+    memory_id: int
+    memory_kind: str
+    content_text: str
+    source_kind: str
+    confidence: float | None = None
+
+
+@dataclass(frozen=True)
+class RetrievalContextItem:
+    retrieval_id: int
+    source_kind: str
+    source_id: int
+    content_text: str
+    score: float
+    ranking_metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class AttachmentContextItem:
+    attachment_id: int
+    extraction_id: int
+    filename: str | None
+    mime_type: str
+    content_text: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class AttachmentFallbackItem:
+    attachment_id: int
+    filename: str | None
+    mime_type: str
+    storage_key: str | None
+    status: str
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class AssemblyMetadata:
+    assembly_mode: str
+    transcript_budget: int
+    retrieved_budget: int
+    retrieval_strategy: str
+    trimmed: bool = False
+    degraded_reasons: list[str] = field(default_factory=list)
+    skipped_candidates: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -140,6 +199,12 @@ class AssistantState:
     sender_id: str
     user_text: str
     messages: list[ConversationMessage]
+    summary_context: SummaryContext | None = None
+    memory_items: list[MemoryContextItem] = field(default_factory=list)
+    retrieval_items: list[RetrievalContextItem] = field(default_factory=list)
+    attachment_items: list[AttachmentContextItem] = field(default_factory=list)
+    attachment_fallbacks: list[AttachmentFallbackItem] = field(default_factory=list)
+    assembly_metadata: AssemblyMetadata | None = None
     context_manifest: dict[str, Any] = field(default_factory=dict)
     llm_prompt: PromptPayload | None = None
     degraded: bool = False

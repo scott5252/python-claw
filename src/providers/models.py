@@ -138,6 +138,7 @@ def _serialize_prompt(state: AssistantState) -> dict[str, object]:
         "system_instructions": state.llm_prompt.system_instructions,
         "conversation": state.llm_prompt.conversation,
         "attachments": state.llm_prompt.attachments,
+        "context_sections": state.llm_prompt.context_sections,
         "tools": [
             {
                 "name": tool.name,

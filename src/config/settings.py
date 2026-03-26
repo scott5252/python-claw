@@ -42,6 +42,22 @@ class Settings(BaseSettings):
     media_allowed_schemes: str = "file,https"
     media_allowed_mime_prefixes: str = "image/,audio/,text/,application/pdf"
     media_max_bytes: int = 5242880
+    retrieval_enabled: bool = True
+    retrieval_strategy_id: str = "lexical-v1"
+    retrieval_total_items: int = 4
+    retrieval_memory_items: int = 2
+    retrieval_attachment_items: int = 2
+    retrieval_other_items: int = 2
+    retrieval_chunk_chars: int = 280
+    retrieval_min_score: float = 1.0
+    memory_enabled: bool = True
+    memory_strategy_id: str = "memory-v1"
+    attachment_extraction_enabled: bool = True
+    attachment_extraction_strategy_id: str = "attachment-v1"
+    attachment_same_run_fast_path_enabled: bool = True
+    attachment_same_run_max_bytes: int = 262144
+    attachment_same_run_pdf_page_limit: int = 5
+    attachment_same_run_timeout_seconds: int = 2
     remote_execution_enabled: bool = False
     node_runner_signing_key_id: str = "local-dev"
     node_runner_signing_secret: str = "local-dev-secret"
@@ -91,6 +107,31 @@ class Settings(BaseSettings):
             raise ValueError("llm_max_output_tokens must be greater than 0 when set")
         if self.runtime_mode == "provider" and not self.llm_api_key:
             raise ValueError("llm_api_key is required when runtime_mode=provider")
+        if not self.retrieval_strategy_id.strip():
+            raise ValueError("retrieval_strategy_id must not be empty")
+        if not self.memory_strategy_id.strip():
+            raise ValueError("memory_strategy_id must not be empty")
+        if not self.attachment_extraction_strategy_id.strip():
+            raise ValueError("attachment_extraction_strategy_id must not be empty")
+        if self.retrieval_total_items < 0:
+            raise ValueError("retrieval_total_items must be greater than or equal to 0")
+        if self.retrieval_memory_items < 0 or self.retrieval_attachment_items < 0 or self.retrieval_other_items < 0:
+            raise ValueError("retrieval per-source caps must be greater than or equal to 0")
+        if (
+            self.retrieval_memory_items + self.retrieval_attachment_items + self.retrieval_other_items
+            < self.retrieval_total_items
+        ):
+            raise ValueError("retrieval per-source caps must cover retrieval_total_items")
+        if self.retrieval_chunk_chars <= 0:
+            raise ValueError("retrieval_chunk_chars must be greater than 0")
+        if self.attachment_same_run_max_bytes <= 0:
+            raise ValueError("attachment_same_run_max_bytes must be greater than 0")
+        if self.attachment_same_run_pdf_page_limit <= 0:
+            raise ValueError("attachment_same_run_pdf_page_limit must be greater than 0")
+        if self.attachment_same_run_timeout_seconds <= 0:
+            raise ValueError("attachment_same_run_timeout_seconds must be greater than 0")
+        if self.attachment_same_run_fast_path_enabled and not self.attachment_extraction_enabled:
+            raise ValueError("attachment extraction must be enabled when same-run fast path is enabled")
         return self
 
 

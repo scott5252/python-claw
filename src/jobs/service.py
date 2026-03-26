@@ -49,6 +49,7 @@ class RunExecutionService:
     base_backoff_seconds: int
     max_backoff_seconds: int
     media_processor: object | None = None
+    attachment_extraction_service: object | None = None
     outbound_dispatcher: object | None = None
     settings: Settings | None = None
 
@@ -105,6 +106,7 @@ class RunExecutionService:
                     session_id=run.session_id,
                     message_id=message.id,
                 )
+                self._run_same_turn_attachment_fast_path(db=db, message_id=message.id)
             state = graph.invoke(
                 db=db,
                 session_id=run.session_id,
@@ -216,6 +218,26 @@ class RunExecutionService:
                 worker_id=resolved_worker_id,
             )
 
+    def _run_same_turn_attachment_fast_path(self, db: Session, *, message_id: int) -> None:
+        if self.attachment_extraction_service is None:
+            return
+        settings = self.settings or Settings(database_url="sqlite://")
+        if not settings.attachment_same_run_fast_path_enabled:
+            return
+        attachments = self.session_repository.list_stored_message_attachments_for_message(db, message_id=message_id)
+        for attachment in attachments:
+            if attachment.mime_type.startswith("image/"):
+                continue
+            if attachment.byte_size is not None and attachment.byte_size > settings.attachment_same_run_max_bytes:
+                continue
+            self.attachment_extraction_service.extract_attachment(
+                db=db,
+                repository=self.session_repository,
+                attachment_id=attachment.id,
+                extractor_kind="default",
+                same_run=True,
+            )
+
     def _backoff_seconds(self, attempt_count: int) -> int:
         return min(self.base_backoff_seconds * (2 ** max(attempt_count, 0)), self.max_backoff_seconds)
 
@@ -228,12 +250,29 @@ class RunExecutionService:
         degraded: bool,
         trace_id: str | None = None,
     ) -> None:
+        settings = self.settings or Settings(database_url="sqlite://")
         self.session_repository.enqueue_outbox_job(
             db,
             session_id=session_id,
             message_id=message_id,
             job_kind="summary_generation",
             job_dedupe_key=f"summary_generation:{session_id}:{message_id}",
+            payload={
+                "job_kind": "summary_generation",
+                "source": {"source_kind": "message", "source_id": message_id, "strategy_id": "summary-v1"},
+            },
+            trace_id=trace_id,
+        )
+        self.session_repository.enqueue_outbox_job(
+            db,
+            session_id=session_id,
+            message_id=message_id,
+            job_kind="memory_extraction",
+            job_dedupe_key=f"memory_extraction:message:{message_id}",
+            payload={
+                "job_kind": "memory_extraction",
+                "source": {"source_kind": "message", "source_id": message_id, "strategy_id": settings.memory_strategy_id},
+            },
             trace_id=trace_id,
         )
         self.session_repository.enqueue_outbox_job(
@@ -241,9 +280,32 @@ class RunExecutionService:
             session_id=session_id,
             message_id=message_id,
             job_kind="retrieval_index",
-            job_dedupe_key=f"retrieval_index:{session_id}:{message_id}",
+            job_dedupe_key=f"retrieval_index:message:{message_id}",
+            payload={
+                "job_kind": "retrieval_index",
+                "source": {"source_kind": "message", "source_id": message_id, "strategy_id": settings.retrieval_strategy_id},
+            },
             trace_id=trace_id,
         )
+        for attachment in self.session_repository.list_stored_message_attachments_for_message(db, message_id=message_id):
+            self.session_repository.enqueue_outbox_job(
+                db,
+                session_id=session_id,
+                message_id=message_id,
+                job_kind="attachment_extraction",
+                job_dedupe_key=f"attachment_extraction:{attachment.id}:default",
+                payload={
+                    "job_kind": "attachment_extraction",
+                    "message_id": message_id,
+                    "source": {
+                        "source_kind": "attachment",
+                        "source_id": attachment.id,
+                        "extractor_kind": "default",
+                        "strategy_id": settings.attachment_extraction_strategy_id,
+                    },
+                },
+                trace_id=trace_id,
+            )
         if degraded:
             self.session_repository.enqueue_outbox_job(
                 db,
@@ -251,6 +313,10 @@ class RunExecutionService:
                 message_id=message_id,
                 job_kind="continuity_repair",
                 job_dedupe_key=f"continuity_repair:{session_id}:{message_id}",
+                payload={
+                    "job_kind": "continuity_repair",
+                    "source": {"source_kind": "message", "source_id": message_id, "strategy_id": "continuity-v1"},
+                },
                 trace_id=trace_id,
             )
 

@@ -22,6 +22,9 @@ from src.observability.health import HealthService
 from src.policies.service import PolicyService
 from src.providers.models import ProviderBackedModelAdapter, RuleBasedModelAdapter
 from src.media.processor import MediaProcessor
+from src.media.extraction import MediaExtractionService
+from src.memory.service import MemoryService
+from src.retrieval.service import RetrievalService
 from src.execution.audit import ExecutionAuditRepository
 from src.execution.contracts import NodeExecutionResult
 from src.execution.runtime import RemoteExecutionRuntime
@@ -101,6 +104,11 @@ def build_assistant_graph(settings: Settings, repository: SessionRepository):
         runner_client=runner_client,
     )
     policy_service = PolicyService(remote_execution_enabled=settings.remote_execution_enabled)
+    retrieval_service = RetrievalService(
+        strategy_id=settings.retrieval_strategy_id,
+        chunk_chars=settings.retrieval_chunk_chars,
+        min_score=settings.retrieval_min_score,
+    )
     return GraphFactory(
         GraphDependencies(
             repository=repository,
@@ -118,6 +126,7 @@ def build_assistant_graph(settings: Settings, repository: SessionRepository):
             context_service=ContextService(
                 context_window=settings.runtime_transcript_context_limit,
                 settings=settings,
+                retrieval_service=retrieval_service,
             ),
             remote_execution_runtime=remote_runtime,
         )
@@ -146,6 +155,13 @@ def create_run_execution_service(settings: Settings) -> RunExecutionService:
     jobs_repository = JobsRepository()
     dispatcher = build_dispatcher()
     dispatcher.settings = settings
+    attachment_extraction_service = MediaExtractionService(
+        storage_root=Path(settings.media_storage_root),
+        strategy_id=settings.attachment_extraction_strategy_id,
+        same_run_max_bytes=settings.attachment_same_run_max_bytes,
+        same_run_pdf_page_limit=settings.attachment_same_run_pdf_page_limit,
+        same_run_timeout_seconds=settings.attachment_same_run_timeout_seconds,
+    )
     return RunExecutionService(
         settings=settings,
         jobs_repository=jobs_repository,
@@ -169,6 +185,7 @@ def create_run_execution_service(settings: Settings) -> RunExecutionService:
                 item.strip() for item in settings.media_allowed_mime_prefixes.split(",") if item.strip()
             ),
         ),
+        attachment_extraction_service=attachment_extraction_service,
         outbound_dispatcher=dispatcher,
     )
 

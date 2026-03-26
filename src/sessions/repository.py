@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from src.db.models import (
     ActiveResourceRecord,
+    AttachmentExtractionRecord,
     ContextManifestRecord,
     GovernanceTranscriptEventRecord,
     InboundMessageAttachmentRecord,
@@ -18,10 +19,12 @@ from src.db.models import (
     OutboundDeliveryAttemptRecord,
     OutboundDeliveryRecord,
     OutboxJobRecord,
+    RetrievalRecord,
     ResourceApprovalRecord,
     ResourceProposalRecord,
     ResourceVersionRecord,
     ScheduledJobRecord,
+    SessionMemoryRecord,
     SessionArtifactRecord,
     SessionRecord,
     SummarySnapshotRecord,
@@ -139,6 +142,9 @@ class SessionRepository:
         )
         return list(db.scalars(stmt))
 
+    def get_message_attachment(self, db: Session, *, attachment_id: int) -> MessageAttachmentRecord | None:
+        return db.get(MessageAttachmentRecord, attachment_id)
+
     def list_stored_message_attachments_for_message(
         self,
         db: Session,
@@ -169,6 +175,9 @@ class SessionRepository:
             .order_by(MessageAttachmentRecord.created_at.desc(), MessageAttachmentRecord.id.desc())
         )
         return db.scalar(stmt)
+
+    def get_summary_snapshot(self, db: Session, *, summary_snapshot_id: int) -> SummarySnapshotRecord | None:
+        return db.get(SummarySnapshotRecord, summary_snapshot_id)
 
     def append_message_attachment(
         self,
@@ -1061,6 +1070,223 @@ class SessionRepository:
         )
         return db.scalar(stmt)
 
+    def get_latest_summary_snapshot_for_session(self, db: Session, *, session_id: str) -> SummarySnapshotRecord | None:
+        stmt = (
+            select(SummarySnapshotRecord)
+            .where(SummarySnapshotRecord.session_id == session_id)
+            .order_by(SummarySnapshotRecord.snapshot_version.desc())
+        )
+        return db.scalar(stmt)
+
+    def create_or_get_session_memory(
+        self,
+        db: Session,
+        *,
+        session_id: str,
+        memory_kind: str,
+        content_text: str,
+        content_hash: str,
+        status: str,
+        confidence: float | None,
+        source_kind: str,
+        source_message_id: int | None,
+        source_summary_snapshot_id: int | None,
+        source_base_message_id: int | None,
+        source_through_message_id: int | None,
+        derivation_strategy_id: str,
+        payload: dict[str, Any] | None = None,
+    ) -> SessionMemoryRecord:
+        self._validate_memory_provenance(
+            source_kind=source_kind,
+            source_message_id=source_message_id,
+            source_summary_snapshot_id=source_summary_snapshot_id,
+            source_base_message_id=source_base_message_id,
+            source_through_message_id=source_through_message_id,
+        )
+        existing_stmt = select(SessionMemoryRecord).where(
+            SessionMemoryRecord.session_id == session_id,
+            SessionMemoryRecord.memory_kind == memory_kind,
+            SessionMemoryRecord.content_hash == content_hash,
+            SessionMemoryRecord.derivation_strategy_id == derivation_strategy_id,
+            SessionMemoryRecord.source_kind == source_kind,
+        )
+        if source_kind == "message":
+            existing_stmt = existing_stmt.where(SessionMemoryRecord.source_message_id == source_message_id)
+        else:
+            existing_stmt = existing_stmt.where(SessionMemoryRecord.source_summary_snapshot_id == source_summary_snapshot_id)
+        existing = db.scalar(existing_stmt.order_by(SessionMemoryRecord.id.desc()))
+        if existing is not None:
+            return existing
+        record = SessionMemoryRecord(
+            session_id=session_id,
+            memory_kind=memory_kind,
+            content_text=content_text,
+            content_hash=content_hash,
+            status=status,
+            confidence=confidence,
+            source_kind=source_kind,
+            source_message_id=source_message_id,
+            source_summary_snapshot_id=source_summary_snapshot_id,
+            source_base_message_id=source_base_message_id,
+            source_through_message_id=source_through_message_id,
+            derivation_strategy_id=derivation_strategy_id,
+            payload_json=json.dumps(payload or {}, sort_keys=True),
+        )
+        db.add(record)
+        db.flush()
+        return record
+
+    def get_session_memory(self, db: Session, *, memory_id: int) -> SessionMemoryRecord | None:
+        return db.get(SessionMemoryRecord, memory_id)
+
+    def list_active_session_memories(self, db: Session, *, session_id: str) -> list[SessionMemoryRecord]:
+        stmt = (
+            select(SessionMemoryRecord)
+            .where(SessionMemoryRecord.session_id == session_id, SessionMemoryRecord.status == "active")
+            .order_by(SessionMemoryRecord.created_at.desc(), SessionMemoryRecord.id.desc())
+        )
+        return list(db.scalars(stmt))
+
+    def transition_session_memory(self, db: Session, *, memory_id: int, status: str) -> SessionMemoryRecord:
+        record = db.get(SessionMemoryRecord, memory_id)
+        if record is None:
+            raise LookupError("session memory not found")
+        record.status = status
+        db.flush()
+        return record
+
+    def create_or_get_retrieval_record(
+        self,
+        db: Session,
+        *,
+        session_id: str,
+        source_kind: str,
+        source_id: int,
+        source_message_id: int | None,
+        source_summary_snapshot_id: int | None,
+        source_memory_id: int | None,
+        source_attachment_extraction_id: int | None,
+        chunk_index: int,
+        content_text: str,
+        content_hash: str,
+        ranking_metadata: dict[str, Any] | None,
+        derivation_strategy_id: str,
+    ) -> RetrievalRecord:
+        existing = db.scalar(
+            select(RetrievalRecord).where(
+                RetrievalRecord.session_id == session_id,
+                RetrievalRecord.source_kind == source_kind,
+                RetrievalRecord.source_id == source_id,
+                RetrievalRecord.chunk_index == chunk_index,
+                RetrievalRecord.content_hash == content_hash,
+                RetrievalRecord.derivation_strategy_id == derivation_strategy_id,
+            )
+        )
+        if existing is not None:
+            return existing
+        record = RetrievalRecord(
+            session_id=session_id,
+            source_kind=source_kind,
+            source_id=source_id,
+            source_message_id=source_message_id,
+            source_summary_snapshot_id=source_summary_snapshot_id,
+            source_memory_id=source_memory_id,
+            source_attachment_extraction_id=source_attachment_extraction_id,
+            chunk_index=chunk_index,
+            content_text=content_text,
+            content_hash=content_hash,
+            ranking_metadata_json=json.dumps(ranking_metadata or {}, sort_keys=True),
+            derivation_strategy_id=derivation_strategy_id,
+        )
+        db.add(record)
+        db.flush()
+        return record
+
+    def list_retrieval_records(self, db: Session, *, session_id: str) -> list[RetrievalRecord]:
+        stmt = (
+            select(RetrievalRecord)
+            .where(RetrievalRecord.session_id == session_id)
+            .order_by(RetrievalRecord.created_at.desc(), RetrievalRecord.id.desc())
+        )
+        return list(db.scalars(stmt))
+
+    def get_attachment_extraction(
+        self,
+        db: Session,
+        *,
+        attachment_id: int,
+        extractor_kind: str,
+        derivation_strategy_id: str,
+    ) -> AttachmentExtractionRecord | None:
+        stmt = select(AttachmentExtractionRecord).where(
+            AttachmentExtractionRecord.attachment_id == attachment_id,
+            AttachmentExtractionRecord.extractor_kind == extractor_kind,
+            AttachmentExtractionRecord.derivation_strategy_id == derivation_strategy_id,
+        )
+        return db.scalar(stmt)
+
+    def get_attachment_extraction_by_id(
+        self,
+        db: Session,
+        *,
+        attachment_extraction_id: int,
+    ) -> AttachmentExtractionRecord | None:
+        return db.get(AttachmentExtractionRecord, attachment_extraction_id)
+
+    def upsert_attachment_extraction(
+        self,
+        db: Session,
+        *,
+        session_id: str,
+        attachment_id: int,
+        extractor_kind: str,
+        derivation_strategy_id: str,
+        status: str,
+        content_text: str | None = None,
+        content_metadata: dict[str, Any] | None = None,
+        error_detail: str | None = None,
+    ) -> AttachmentExtractionRecord:
+        record = self.get_attachment_extraction(
+            db,
+            attachment_id=attachment_id,
+            extractor_kind=extractor_kind,
+            derivation_strategy_id=derivation_strategy_id,
+        )
+        if record is None:
+            record = AttachmentExtractionRecord(
+                session_id=session_id,
+                attachment_id=attachment_id,
+                extractor_kind=extractor_kind,
+                derivation_strategy_id=derivation_strategy_id,
+                status=status,
+                content_text=content_text,
+                content_metadata_json=json.dumps(content_metadata or {}, sort_keys=True),
+                error_detail=error_detail,
+            )
+            db.add(record)
+        else:
+            record.status = status
+            record.content_text = content_text
+            record.content_metadata_json = json.dumps(content_metadata or {}, sort_keys=True)
+            record.error_detail = error_detail
+        db.flush()
+        return record
+
+    def list_attachment_extractions_for_attachments(
+        self,
+        db: Session,
+        *,
+        attachment_ids: list[int],
+    ) -> list[AttachmentExtractionRecord]:
+        if not attachment_ids:
+            return []
+        stmt = (
+            select(AttachmentExtractionRecord)
+            .where(AttachmentExtractionRecord.attachment_id.in_(attachment_ids))
+            .order_by(AttachmentExtractionRecord.created_at.desc(), AttachmentExtractionRecord.id.desc())
+        )
+        return list(db.scalars(stmt))
+
     def append_context_manifest(
         self,
         db: Session,
@@ -1114,6 +1340,7 @@ class SessionRepository:
         message_id: int,
         job_kind: str,
         job_dedupe_key: str,
+        payload: dict[str, Any] | None = None,
         trace_id: str | None = None,
         available_at: datetime | None = None,
     ) -> OutboxJobRecord:
@@ -1127,6 +1354,7 @@ class SessionRepository:
             job_dedupe_key=job_dedupe_key,
             status="pending",
             available_at=available_at or datetime.now(timezone.utc),
+            payload_json=json.dumps(payload or {}, sort_keys=True),
             attempt_count=0,
             trace_id=trace_id,
         )
@@ -1169,6 +1397,31 @@ class SessionRepository:
         job.failure_category = None
         db.flush()
         return job
+
+    @staticmethod
+    def decode_outbox_payload(job: OutboxJobRecord) -> dict[str, Any]:
+        return json.loads(job.payload_json or "{}")
+
+    @staticmethod
+    def _validate_memory_provenance(
+        *,
+        source_kind: str,
+        source_message_id: int | None,
+        source_summary_snapshot_id: int | None,
+        source_base_message_id: int | None,
+        source_through_message_id: int | None,
+    ) -> None:
+        if source_kind == "message":
+            if source_message_id is None or source_summary_snapshot_id is not None:
+                raise ValueError("message memory provenance requires source_message_id only")
+            return
+        if source_kind == "summary_snapshot":
+            if source_summary_snapshot_id is None or source_message_id is not None:
+                raise ValueError("summary memory provenance requires source_summary_snapshot_id only")
+            if source_base_message_id is None or source_through_message_id is None:
+                raise ValueError("summary memory provenance requires transcript range")
+            return
+        raise ValueError("unsupported memory source_kind")
 
     def fail_outbox_job(
         self,

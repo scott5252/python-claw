@@ -27,7 +27,7 @@ In simpler terms, this project is the backend skeleton for an AI assistant syste
 
 ### What it does today
 
-The current implementation focuses on ten delivered capability areas:
+The current implementation focuses on eleven delivered capability areas:
 
 1. Gateway sessions and deterministic routing
 2. Runtime tools and typed tool execution
@@ -39,13 +39,14 @@ The current implementation focuses on ten delivered capability areas:
 8. Observability, diagnostics, health or readiness, and operational hardening
 9. Provider-backed LLM runtime with backend-owned prompt assembly and approval-safe tool routing
 10. Typed tool schemas with shared backend validation and hybrid intent control for approvals or revocations
+11. Retrieval, durable memory, and attachment-content understanding as additive context
 
 ### What it does not do yet
 
 The project is still a foundation, not a finished end-user assistant platform. Important planned capabilities are still pending, including:
 
 - real provider-backed transport APIs for Slack, Telegram, or web chat
-- richer retrieval and memory indexing
+- cross-session retrieval, external vector infrastructure, and more advanced memory policies
 - production-grade sandbox/container enforcement
 - sub-agent orchestration
 - full production telemetry backends and alerting integrations
@@ -71,6 +72,8 @@ That means the project keeps routing, session identity, policy decisions, persis
 - Worker: claims queued runs and executes assistant turns
 - Assistant graph/runtime: performs the assistant decision flow
 - Media processor: normalizes accepted attachments before they enter turn context
+- Attachment extraction service: derives usable attachment text or metadata after normalization
+- Memory and retrieval services: build additive durable context from transcript, summaries, memories, and extracted attachments
 - Tool registry and policy layer: controls which tools are visible and executable
 - Typed tool schema layer: validates tool arguments, exports provider-facing schemas, and canonicalizes approval identity
 - Outbound dispatcher: parses directives, chunks text, applies channel capability rules, and records delivery attempts
@@ -217,11 +220,14 @@ This means risky or externally impactful actions can require explicit approval b
 The platform keeps transcript history as the main source of truth. It also supports additive continuity records such as:
 
 - summary snapshots
+- durable memory rows
+- retrieval records
+- attachment extraction records
 - context manifests
 - outbox jobs
 - normalized attachment references used during a turn
 
-This lets the system inspect how context was assembled for each turn and lays the groundwork for future summarization and retrieval workflows.
+This means the runtime can now assemble one turn from recent transcript, the latest valid summary, retrieved durable memory, and extracted attachment content without treating any of that derived state as canonical truth. If retrieval or extraction is missing or unhealthy, the system degrades safely back to transcript plus summary.
 
 With Spec 008, continuity is also easier to inspect operationally. Developers can now use diagnostics to see whether context assembly degraded, whether outbox follow-up work is pending or failed, and how recent runs for a session behaved without manually reconstructing the state from raw SQL alone.
 
@@ -239,6 +245,7 @@ In practical terms, the platform now supports:
 
 - optional canonical `attachments` on `POST /inbound/message`
 - worker-side normalization of accepted attachments into safe stored media records
+- bounded same-run text and PDF extraction when supported, with later-turn asynchronous extraction for the general case
 - directive parsing for bounded reply and media instructions
 - deterministic post-turn chunking for large outbound text
 - append-only delivery and delivery-attempt auditing
@@ -337,6 +344,9 @@ Implemented now:
 - typed schema validation and canonical argument handling for backend-exposed tools
 - canonical inbound attachment acceptance
 - worker-owned attachment normalization and safe local media staging
+- additive context assembly from transcript, summaries, retrieval rows, durable memories, and extracted attachment content
+- worker-owned same-run fast-path attachment understanding for bounded text and PDF inputs
+- after-turn enrichment jobs for summary rollover, memory extraction, retrieval indexing, and attachment extraction
 - shared outbound dispatch with directive stripping and deterministic chunking
 - append-only outbound delivery auditing for `webchat`, `slack`, and `telegram`
 - signed internal node-runner requests
@@ -348,7 +358,7 @@ Implemented now:
 
 Planned or partial:
 
-- retrieval indexing and retrieval-assisted context assembly
+- cross-session or externally backed retrieval
 - production transport API integrations beyond the current thin channel adapters
 - stronger production sandbox isolation
 - richer metrics exporters, tracing backends, and alerting integrations
