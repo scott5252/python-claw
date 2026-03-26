@@ -27,7 +27,7 @@ In simpler terms, this project is the backend skeleton for an AI assistant syste
 
 ### What it does today
 
-The current implementation focuses on nine delivered capability areas:
+The current implementation focuses on ten delivered capability areas:
 
 1. Gateway sessions and deterministic routing
 2. Runtime tools and typed tool execution
@@ -38,6 +38,7 @@ The current implementation focuses on nine delivered capability areas:
 7. Channel-aware outbound delivery, chunking, and first-pass media normalization
 8. Observability, diagnostics, health or readiness, and operational hardening
 9. Provider-backed LLM runtime with backend-owned prompt assembly and approval-safe tool routing
+10. Typed tool schemas with shared backend validation and hybrid intent control for approvals or revocations
 
 ### What it does not do yet
 
@@ -71,6 +72,7 @@ That means the project keeps routing, session identity, policy decisions, persis
 - Assistant graph/runtime: performs the assistant decision flow
 - Media processor: normalizes accepted attachments before they enter turn context
 - Tool registry and policy layer: controls which tools are visible and executable
+- Typed tool schema layer: validates tool arguments, exports provider-facing schemas, and canonicalizes approval identity
 - Outbound dispatcher: parses directives, chunks text, applies channel capability rules, and records delivery attempts
 - Channel adapters: thin transport-specific send interfaces for `webchat`, `slack`, and `telegram`
 - Observability layer: emits structured events, redacts sensitive fields, classifies failures, and supports diagnostics queries
@@ -195,6 +197,8 @@ The runtime now supports two execution modes behind the same model adapter seam:
 - an explicit provider-backed mode that uses backend-authored prompt payloads, bounded provider retries, and translation back into the existing `ModelTurnResult` and `ToolRequest` contracts
 
 Even in provider-backed mode, tool execution, approval creation, artifact persistence, context-manifest ownership, and outbound dispatch all remain backend-owned. The model may suggest tools, but it does not execute them directly.
+
+With Spec 010, tool use is also schema-driven rather than guidance-only. In practical terms, the backend now owns one typed schema contract for each exposed tool in this phase, uses that same contract for prompt-visible guidance, provider-native tool definitions, runtime validation, and canonical argument serialization, and fails safely when provider or deterministic tool arguments do not match the schema. High-risk administrative intents such as `approve <proposal_id>` and `revoke <proposal_id>` still bypass model interpretation entirely.
 
 #### Governance and approvals
 
@@ -330,6 +334,7 @@ Implemented now:
 - idempotency and duplicate replay protection
 - worker-owned queued execution
 - approval-gated capability execution
+- typed schema validation and canonical argument handling for backend-exposed tools
 - canonical inbound attachment acceptance
 - worker-owned attachment normalization and safe local media staging
 - shared outbound dispatch with directive stripping and deterministic chunking
@@ -552,6 +557,7 @@ uv run pytest tests/test_api.py
 uv run pytest tests/test_runtime.py
 uv run pytest tests/test_integration.py
 uv run pytest tests/test_provider_runtime.py
+uv run pytest tests/test_typed_tool_schemas.py
 uv run pytest tests/test_async_queueing_coverage.py
 uv run pytest tests/test_node_sandbox.py
 uv run pytest tests/test_channels_media.py
@@ -799,6 +805,13 @@ curl -X POST http://127.0.0.1:8000/inbound/message \
 
 In the governed case, the system may require approval before the action can be used or completed.
 
+For provider-backed tool use, argument handling is now stricter than earlier phases:
+
+- `echo_text` and `send_message` use fixed-shape typed schemas and reject unknown fields
+- `remote_exec` uses a flat open-key schema that only allows scalar JSON values
+- provider adapters may reject obviously malformed tool envelopes, but backend validation remains authoritative before execution, proposal creation, or approval matching
+- governed approval identity now includes the tool schema name and schema version alongside canonical validated arguments
+
 Large outbound responses are now sent through the shared dispatcher after the assistant turn completes. If the text exceeds a channel's configured limit, it is split into deterministic chunks before send. The current phase supports bounded reply and media directives internally, but those directives are parsed and stripped by shared runtime code rather than being passed through as visible adapter commands.
 
 If you want to test this specifically with `webchat`, send the same kinds of inbound messages shown above, but use `"channel_kind": "webchat"` and then inspect the resulting transcript, run status, and outbound delivery rows after the worker executes.
@@ -895,9 +908,11 @@ Today that LLM layer includes:
 
 - explicit runtime selection between `rule_based` and provider-backed execution
 - backend-owned typed prompt assembly in `src/graphs/prompts.py`
+- backend-owned typed tool schemas shared across prompt guidance, provider tool export, runtime validation, and approval identity
 - bounded provider execution metadata persisted through context manifests and observability surfaces
 - provider-suggested tool requests translated back into backend-owned contracts
 - approval-safe handling where governed model-suggested tools create proposals instead of executing without exact approval
+- deterministic bypass for administrative approval or revocation commands instead of routing those intents through model interpretation
 
 Future work is still expected in areas such as:
 
