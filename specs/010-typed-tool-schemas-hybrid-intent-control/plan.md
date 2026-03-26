@@ -26,9 +26,11 @@
 - Provider adapters receive backend-authored schemas and perform only coarse malformed-envelope screening; `src/graphs/nodes.py` remains the authoritative validation and canonicalization boundary.
 - Governed approval identity includes canonical validated arguments plus `tool_schema_name` and `tool_schema_version`, while `typed_action_id` remains stable across schema revisions.
 - Governed schema identity is sourced durably from the governed resource payload on `resource_versions.resource_payload`, with any mirrored fields elsewhere treated as additive only.
+- The governed resource payload uses one required top-level shape for schema identity: `capability_name`, `typed_action_id`, `tool_schema_name`, `tool_schema_version`, and `arguments`.
 - Deterministic `approve` and `revoke` handling remains in `src/policies/service.py`, and any deterministic non-administrative shortcut is normalized into the same shared tool-request validation and execution path as provider-backed requests.
 - Schema-invalid requests never execute, never create approvals, and never create governed proposals.
 - The graph materializes one validated-call representation before approval lookup, proposal creation, or invocation, while preserving compatibility with the existing `ToolRequest` and `ModelTurnResult` contracts where practical.
+- Tool invocation in this slice is standardized on typed validated request objects rather than canonical JSON payloads.
 
 ## Migration Order
 1. Prefer no schema migration if existing append-only tool-event, manifest, and observability payloads can already store bounded validation metadata.
@@ -69,7 +71,7 @@
 - Keep the post-validation contract explicit without forcing a full runtime redesign:
   - preserve raw request compatibility where helpful
   - create one graph-owned validated-call helper after schema validation succeeds
-  - pass typed validated input to tool implementations
+  - pass typed validated request objects to tool implementations
   - persist canonical validated arguments for approval and governance identity
 - Tighten error handling without changing run ownership:
   - schema failures should complete safely with assistant guidance
@@ -95,7 +97,7 @@
 - `src/tools/remote_exec.py`
   - define the typed request model for `remote_exec`
   - implement one explicit open-key invocation schema rather than an untyped dictionary convention
-  - allow only approval-relevant scalar JSON values in provider-visible arguments
+  - allow only approval-relevant scalar JSON values in provider-visible arguments, with the allowed set defined exactly as `string`, `number`, `boolean`, or `null`
   - exclude backend-owned execution envelope metadata from provider-visible schemas, canonical arguments, and approval identity
   - ensure approval lookup and runtime execution consume canonical validated arguments only
 - `src/tools/typed_actions.py`
@@ -129,6 +131,7 @@
 - `src/graphs/prompts.py`
   - render conversational tool guidance from the same bound-tool exposure entry used for provider schema export and runtime validation lookup
   - avoid creating a second schema authority in prompt-only metadata or `argument_guidance`
+  - treat any persisted bound-tool exposure snapshot in manifests as diagnostic only, not as the authoritative in-turn execution object
 
 ### Persistence and Observability Contracts
 - `src/sessions/repository.py`
@@ -163,6 +166,7 @@
   - typed request-model validation for each tool
   - fixed-shape unknown-field rejection for `echo_text` and `send_message`
   - `remote_exec` open-key allowed-value and reserved-key enforcement
+  - exact `remote_exec` scalar-type preservation through canonicalization
   - canonical serialization stability
   - schema-version approval identity changes without `typed_action_id` drift
   - governed approval replay using schema identity sourced from governed resource payload

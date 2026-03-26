@@ -110,6 +110,12 @@ Decision:
   - `tool_schema_name`
   - `tool_schema_version`
 - The authoritative durable source for governed schema identity in this slice is the governed resource payload stored on `resource_versions.resource_payload`.
+- The governed resource payload shape in this slice must carry schema identity as top-level fields alongside the existing governed action payload:
+  - `capability_name`
+  - `typed_action_id`
+  - `tool_schema_name`
+  - `tool_schema_version`
+  - `arguments`
 - Approval rows, active-resource rows, proposal packets, tool events, manifests, and audit payloads may mirror schema identity additively for lookup, diagnostics, and replay performance, but they must not become a competing source of truth.
 - If a replay, approval lookup, or proposal-packet path needs schema identity and a mirrored field is absent, the implementation must derive it from the governed resource payload rather than inventing a default.
 - Existing append-only artifact, manifest, and audit payloads may grow additively to persist bounded schema metadata such as:
@@ -143,8 +149,14 @@ Decision:
   - `echo_text` and `send_message` must use fixed-shape schemas
   - `remote_exec` must use one explicit open-key invocation schema rather than an untyped free-form dictionary convention
 - The provider-visible `remote_exec` schema must describe only approval-relevant invocation arguments.
+- The provider-visible `remote_exec` schema must be one flat open-key object whose values are limited to JSON scalar values only:
+  - `string`
+  - `number`
+  - `boolean`
+  - `null`
+- Arrays, objects, and nested structures are forbidden in provider-visible `remote_exec` invocation arguments for this slice.
 - Runtime-owned execution envelope fields such as `tool_call_id` and `execution_attempt_number` are not part of the provider-visible tool schema and are not part of approval identity.
-- Tool implementations must receive typed validated request objects or a validated canonical payload produced from those objects, rather than raw unvalidated model output dictionaries.
+- Tool implementations must receive typed validated request objects, not raw unvalidated model output dictionaries and not canonical argument JSON as their primary invocation input.
 - For governed tools, the schema-identity values used by approval matching and replay must be the same values persisted in the governed resource payload; mirrored copies in approval or audit records are additive only.
 
 ### Tool Registry Contract
@@ -174,6 +186,7 @@ Decision:
 - The contract may be implemented as a dedicated dataclass or equivalent typed model, but it must carry at minimum:
   - `capability_name`
   - `description`
+  - `tool_schema_name`
   - `schema_version`
   - bounded human-readable usage guidance suitable for prompt rendering
   - provider-facing schema export derived from the same backend-owned typed schema
@@ -183,6 +196,8 @@ Decision:
 - If a tool is visible in prompt guidance for a provider-backed turn, the same bound-tool exposure entry must also be the basis for provider schema export and execution-time validation for that turn.
 - The canonical bound-tool exposure contract in this slice must be carried on `AssistantState` as a backend-owned per-turn structure rather than inferred later from `available_tools: list[str]` alone.
 - `ModelAdapter.complete_turn(...)` may keep the existing `available_tools: list[str]` parameter for backward compatibility, but provider-backed execution in this slice must consume the bound-tool exposure entries carried on `AssistantState` as the authoritative source for tool meaning and schema export.
+- Bound-tool exposure entries are turn-local execution inputs in this slice.
+- The implementation may persist a bounded snapshot of bound-tool exposure metadata in `context_manifests` for observability, but manifest persistence is additive and diagnostic only; `AssistantState` remains the authoritative in-turn carrier.
 
 ### Provider Tool-Schema Contract
 - `src/providers/models.py` must consume backend-owned tool schema metadata from the registry rather than inferring schemas from prompt hints or hard-coded assumptions.
@@ -228,6 +243,11 @@ Decision:
   - fixed-shape schemas reject unknown fields fail-closed
   - open-key schemas must define exactly which value types are allowed and which reserved keys are forbidden
 - `remote_exec` canonical arguments must exclude backend-owned execution envelope metadata and include only approval-relevant invocation arguments from the validated open-key schema.
+- For `remote_exec`, canonicalization must preserve validated scalar JSON types as validated:
+  - strings remain strings
+  - numbers remain JSON numbers and must not be normalized to strings
+  - booleans remain booleans
+  - null remains null
 - Approval matching, proposal hashing, proposal-packet rendering, and exact-match enforcement must all use canonical arguments produced after schema validation.
 - For governed tools, exact approval identity must also include `tool_schema_name` and `tool_schema_version` so schema changes cannot silently reuse approvals created under older argument semantics.
 - The chosen extras behavior and schema-version behavior must be consistent between provider-requested tools, deterministic tool paths, governance proposal creation, and execution-time approval enforcement.
@@ -240,7 +260,7 @@ Decision:
   - `capability_name`
   - `tool_schema_name`
   - `tool_schema_version`
-  - validated typed request object or equivalent typed payload
+  - validated typed request object
   - `canonical_arguments_json`
   - `canonical_arguments_hash`
 - Tool events and audit records may persist both bounded raw input and canonical validated arguments when helpful, but canonical validated arguments are the only arguments that may participate in approval identity, proposal hashing, or governed execution decisions.
@@ -252,7 +272,7 @@ Decision:
   - validate raw tool arguments against the bound tool schema
   - canonicalize validated arguments
   - enforce approval requirements using canonical validated arguments
-  - invoke the tool with the validated request object or canonical validated payload
+  - invoke the tool with the validated typed request object
   - persist tool event, audit, assistant response, and any proposal artifacts
 - Tool implementations must not duplicate policy checks or schema parsing that belong to the graph and registry contracts, except for narrow runtime assertions about required infrastructure such as node-runner availability.
 - Governed tool requests such as `remote_exec` must create proposals and exact-match approvals using canonical validated arguments only.
@@ -292,6 +312,7 @@ Decision:
   - prompt-visible tool guidance
   - provider-facing tool schema export
   - graph-time validation and canonicalization lookup
+- Bound-tool exposure may be mirrored in a bounded manifest snapshot for diagnostics, but that persisted snapshot is not the authoritative in-turn execution object.
 - `available_tools: list[str]` may remain as a compatibility filter for adapters, but it is not sufficient by itself to define tool semantics in this slice.
 - The shared runtime flow is:
   - receive raw tool-call input from a provider or deterministic shortcut
@@ -301,6 +322,7 @@ Decision:
   - perform approval lookup or proposal creation using schema identity plus canonical validated arguments
   - invoke the tool with typed validated input plus backend-owned runtime metadata
 - For `remote_exec`, the provider-visible request shape in this slice is one flat open-key map of approval-relevant invocation arguments whose values are limited to scalar JSON values.
+- For `remote_exec`, the allowed scalar value set is exactly `string`, `number`, `boolean`, or `null`; arrays, objects, and nested structures are invalid.
 - Backend-owned execution envelope metadata for `remote_exec`, including `tool_call_id` and `execution_attempt_number`, must be injected by the backend after validation and must not appear in provider-visible schemas, canonical approval arguments, governed proposal identity, or approval matching keys.
 
 ## Runtime Invariants
