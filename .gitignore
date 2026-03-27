@@ -9,6 +9,5 @@ dist/
 .idea/
 .vscode/
 .env
-.env.*
 htmlcov/
 coverage/
