@@ -132,6 +132,7 @@ class RunExecutionService:
                 db,
                 session_id=run.session_id,
                 message_id=message.id,
+                summary_message_id=state.assistant_message_id,
                 degraded=state.degraded,
                 trace_id=run.trace_id,
             )
@@ -247,19 +248,25 @@ class RunExecutionService:
         *,
         session_id: str,
         message_id: int,
+        summary_message_id: int | None,
         degraded: bool,
         trace_id: str | None = None,
     ) -> None:
         settings = self.settings or Settings(database_url="sqlite://")
+        summary_target_message_id = summary_message_id or message_id
         self.session_repository.enqueue_outbox_job(
             db,
             session_id=session_id,
-            message_id=message_id,
+            message_id=summary_target_message_id,
             job_kind="summary_generation",
-            job_dedupe_key=f"summary_generation:{session_id}:{message_id}",
+            job_dedupe_key=f"summary_generation:{session_id}:{summary_target_message_id}",
             payload={
                 "job_kind": "summary_generation",
-                "source": {"source_kind": "message", "source_id": message_id, "strategy_id": "summary-v1"},
+                "source": {
+                    "source_kind": "message",
+                    "source_id": summary_target_message_id,
+                    "strategy_id": "summary-v1",
+                },
             },
             trace_id=trace_id,
         )
@@ -310,12 +317,16 @@ class RunExecutionService:
             self.session_repository.enqueue_outbox_job(
                 db,
                 session_id=session_id,
-                message_id=message_id,
+                message_id=summary_target_message_id,
                 job_kind="continuity_repair",
-                job_dedupe_key=f"continuity_repair:{session_id}:{message_id}",
+                job_dedupe_key=f"continuity_repair:{session_id}:{summary_target_message_id}",
                 payload={
                     "job_kind": "continuity_repair",
-                    "source": {"source_kind": "message", "source_id": message_id, "strategy_id": "continuity-v1"},
+                    "source": {
+                        "source_kind": "message",
+                        "source_id": summary_target_message_id,
+                        "strategy_id": "continuity-v1",
+                    },
                 },
                 trace_id=trace_id,
             )

@@ -404,7 +404,7 @@ def execute_turn(*, db: Session, state: AssistantState, dependencies: GraphDepen
             "I could not safely fit the required session context into the model window for this turn. "
             "Continuity repair has been queued."
         )
-        dependencies.repository.append_message(
+        assistant_message = dependencies.repository.append_message(
             db,
             dependencies.repository.get_session(db, state.session_id),
             role="assistant",
@@ -413,6 +413,7 @@ def execute_turn(*, db: Session, state: AssistantState, dependencies: GraphDepen
             sender_id=state.agent_id,
             last_activity_at=datetime.now(timezone.utc),
         )
+        state.assistant_message_id = assistant_message.id
         dependencies.context_service.persist_manifest(db=db, repository=dependencies.repository, state=state)
         return state
 

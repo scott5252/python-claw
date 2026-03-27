@@ -495,12 +495,16 @@ Expected result:
 
 What is happening in the system:
 
-- the summary job compacts enough transcript to create a summary snapshot
+- the summary job attempts compaction and creates a summary snapshot only when enough uncovered transcript exists
 - memory extraction creates additive durable memory rows with provenance
 - retrieval indexing creates session-scoped retrieval rows from canonical source artifacts
 - none of this mutates transcript truth
 
 ### Step 5: Verify the durable records exist
+
+Before you run this developer verification command:
+
+- replace `replace-with-your-session-id` in the code below with the real `session_id` returned earlier in the demo
 
 Run this developer verification command:
 
@@ -513,28 +517,36 @@ from src.db.session import DatabaseSessionManager
 
 settings = get_settings()
 manager = DatabaseSessionManager(settings.database_url)
+session_id = "replace-with-your-session-id"
 
 queries = {
-    "summary_snapshots": "select id, session_id, through_message_id from summary_snapshots order by id desc limit 5",
-    "session_memories": "select id, session_id, source_kind, status, derivation_strategy_id from session_memories order by id desc limit 5",
-    "retrieval_records": "select id, session_id, source_kind, chunk_index, derivation_strategy_id from retrieval_records order by id desc limit 5",
-    "attachment_extractions": "select id, session_id, attachment_id, status, extractor_kind from attachment_extractions order by id desc limit 5",
+    "summary_snapshots": "select id, session_id, through_message_id from summary_snapshots where session_id = :session_id order by id desc limit 5",
+    "session_memories": "select id, session_id, source_kind, status, derivation_strategy_id from session_memories where session_id = :session_id order by id desc limit 5",
+    "retrieval_records": "select id, session_id, source_kind, chunk_index, derivation_strategy_id from retrieval_records where session_id = :session_id order by id desc limit 5",
+    "attachment_extractions": "select id, session_id, attachment_id, status, extractor_kind from attachment_extractions where session_id = :session_id order by id desc limit 5",
 }
 
 with manager.session() as db:
     for name, sql in queries.items():
         print(f"\n== {name} ==")
-        for row in db.execute(text(sql)):
+        for row in db.execute(text(sql), {"session_id": session_id}):
             print(row)
 PY
 ```
 
 Expected result:
 
-- at least one `summary_snapshots` row
 - at least one `session_memories` row with `status='active'`
 - at least one `retrieval_records` row
 - at least one `attachment_extractions` row with `status='completed'`
+- `summary_snapshots` may still be empty at this stage
+
+Why `summary_snapshots` may still be empty:
+
+- after the first completed turn, the session usually has only two transcript rows: one user message and one assistant message
+- the current summary generation path only writes a snapshot when at least four uncovered transcript rows exist
+- that means the first outbox pass usually creates memory, retrieval, and attachment-derived state, but not a summary snapshot yet
+- a summary snapshot usually appears only after later turns create enough transcript or after a continuity-repair cycle has more transcript to compact
 
 ## Part C: Demonstrate Later-Turn Continuity Without Reuploading The Note
 

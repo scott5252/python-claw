@@ -12,7 +12,7 @@ from src.config.settings import Settings
 from src.context.outbox import OutboxWorker
 from src.context.service import ContextService
 from src.db.base import Base
-from src.db.models import AttachmentExtractionRecord
+from src.db.models import AttachmentExtractionRecord, OutboxJobRecord
 from src.db.session import DatabaseSessionManager
 from src.media.extraction import MediaExtractionService
 from src.memory.service import MemoryService
@@ -225,6 +225,82 @@ def test_same_run_attachment_fast_path_persists_extraction_before_manifest(tmp_p
     assert "cliffside" in (extraction.content_text or "")
     assert manifest["attachment_extraction_ids"] == [extraction.id]
     assert manifest["attachment_fallbacks"] == []
+
+
+def test_continuity_repair_uses_degraded_assistant_message_for_summary(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'continuity-repair.db'}"
+    settings = Settings(
+        database_url=database_url,
+        runtime_mode="rule_based",
+        runtime_transcript_context_limit=2,
+        retrieval_enabled=False,
+        diagnostics_admin_bearer_token="admin-secret",
+        diagnostics_internal_service_token="internal-secret",
+    )
+    manager = DatabaseSessionManager(settings.database_url)
+    Base.metadata.create_all(manager.engine)
+    app = create_app(settings=settings, session_manager=manager)
+    client = TestClient(app)
+
+    first = client.post(
+        "/inbound/message",
+        json={
+            "channel_kind": "webchat",
+            "channel_account_id": "acct",
+            "external_message_id": "msg-1",
+            "sender_id": "user-1",
+            "content": "first turn",
+            "peer_id": "peer-1",
+        },
+    )
+    assert first.status_code == 202
+    with manager.session() as db:
+        run_id = app.state.run_execution_service.process_next_run(db, worker_id="spec011-worker")
+        db.commit()
+    assert run_id is not None
+
+    second = client.post(
+        "/inbound/message",
+        json={
+            "channel_kind": "webchat",
+            "channel_account_id": "acct",
+            "external_message_id": "msg-2",
+            "sender_id": "user-1",
+            "content": "second turn",
+            "peer_id": "peer-1",
+        },
+    )
+    assert second.status_code == 202
+    session_id = second.json()["session_id"]
+
+    with manager.session() as db:
+        run_id = app.state.run_execution_service.process_next_run(db, worker_id="spec011-worker")
+        db.commit()
+    assert run_id is not None
+    with manager.session() as db:
+        repository = SessionRepository()
+        messages = repository.list_messages(db, session_id=session_id, limit=10, before_message_id=None)
+        jobs = list(
+            db.query(OutboxJobRecord)
+            .filter_by(session_id=session_id)
+            .order_by(OutboxJobRecord.id.asc())
+        )
+    degraded_assistant = messages[-1]
+    assert degraded_assistant.role == "assistant"
+    assert "Continuity repair has been queued." in degraded_assistant.content
+    continuity_jobs = [job for job in jobs if job.job_kind == "continuity_repair"]
+    assert continuity_jobs
+    assert continuity_jobs[-1].message_id == degraded_assistant.id
+
+    worker = OutboxWorker(repository=SessionRepository())
+    with manager.session() as db:
+        completed = worker.run_pending(db, session_id=session_id, now=datetime.now(timezone.utc), limit=20)
+        snapshot = SessionRepository().get_latest_summary_snapshot_for_session(db, session_id=session_id)
+        db.commit()
+
+    assert "continuity_repair" in completed
+    assert snapshot is not None
+    assert snapshot.through_message_id == degraded_assistant.id
 
 
 def test_attachment_extraction_identity_is_reused_across_retries(session_manager, tmp_path: Path) -> None:

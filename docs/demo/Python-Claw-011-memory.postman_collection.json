@@ -1,0 +1,324 @@
+{
+  "info": {
+    "_postman_id": "8229c250-092b-4b16-baff-f44eb63b6469",
+    "name": "Python-Claw-011-memory",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "41171391"
+  },
+  "item": [
+    {
+      "name": "a. check1",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{BASE}}/health/live",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "health",
+            "live"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "a. check2",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/health/ready",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "health",
+            "ready"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 1",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var jsonData = pm.response.json();",
+              "",
+              "pm.environment.set(\"session_id\", jsonData.session_id);",
+              "pm.environment.set(\"run_id\", jsonData.run_id);",
+              "pm.environment.set(\"trace_id\", jsonData.trace_id);",
+              "pm.environment.set(\"message_id\", jsonData.message_id);"
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text",
+            "disabled": true
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channel_kind\": \"webchat\",\n  \"channel_account_id\": \"bike-shop-demo\",\n  \"external_message_id\": \"demo011-msg-1\",\n  \"sender_id\": \"employee-alex\",\n  \"content\": \"Please read this repair intake note and tell me the best pickup reminder plan for Maya.\",\n  \"peer_id\": \"customer-maya\",\n  \"attachments\": [\n    {\n      \"source_url\": \"{{INTAKE_FILE_URL}}\",\n      \"mime_type\": \"text/plain\",\n      \"filename\": \"maya-intake.txt\",\n      \"byte_size\": 260,\n      \"provider_metadata\": {}\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE}}/inbound/message",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "inbound",
+            "message"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 3",
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text",
+            "disabled": true
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE}}/sessions/{{session_id}}/messages",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "sessions",
+            "{{session_id}}",
+            "messages"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 6",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text",
+            "disabled": true
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"channel_kind\": \"webchat\",\n    \"channel_account_id\": \"bike-shop-demo\",\n    \"external_message_id\": \"demo011-msg-2\",\n    \"sender_id\": \"employee-alex\",\n    \"content\": \"I do not have the intake note open anymore. What pickup time did Maya prefer, what is the repair order number, and what extra reminder should I include?\",\n    \"peer_id\": \"customer-maya\"\n  }",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE}}/inbound/message",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "inbound",
+            "message"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 8",
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text",
+            "disabled": true
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE}}/sessions/{{session_id}}/messages",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "sessions",
+            "{{session_id}}",
+            "messages"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 8b",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text",
+            "disabled": true
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"channel_kind\": \"webchat\",\n    \"channel_account_id\": \"bike-shop-demo\",\n    \"external_message_id\": \"demo011-msg-3\",\n    \"sender_id\": \"employee-alex\",\n    \"content\": \"Now that continuity repair has run, remind me of Maya's preferred pickup time, the repair order number, and the extra reminder.\",\n    \"peer_id\": \"customer-maya\"\n  }",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE}}/inbound/message",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "inbound",
+            "message"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 8c",
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text",
+            "disabled": true
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE}}/sessions/{{session_id}}/messages",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "sessions",
+            "{{session_id}}",
+            "messages"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 9",
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      },
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE}}/diagnostics/sessions/{{session_id}}/continuity",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "diagnostics",
+            "sessions",
+            "{{session_id}}",
+            "continuity"
+          ]
+        }
+      },
+      "response": []
+    }
+  ]
+}
