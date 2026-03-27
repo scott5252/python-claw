@@ -80,6 +80,26 @@ PYTHON_CLAW_CHANNEL_ACCOUNTS=[
 ]
 ```
 
+Important formatting note:
+
+- `PYTHON_CLAW_CHANNEL_ACCOUNTS` must be valid JSON
+- do not wrap the whole JSON value in extra single quotes
+- safest option: keep it on one line exactly as valid JSON
+
+Good example:
+
+```text
+PYTHON_CLAW_CHANNEL_ACCOUNTS=[{"channel_account_id":"acct","channel_kind":"slack","mode":"fake"}]
+```
+
+Bad example:
+
+```text
+PYTHON_CLAW_CHANNEL_ACCOUNTS='[{"channel_account_id":"acct","channel_kind":"slack","mode":"fake"}]'
+```
+
+If you use the bad form, commands like `uv run alembic upgrade head` can fail because the settings loader will try to parse the leading single quote as JSON.
+
 What this means:
 
 - `rule_based` keeps the demo easy to run locally
@@ -639,6 +659,11 @@ PYTHON_CLAW_CHANNEL_ACCOUNTS=[
   {"channel_account_id":"acct","channel_kind":"webchat","mode":"fake"}
 ]
 ```
+
+Keep the same formatting rule here as well:
+
+- use valid JSON
+- do not add outer single quotes around the whole `PYTHON_CLAW_CHANNEL_ACCOUNTS` value
 
 If you try real mode:
 

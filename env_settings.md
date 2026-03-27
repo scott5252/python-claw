@@ -1,6 +1,6 @@
 # Environment Settings Guide
 
-This document explains every setting in [.env.example](/Users/scottcornell/src/my-projects/python-claw/.env.example) and how it relates to the behavior described in the README and Specs 001 through 011.
+This document explains every setting in [.env.example](/Users/scottcornell/src/my-projects/python-claw/.env.example) and how it relates to the behavior described in the README and Specs 001 through 012.
 
 ## How configuration is loaded
 
@@ -41,6 +41,131 @@ PYTHON_CLAW_APP_NAME=python-claw-gateway
 
 ```env
 PYTHON_CLAW_DEFAULT_AGENT_ID=default-agent
+```
+
+## Channel Transport Configuration
+
+### `PYTHON_CLAW_CHANNEL_ACCOUNTS`
+
+- Default: a built-in fake registry for `acct` and `acct-1` across `slack`, `telegram`, and `webchat`
+- Type: JSON array of channel-account objects
+- What it does: Defines the typed channel-account registry introduced by Spec 012. This registry is now the runtime source for channel-account resolution, including fake versus real transport mode, outbound credentials, inbound verification settings, optional base URL overrides, and optional bounded transport policy identifiers.
+- How to configure it: Set it as a JSON array. Each object must include at least `channel_account_id`, `channel_kind`, and `mode`. Use `mode=fake` for local development and CI. Use `mode=real` only when you also provide the required provider-specific settings for that channel kind.
+- Important formatting note: the value must be valid JSON. In `.env`, prefer a single-line JSON array and do not wrap the whole value in extra single quotes. A value like `'[{"channel_account_id":"acct",...}]'` can be read as a literal string starting with `'`, which will break JSON parsing.
+- Required fields for every entry:
+  - `channel_account_id`
+  - `channel_kind`
+  - `mode`
+- Allowed `channel_kind` values:
+  - `slack`
+  - `telegram`
+  - `webchat`
+- Allowed `mode` values:
+  - `fake`
+  - `real`
+- Optional shared fields:
+  - `base_url`
+  - `transport_policy_id`
+  - `verification_token`
+- Detailed field descriptions:
+  - `channel_account_id`
+    - Stable logical account key used by routing, ingress verification, and outbound dispatch resolution.
+    - Examples: `acct`, `acct-1`, `prod-slack-main`
+  - `channel_kind`
+    - Identifies which adapter family should handle the account.
+    - This must match one of the supported Spec 012 channels exactly.
+  - `mode`
+    - Chooses `fake` or `real` transport behavior.
+    - `fake` keeps the full backend flow active without calling live provider APIs.
+    - `real` enables provider-backed verification and outbound transport behavior.
+  - `outbound_token`
+    - Provider token used for outbound API calls.
+    - Used by Slack and Telegram in `real` mode.
+  - `signing_secret`
+    - Secret used to verify inbound Slack request signatures.
+  - `webhook_secret`
+    - Secret token used to verify inbound Telegram webhook requests.
+  - `webchat_client_token`
+    - Shared secret used by the authenticated production webchat inbound and polling routes.
+  - `base_url`
+    - Optional outbound API base URL override.
+    - Useful for provider-compatible gateways, sandboxes, or transport stubs.
+  - `transport_policy_id`
+    - Optional bounded policy label for per-account delivery or rate-limit handling.
+    - The current implementation stores and resolves it, but keeps policy logic intentionally lightweight in this slice.
+  - `verification_token`
+    - Optional verification token field reserved for providers or future control-request flows that need token-style request validation.
+- Provider-specific fields:
+  - Slack:
+    - `outbound_token`
+    - `signing_secret`
+  - Telegram:
+    - `outbound_token`
+    - `webhook_secret`
+  - Webchat:
+    - `webchat_client_token`
+- Validation behavior:
+  - duplicate `(channel_kind, channel_account_id)` entries fail startup
+  - `real` Slack accounts fail startup unless both `outbound_token` and `signing_secret` are present
+  - `real` Telegram accounts fail startup unless both `outbound_token` and `webhook_secret` are present
+  - `real` Webchat accounts fail startup unless `webchat_client_token` is present
+- How the system uses it:
+  - inbound provider routes use it to verify incoming requests
+  - the dispatcher uses it to resolve which adapter mode and credentials to use for outbound sends
+  - tests and local runs use the same registry contract as production, just with fake entries
+- Example fake local configuration:
+
+```env
+PYTHON_CLAW_CHANNEL_ACCOUNTS=[
+  {"channel_account_id":"acct","channel_kind":"slack","mode":"fake"},
+  {"channel_account_id":"acct","channel_kind":"telegram","mode":"fake"},
+  {"channel_account_id":"acct","channel_kind":"webchat","mode":"fake"}
+]
+```
+
+- Example real Slack entry:
+
+```env
+PYTHON_CLAW_CHANNEL_ACCOUNTS=[
+  {
+    "channel_account_id":"acct",
+    "channel_kind":"slack",
+    "mode":"real",
+    "outbound_token":"xoxb-your-token",
+    "signing_secret":"your-slack-signing-secret",
+    "base_url":"https://slack.com/api",
+    "transport_policy_id":"default-slack-policy"
+  }
+]
+```
+
+- Example real Telegram entry:
+
+```env
+PYTHON_CLAW_CHANNEL_ACCOUNTS=[
+  {
+    "channel_account_id":"acct",
+    "channel_kind":"telegram",
+    "mode":"real",
+    "outbound_token":"telegram-bot-token",
+    "webhook_secret":"telegram-webhook-secret",
+    "transport_policy_id":"default-telegram-policy"
+  }
+]
+```
+
+- Example real Webchat entry:
+
+```env
+PYTHON_CLAW_CHANNEL_ACCOUNTS=[
+  {
+    "channel_account_id":"acct",
+    "channel_kind":"webchat",
+    "mode":"real",
+    "webchat_client_token":"webchat-client-token",
+    "transport_policy_id":"default-webchat-policy"
+  }
+]
 ```
 
 ## Database And Local Infrastructure
