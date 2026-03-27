@@ -4,6 +4,9 @@ from apps.gateway.deps import create_run_execution_service, create_scheduler_ser
 from apps.gateway.api.admin import router as admin_router
 from apps.gateway.api.health import router as health_router
 from apps.gateway.api.inbound import router as inbound_router
+from apps.gateway.api.slack import router as slack_router
+from apps.gateway.api.telegram import router as telegram_router
+from apps.gateway.api.webchat import router as webchat_router
 from src.config.settings import Settings, get_settings
 from src.db.session import DatabaseSessionManager
 
@@ -22,6 +25,9 @@ def create_app(
     app.state.scheduler_service = create_scheduler_service(resolved_settings)
     app.include_router(health_router)
     app.include_router(inbound_router)
+    app.include_router(slack_router)
+    app.include_router(telegram_router)
+    app.include_router(webchat_router)
     app.include_router(admin_router)
     return app
 

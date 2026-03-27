@@ -49,6 +49,29 @@ class InboundMessageRequest(BaseModel):
     group_id: str | None = None
     attachments: list[CanonicalAttachmentInput] = Field(default_factory=list)
 
+
+class DurableTransportAddress(BaseModel):
+    address_key: str
+    provider: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("address_key", "provider")
+    @classmethod
+    def _validate_required_text(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("must be non-empty")
+        return trimmed
+
+    @field_validator("metadata")
+    @classmethod
+    def _validate_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
+        encoded = json.dumps(value, sort_keys=True)
+        if len(encoded) > 2000:
+            raise ValueError("metadata must be 2000 characters or fewer")
+        return value
+
+
 class InboundMessageResponse(BaseModel):
     session_id: str
     message_id: int
@@ -96,6 +119,7 @@ class SessionResponse(BaseModel):
     peer_id: str | None
     group_id: str | None
     scope_name: str
+    transport_address_key: str | None = None
     created_at: datetime
     last_activity_at: datetime
 
@@ -173,3 +197,37 @@ class SessionContinuityDiagnosticsResponse(BaseModel):
     pending_outbox_jobs: int = 0
     failed_outbox_jobs: int = 0
     recent_run_statuses: list[str] = Field(default_factory=list)
+
+
+class ProviderControlResponse(BaseModel):
+    status: str
+    detail: str | None = None
+
+
+class WebchatInboundRequest(BaseModel):
+    actor_id: str
+    content: str
+    message_id: str | None = None
+    peer_id: str | None = None
+    group_id: str | None = None
+    stream_id: str | None = None
+    attachments: list[CanonicalAttachmentInput] = Field(default_factory=list)
+
+
+class WebchatInboundResponse(InboundMessageResponse):
+    external_message_id: str
+
+
+class WebchatDeliveryPollItem(BaseModel):
+    delivery_id: int
+    status: str
+    delivery_kind: str
+    provider_message_id: str | None = None
+    created_at: datetime
+    payload: dict[str, Any] = Field(default_factory=dict)
+    provider_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class WebchatDeliveryPollResponse(BaseModel):
+    items: list[WebchatDeliveryPollItem]
+    next_after_delivery_id: int | None = None

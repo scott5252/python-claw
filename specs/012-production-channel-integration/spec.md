@@ -125,9 +125,109 @@ Decision:
 - The webchat transport in this slice may use bounded server-originated delivery mechanisms such as durable polling endpoints or whole-message push callbacks, but it must still map into the same session, transcript, delivery, and dispatcher model as the other channels.
 - Partial-token streaming remains deferred to Spec 013.
 
+### Gap 6: Provider-Specific Canonical Routing and Dedupe Mapping
+Real inbound transports do not all expose the same identity shape for direct chats, channels, rooms, thread replies, or webhook redelivery. The current draft requires canonical mapping into the Spec 001 routing tuple, but it does not yet define the per-provider normalization strongly enough to guarantee deterministic session reuse and duplicate suppression.
+
+Options considered:
+- Option A: add a normative per-provider mapping matrix for supported inbound event shapes covering `external_message_id`, `sender_id`, `peer_id`, `group_id`, and ignored event types
+- Option B: leave provider mapping implementation-defined and document it only in adapter code
+- Option C: introduce a second provider-specific routing store that tracks native conversation identity outside the canonical session tuple
+- Option D: reduce the slice to one inbound conversation shape per provider and defer the rest
+
+Selected option:
+- Option A
+
+Decision:
+- This spec must define one explicit per-provider canonical mapping table for the supported Slack, Telegram, and webchat inbound message shapes in this slice.
+- For each supported provider event shape, the spec must document:
+  - which native identifier becomes `external_message_id` for gateway dedupe
+  - which native actor becomes `sender_id`
+  - whether the event maps to `peer_id` or `group_id`
+  - how thread-root or reply-container identifiers participate in routing, if at all
+  - which provider events are ignored rather than translated into canonical inbound messages
+- The mapping must preserve the Spec 001 invariant that the same normalized routing inputs produce the same session identity without requiring provider-specific session caches.
+
+### Gap 7: Verified Provider Control Requests vs Canonical Message Ingress
+Some providers require verified non-message control flows such as webhook challenge requests, endpoint verification handshakes, or setup callbacks. The current draft requires verified ingress and also keeps transcript creation gateway-owned, but it does not yet define how these provider control requests fit the architecture without creating fake transcript rows.
+
+Options considered:
+- Option A: treat provider verification or challenge traffic as gateway-owned control requests that are verified and answered without entering transcript, dedupe, or run creation paths
+- Option B: force all provider callbacks, including setup or challenge flows, through the canonical inbound message contract
+- Option C: require separate out-of-band manual setup and omit runtime challenge handling from the product contract
+- Option D: defer inbound support for any provider that requires challenge or verification callbacks
+
+Selected option:
+- Option A
+
+Decision:
+- This slice may include provider-specific verification or challenge endpoints at the gateway boundary when a supported provider requires them.
+- Verified control requests are not canonical inbound messages and must not create transcript rows, dedupe records, sessions, or execution runs.
+- Only provider requests that successfully translate into the canonical inbound message envelope may enter `SessionService.process_inbound(...)`.
+- The spec must explicitly distinguish control-request success semantics from canonical message-acceptance semantics in API tests and observability.
+
+### Gap 8: Concrete Production Webchat Delivery Contract
+The current draft keeps `webchat` in scope and allows bounded non-streaming transport behavior, but it does not choose one concrete delivery contract. That ambiguity would block API design, adapter shape, and end-to-end tests.
+
+Options considered:
+- Option A: define production webchat in this slice as HTTP inbound plus durable polling for outbound whole-message delivery
+- Option B: define production webchat as HTTP inbound plus whole-message SSE push
+- Option C: define production webchat as HTTP inbound plus server-to-client callback delivery
+- Option D: remove `webchat` from this slice and focus only on Slack and Telegram
+
+Selected option:
+- Option A
+
+Decision:
+- Production `webchat` in this slice uses canonical HTTP inbound submission plus durable polling for outbound whole-message delivery.
+- Polling returns already-persisted whole outbound delivery results only; it does not introduce token streaming, partial transcript state, or provider-owned orchestration.
+- The polling contract must reconcile to the same `sessions`, `messages`, `execution_runs`, `outbound_deliveries`, and `outbound_delivery_attempts` records already used by the worker-owned backend path.
+- Whole-message push or SSE-style delivery remains a possible later extension, but it is not the required production webchat contract for Spec 012.
+
+### Gap 9: Channel Account and Credential Resolution
+Real transports require provider tokens, signing secrets, webhook secrets, base URLs, and per-account transport settings. The current draft says secrets remain settings-only inputs, but it does not yet define how `channel_account_id` resolves to a concrete adapter configuration or how tests select fake versus real transports.
+
+Options considered:
+- Option A: support exactly one configured account per channel kind through flat environment variables
+- Option B: add a settings-backed per-channel account registry keyed by `channel_account_id`, including adapter mode and bounded transport configuration
+- Option C: create a new database-owned channel-account table that becomes the primary runtime configuration source
+- Option D: require an external secret manager or control plane and leave in-process resolution unspecified
+
+Selected option:
+- Option B
+
+Decision:
+- This slice uses a settings-backed per-channel account registry keyed by canonical `channel_account_id`.
+- The registry must be sufficient to resolve, per account:
+  - whether the adapter runs in fake or real transport mode
+  - outbound credentials or tokens
+  - inbound verification or signing-secret configuration
+  - any bounded provider base URL override or transport mode metadata
+  - any bounded per-account delivery settings such as rate-limit policy identifiers
+- Tests and local development must be able to select fake adapter entries through the same registry contract without requiring live provider credentials.
+- Secrets remain settings-only inputs in this slice and must not be copied into transcript, manifest, artifact, or diagnostics payloads.
+
+### Gap 10: Canonical Session Routing vs Durable Transport Addressing
+Spec 001 correctly defines session continuity in terms of the canonical routing tuple, but real provider sends also need a stable transport destination such as a Slack conversation id, Telegram chat id, or webchat delivery stream key. The current draft talks about reply metadata, but it does not yet define where the base outbound transport address lives or how it is reused safely across later sends.
+
+Options considered:
+- Option A: treat the canonical `peer_id` or `group_id` as the only outbound destination identity for every provider
+- Option B: resolve the provider destination ad hoc from recent inbound payloads or provider lookups on every outbound send
+- Option C: persist a bounded transport-address envelope additively at ingress, tied to the session as the durable outbound destination, while keeping reply or thread targeting additive at the delivery level
+- Option D: reduce scope to only providers whose routing tuple already equals the outbound send target
+
+Selected option:
+- Option C
+
+Decision:
+- Session continuity remains defined only by the canonical routing tuple from Spec 001.
+- This slice also introduces one bounded durable transport-address contract resolved during verified ingress and reused for outbound sends.
+- The transport address is operational metadata, not transcript truth and not a second routing store.
+- Reply or thread targeting remains additive delivery metadata layered on top of the durable base transport address.
+
 ## Data Model Changes
 - Preserve existing `sessions`, `messages`, `execution_runs`, `inbound_message_attachments`, `message_attachments`, `outbound_deliveries`, and `outbound_delivery_attempts` as the main durable transport-facing records.
 - Additive persistence may be introduced only where real transports require durable identity or callback correlation, for example:
+  - bounded session-level transport-address metadata needed to derive the real provider send target
   - provider webhook event identity or delivery receipt identity
   - provider conversation or thread metadata needed for reply-safe follow-up sends
   - bounded provider failure classification metadata beyond the current `error_code` and `error_detail`
@@ -164,6 +264,15 @@ Decision:
 - If a provider uses event IDs that differ from message IDs, the implementation must explicitly document which identity is used for gateway dedupe and why.
 - Message-edit, delete, reaction, or presence events are out of scope unless they can be cleanly mapped into the existing inbound message semantics without creating a second message lifecycle.
 
+### Durable Transport Address Contract
+- Verified provider ingress must also resolve one bounded transport-address envelope for the destination the backend will use on later outbound sends.
+- The durable transport address must be sufficient to support one provider send request without re-reading raw webhook payloads or performing transcript-dependent inference.
+- The durable transport address is additive operational state only:
+  - it does not replace the canonical routing tuple
+  - it does not participate in transcript truth
+  - it does not become a second session-routing store
+- Reply or thread targeting metadata for individual sends remains additive delivery or attempt metadata layered on top of the durable transport address.
+
 ### Outbound Adapter Contract
 - `src/channels/adapters/base.py` remains the shared adapter seam for this slice, but it must grow additively to support real transports.
 - Real adapters must expose:
@@ -171,6 +280,7 @@ Decision:
   - one bounded text-send method
   - one bounded media-send method where supported
   - one bounded structured error or result contract suitable for retry classification and diagnostics
+- Real adapters must accept a resolved durable transport address rather than inferring the destination only from `session_id`.
 - Real adapters may add helper methods for inbound verification or payload translation, but shared dispatcher code remains the owner of chunking, directive parsing, attempt creation, and durable state transitions.
 - Provider-native SDK clients or HTTP payloads must not leak beyond the adapter boundary into graph, session, policy, or worker code.
 
@@ -194,6 +304,69 @@ Decision:
 - Outbound replay must continue to reuse the existing logical-delivery key of `(outbound_intent_id, chunk_index)` rather than creating new logical delivery rows.
 - If a provider supports outbound idempotency headers or request identifiers, those values must derive from the existing durable delivery or attempt identity rather than from ephemeral process state.
 - Transport callbacks or receipts must reconcile back to existing rows instead of generating new logical outbound sends.
+
+### Production Webchat Polling Contract
+- Production `webchat` polling must use a dedicated webchat client-auth boundary rather than operator diagnostics auth.
+- Polling must be replay-safe and cursor-based using a monotonic backend cursor such as `after_delivery_id`.
+- Polling responses may include only bounded delivery projections needed by the browser client, never provider secrets or raw webhook payloads.
+
+### Channel-Account Registry Shape Contract
+- The settings-backed channel-account registry must use one typed validated shape, not ad hoc flat variables.
+- Each registry entry must include:
+  - `channel_account_id`
+  - `channel_kind`
+  - `mode` with at least `fake` and `real`
+  - provider-specific outbound credential references or values
+  - provider-specific inbound verification settings
+  - optional bounded base-URL override
+  - optional bounded transport policy identifiers
+- Validation must fail closed when a `real` account omits required provider settings for its `channel_kind`.
+
+## Canonical Mapping Matrix
+### Slack
+- Supported inbound message shape:
+  - verified event-callback message traffic only
+- Canonical mapping to implement:
+  - dedupe on `slack:{conversation_id}:{message_ts}` using the Slack conversation id plus the Slack message `ts`, not the webhook envelope `event_id`
+  - `sender_id` from the native Slack actor id
+  - channel or conversation identity maps to `group_id` for channel-like traffic and `peer_id` for direct-message traffic
+  - the durable transport address for outbound sends is the Slack conversation id
+  - thread replies reuse the same routing tuple unless the supported implementation needs additive bounded thread metadata only for reply targeting
+- Ignore in this slice:
+  - reaction events
+  - edit or delete events
+  - presence or membership changes
+  - slash commands and interactive payloads
+
+### Telegram
+- Supported inbound message shape:
+  - verified webhook message traffic for bot conversations in direct or group contexts
+- Canonical mapping to implement:
+  - dedupe on `telegram:{chat_id}:{message_id}` using both the Telegram chat id and the Telegram message id
+  - `sender_id` from the native Telegram sender id
+  - direct chats map to `peer_id`
+  - group or supergroup chats map to `group_id`
+  - the durable transport address for outbound sends is the Telegram `chat_id`
+  - reply-target metadata remains additive and transport-local rather than becoming a second routing key
+- Ignore in this slice:
+  - edited-message updates
+  - callback queries
+  - inline-button interactions
+  - presence-like or membership-only updates
+
+### Webchat
+- Supported inbound message shape:
+  - canonical production webchat HTTP message submission
+- Canonical mapping to implement:
+  - dedupe on the stable client-supplied message id when present, otherwise on a server-issued canonical message id returned at acceptance time
+  - `sender_id` from the webchat actor identity
+  - direct browser-user conversations map to `peer_id`
+  - shared-room behavior maps to `group_id` only if the slice supports it explicitly through the same canonical tuple rules
+  - the durable transport address for outbound sends and polling is the webchat session delivery stream identity resolved by the gateway
+- Ignore in this slice:
+  - ephemeral typing or presence signals
+  - token-streaming events
+  - UI-only control messages that are not canonical user messages
 
 ### Security Contract
 - Inbound provider traffic must be authenticated or verified before any transcript or dedupe write occurs.

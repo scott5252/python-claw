@@ -153,8 +153,7 @@ def create_session_service(settings: Settings) -> SessionService:
 def create_run_execution_service(settings: Settings) -> RunExecutionService:
     repository = SessionRepository()
     jobs_repository = JobsRepository()
-    dispatcher = build_dispatcher()
-    dispatcher.settings = settings
+    dispatcher = build_dispatcher(settings)
     attachment_extraction_service = MediaExtractionService(
         storage_root=Path(settings.media_storage_root),
         strategy_id=settings.attachment_extraction_strategy_id,

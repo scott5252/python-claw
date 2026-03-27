@@ -6,10 +6,11 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from src.channels.adapters.base import ChannelAdapter
+from src.channels.adapters.base import ChannelAdapter, ChannelSendError
 from src.config.settings import Settings
 from src.db.models import ExecutionRunRecord
 from src.domain.block_chunker import chunk_text
+from src.domain.schemas import DurableTransportAddress
 from src.domain.reply_directives import ReplyDirectiveError, parse_reply_directives
 from src.observability.failures import classify_failure
 from src.observability.logging import build_event, emit_event
@@ -24,7 +25,7 @@ class OutboundDispatchError(RuntimeError):
 @dataclass
 class OutboundDispatcher:
     adapters: dict[str, ChannelAdapter]
-    settings: Settings | None = None
+    settings: Settings
 
     def dispatch_run(
         self,
@@ -35,17 +36,39 @@ class OutboundDispatcher:
         execution_run_id: str,
         assistant_text: str,
     ) -> None:
-        _ = assistant_text
         adapter = self.adapters.get(session.channel_kind)
         if adapter is None:
             return
+        account = self.settings.get_channel_account(
+            channel_kind=session.channel_kind,
+            channel_account_id=session.channel_account_id,
+        )
+        raw_transport_address = repository.get_session_transport_address(db, session_id=session.id)
+        if not raw_transport_address:
+            address_key = session.group_id or session.peer_id or session.id
+            raw_transport_address = {
+                "provider": session.channel_kind,
+                "address_key": address_key,
+                "metadata": {},
+            }
+        transport_address = DurableTransportAddress.model_validate(raw_transport_address)
         run = db.get(ExecutionRunRecord, execution_run_id)
         trace_id = run.trace_id if run is not None else None
-        for artifact in repository.list_outbound_intents_for_run(
+        artifacts = repository.list_outbound_intents_for_run(
             db,
             session_id=session.id,
             execution_run_id=execution_run_id,
-        ):
+        )
+        if not artifacts and assistant_text.strip() and session.channel_kind == "webchat":
+            artifacts = [
+                repository.append_outbound_intent(
+                    db,
+                    session_id=session.id,
+                    correlation_id=f"assistant:{execution_run_id}",
+                    payload={"text": assistant_text, "execution_run_id": execution_run_id},
+                )
+            ]
+        for artifact in artifacts:
             payload = json.loads(artifact.payload_json)
             self._dispatch_intent(
                 db=db,
@@ -56,6 +79,8 @@ class OutboundDispatcher:
                 artifact_id=artifact.id,
                 payload=payload,
                 adapter=adapter,
+                account=account,
+                transport_address=transport_address,
             )
 
     def _dispatch_intent(
@@ -69,6 +94,8 @@ class OutboundDispatcher:
         artifact_id: int,
         payload: dict[str, object],
         adapter: ChannelAdapter,
+        account,
+        transport_address: DurableTransportAddress,
     ) -> None:
         text = str(payload.get("text", ""))
         try:
@@ -151,6 +178,7 @@ class OutboundDispatcher:
                 chunk_count=total_count,
                 reply_to_external_id=directives.reply_to_external_id,
                 attachment_id=None,
+                delivery_payload={"text": chunk},
             )
             if delivery.status == "sent":
                 continue
@@ -162,7 +190,8 @@ class OutboundDispatcher:
             )
             try:
                 result = adapter.send_text_chunk(
-                    channel_account_id=session.channel_account_id,
+                    account=account,
+                    transport_address=transport_address,
                     session_id=session.id,
                     text=chunk,
                     reply_to_external_id=directives.reply_to_external_id,
@@ -173,6 +202,7 @@ class OutboundDispatcher:
                     delivery_id=delivery.id,
                     attempt_id=attempt.id,
                     provider_message_id=result.provider_message_id,
+                    provider_metadata=result.provider_metadata,
                 )
                 self._emit_delivery_event(
                     event_name="delivery.sent",
@@ -184,12 +214,21 @@ class OutboundDispatcher:
                     attempt_id=attempt.id,
                 )
             except Exception as exc:
+                error_code = "adapter_send_failed"
+                retryable = None
+                provider_metadata: dict[str, object] | None = None
+                if isinstance(exc, ChannelSendError):
+                    error_code = exc.error_code
+                    retryable = exc.retryable
+                    provider_metadata = exc.provider_metadata
                 repository.mark_outbound_delivery_failed(
                     db,
                     delivery_id=delivery.id,
                     attempt_id=attempt.id,
-                    error_code="adapter_send_failed",
+                    error_code=error_code,
                     error_detail=str(exc),
+                    provider_metadata=provider_metadata,
+                    retryable=retryable,
                 )
                 self._emit_delivery_event(
                     event_name="delivery.failed",
@@ -200,7 +239,7 @@ class OutboundDispatcher:
                     delivery_id=delivery.id,
                     attempt_id=attempt.id,
                     error=str(exc),
-                    failure_category=classify_failure(error_code="adapter_send_failed", exc=exc),
+                    failure_category=classify_failure(error_code=error_code, exc=exc),
                     level=logging.ERROR,
                 )
                 raise OutboundDispatchError(str(exc)) from exc
@@ -252,6 +291,11 @@ class OutboundDispatcher:
                 chunk_count=total_count,
                 reply_to_external_id=directives.reply_to_external_id,
                 attachment_id=attachment.id,
+                delivery_payload={
+                    "storage_key": attachment.storage_key,
+                    "mime_type": attachment.mime_type,
+                    "voice": voice,
+                },
             )
             if delivery.status == "sent":
                 continue
@@ -263,7 +307,8 @@ class OutboundDispatcher:
             )
             try:
                 result = adapter.send_media(
-                    channel_account_id=session.channel_account_id,
+                    account=account,
+                    transport_address=transport_address,
                     session_id=session.id,
                     storage_key=attachment.storage_key,
                     mime_type=attachment.mime_type,
@@ -277,6 +322,7 @@ class OutboundDispatcher:
                     delivery_id=delivery.id,
                     attempt_id=attempt.id,
                     provider_message_id=result.provider_message_id,
+                    provider_metadata=result.provider_metadata,
                 )
                 self._emit_delivery_event(
                     event_name="delivery.sent",
@@ -288,12 +334,21 @@ class OutboundDispatcher:
                     attempt_id=attempt.id,
                 )
             except Exception as exc:
+                error_code = "adapter_send_failed"
+                retryable = None
+                provider_metadata = None
+                if isinstance(exc, ChannelSendError):
+                    error_code = exc.error_code
+                    retryable = exc.retryable
+                    provider_metadata = exc.provider_metadata
                 repository.mark_outbound_delivery_failed(
                     db,
                     delivery_id=delivery.id,
                     attempt_id=attempt.id,
-                    error_code="adapter_send_failed",
+                    error_code=error_code,
                     error_detail=str(exc),
+                    provider_metadata=provider_metadata,
+                    retryable=retryable,
                 )
                 self._emit_delivery_event(
                     event_name="delivery.failed",
@@ -304,7 +359,7 @@ class OutboundDispatcher:
                     delivery_id=delivery.id,
                     attempt_id=attempt.id,
                     error=str(exc),
-                    failure_category=classify_failure(error_code="adapter_send_failed", exc=exc),
+                    failure_category=classify_failure(error_code=error_code, exc=exc),
                     level=logging.ERROR,
                 )
                 raise OutboundDispatchError(str(exc)) from exc

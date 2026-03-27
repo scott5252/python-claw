@@ -66,6 +66,7 @@ class SessionRecord(Base):
             "channel_account_id",
             "group_id",
         ),
+        Index("ix_sessions_transport_address", "channel_kind", "channel_account_id", "transport_address_key"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
@@ -76,6 +77,8 @@ class SessionRecord(Base):
     peer_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     group_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     scope_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    transport_address_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    transport_address_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
@@ -586,6 +589,8 @@ class OutboundDeliveryRecord(Base):
     reply_to_external_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     attachment_id: Mapped[int | None] = mapped_column(ForeignKey("message_attachments.id"), nullable=True)
     provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    delivery_payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    provider_metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -607,6 +612,8 @@ class OutboundDeliveryAttemptRecord(Base):
     provider_idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    provider_metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    retryable: Mapped[bool | None] = mapped_column(nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     trace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)

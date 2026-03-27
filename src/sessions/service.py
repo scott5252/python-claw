@@ -76,6 +76,8 @@ class SessionService:
         peer_id: str | None,
         group_id: str | None,
         attachments: list[dict[str, Any]] | None = None,
+        transport_address_key: str | None = None,
+        transport_address: dict[str, Any] | None = None,
     ) -> InboundProcessResult:
         routing = normalize_routing_input(
             RoutingInput(
@@ -119,6 +121,13 @@ class SessionService:
 
         now = datetime.now(timezone.utc)
         session = self.repository.get_or_create_session(db, routing)
+        if transport_address_key and transport_address:
+            self.repository.update_session_transport_address(
+                db,
+                session_id=session.id,
+                address_key=transport_address_key,
+                transport_address=transport_address,
+            )
         message = self.repository.append_message(
             db,
             session,

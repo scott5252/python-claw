@@ -289,7 +289,10 @@ class DiagnosticsService:
                 "channel_kind": row.channel_kind,
                 "status": row.status,
                 "trace_id": row.trace_id,
+                "provider_message_id": row.provider_message_id,
                 "failure_category": row.failure_category,
+                "provider_metadata": json.loads(row.provider_metadata_json or "{}"),
+                "payload": json.loads(row.delivery_payload_json or "{}"),
                 "error_detail": bounded_preview(
                     row.error_detail,
                     enabled=True,

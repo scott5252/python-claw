@@ -27,7 +27,7 @@ In simpler terms, this project is the backend skeleton for an AI assistant syste
 
 ### What it does today
 
-The current implementation focuses on eleven delivered capability areas:
+The current implementation focuses on twelve delivered capability areas:
 
 1. Gateway sessions and deterministic routing
 2. Runtime tools and typed tool execution
@@ -40,12 +40,14 @@ The current implementation focuses on eleven delivered capability areas:
 9. Provider-backed LLM runtime with backend-owned prompt assembly and approval-safe tool routing
 10. Typed tool schemas with shared backend validation and hybrid intent control for approvals or revocations
 11. Retrieval, durable memory, and attachment-content understanding as additive context
+12. Production channel ingress and delivery contracts for Slack, Telegram, and polling-based webchat
 
 ### What it does not do yet
 
 The project is still a foundation, not a finished end-user assistant platform. Important planned capabilities are still pending, including:
 
 - real provider-backed transport APIs for Slack, Telegram, or web chat
+- token-by-token streaming or SSE delivery
 - cross-session retrieval, external vector infrastructure, and more advanced memory policies
 - production-grade sandbox/container enforcement
 - sub-agent orchestration
@@ -77,7 +79,7 @@ That means the project keeps routing, session identity, policy decisions, persis
 - Tool registry and policy layer: controls which tools are visible and executable
 - Typed tool schema layer: validates tool arguments, exports provider-facing schemas, and canonicalizes approval identity
 - Outbound dispatcher: parses directives, chunks text, applies channel capability rules, and records delivery attempts
-- Channel adapters: thin transport-specific send interfaces for `webchat`, `slack`, and `telegram`
+- Channel adapters: transport-specific send and ingress translation interfaces for `webchat`, `slack`, and `telegram`
 - Observability layer: emits structured events, redacts sensitive fields, classifies failures, and supports diagnostics queries
 - Database: stores sessions, messages, approvals, artifacts, runs, and audits
 - Node runner: isolated internal execution boundary for remote command execution
@@ -147,6 +149,10 @@ The gateway is the main API service. It currently exposes:
 - `GET /health/live`
 - `GET /health/ready`
 - `POST /inbound/message`
+- `POST /providers/slack/events`
+- `POST /providers/telegram/webhook/{channel_account_id}`
+- `POST /providers/webchat/accounts/{channel_account_id}/messages`
+- `GET /providers/webchat/accounts/{channel_account_id}/poll`
 - `GET /sessions/{session_id}`
 - `GET /sessions/{session_id}/messages`
 - `GET /sessions/{session_id}/governance/pending`
@@ -250,7 +256,7 @@ In practical terms, the platform now supports:
 - deterministic post-turn chunking for large outbound text
 - append-only delivery and delivery-attempt auditing
 
-This is an important distinction for both non-developers and developers: the system now behaves more like a real multi-channel assistant, but it still does not provide true token-by-token streaming or production provider integrations in this phase.
+This is an important distinction for both non-developers and developers: the system now accepts verified provider traffic for Slack and Telegram, and production webchat now uses authenticated inbound HTTP plus durable polling for whole outbound messages. It still does not provide token-by-token streaming, SSE delivery, or richer provider-native layouts in this phase.
 
 #### Remote node-runner and sandboxing
 

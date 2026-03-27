@@ -7,6 +7,8 @@ def classify_failure(*, error_code: str | None = None, error_detail: str | None 
         return "timeout"
     if "provider_auth" in detail or "provider authentication failed" in detail:
         return "dependency_unavailable"
+    if "provider_invalid_request" in detail:
+        return "validation"
     if "provider_rate_limited" in detail or "provider rate limited" in detail:
         return "dependency_unavailable"
     if "provider_unavailable" in detail or "provider unavailable" in detail:

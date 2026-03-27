@@ -100,6 +100,27 @@ class SessionRepository:
         db.flush()
         return message
 
+    def update_session_transport_address(
+        self,
+        db: Session,
+        *,
+        session_id: str,
+        address_key: str,
+        transport_address: dict[str, Any],
+    ) -> None:
+        session = db.get(SessionRecord, session_id)
+        if session is None:
+            raise RuntimeError("session not found")
+        session.transport_address_key = address_key
+        session.transport_address_json = json.dumps(transport_address, sort_keys=True)
+        db.flush()
+
+    def get_session_transport_address(self, db: Session, *, session_id: str) -> dict[str, Any]:
+        session = db.get(SessionRecord, session_id)
+        if session is None:
+            raise RuntimeError("session not found")
+        return json.loads(session.transport_address_json or "{}")
+
     def append_inbound_attachments(
         self,
         db: Session,
@@ -332,6 +353,7 @@ class SessionRepository:
         chunk_count: int,
         reply_to_external_id: str | None,
         attachment_id: int | None,
+        delivery_payload: dict[str, Any] | None = None,
     ) -> OutboundDeliveryRecord:
         existing = db.scalar(
             select(OutboundDeliveryRecord).where(
@@ -352,6 +374,7 @@ class SessionRepository:
             chunk_count=chunk_count,
             reply_to_external_id=reply_to_external_id,
             attachment_id=attachment_id,
+            delivery_payload_json=json.dumps(delivery_payload or {}, sort_keys=True),
             status="pending",
             trace_id=trace_id,
         )
@@ -405,6 +428,7 @@ class SessionRepository:
         delivery_id: int,
         attempt_id: int,
         provider_message_id: str,
+        provider_metadata: dict[str, Any] | None = None,
     ) -> None:
         delivery = db.get(OutboundDeliveryRecord, delivery_id)
         attempt = db.get(OutboundDeliveryAttemptRecord, attempt_id)
@@ -412,11 +436,14 @@ class SessionRepository:
             raise RuntimeError("outbound delivery state missing")
         delivery.status = "sent"
         delivery.provider_message_id = provider_message_id
+        delivery.provider_metadata_json = json.dumps(provider_metadata or {}, sort_keys=True)
         delivery.error_code = None
         delivery.error_detail = None
         delivery.failure_category = None
         attempt.status = "sent"
         attempt.provider_message_id = provider_message_id
+        attempt.provider_metadata_json = json.dumps(provider_metadata or {}, sort_keys=True)
+        attempt.retryable = False
         attempt.error_code = None
         attempt.error_detail = None
         db.flush()
@@ -429,6 +456,8 @@ class SessionRepository:
         attempt_id: int,
         error_code: str,
         error_detail: str,
+        provider_metadata: dict[str, Any] | None = None,
+        retryable: bool | None = None,
     ) -> None:
         delivery = db.get(OutboundDeliveryRecord, delivery_id)
         attempt = db.get(OutboundDeliveryAttemptRecord, attempt_id)
@@ -438,9 +467,12 @@ class SessionRepository:
         delivery.error_code = error_code
         delivery.error_detail = error_detail
         delivery.failure_category = "delivery_failed"
+        delivery.provider_metadata_json = json.dumps(provider_metadata or {}, sort_keys=True)
         attempt.status = "failed"
         attempt.error_code = error_code
         attempt.error_detail = error_detail
+        attempt.provider_metadata_json = json.dumps(provider_metadata or {}, sort_keys=True)
+        attempt.retryable = retryable
         db.flush()
 
     def list_outbound_deliveries(self, db: Session, *, session_id: str) -> list[OutboundDeliveryRecord]:
@@ -449,6 +481,33 @@ class SessionRepository:
             .where(OutboundDeliveryRecord.session_id == session_id)
             .order_by(OutboundDeliveryRecord.created_at.asc(), OutboundDeliveryRecord.id.asc())
         )
+        return list(db.scalars(stmt))
+
+    def list_webchat_deliveries(
+        self,
+        db: Session,
+        *,
+        channel_account_id: str,
+        stream_id: str,
+        after_delivery_id: int | None,
+        limit: int,
+    ) -> list[OutboundDeliveryRecord]:
+        session_ids = select(SessionRecord.id).where(
+            SessionRecord.channel_kind == "webchat",
+            SessionRecord.channel_account_id == channel_account_id,
+            SessionRecord.transport_address_key == stream_id,
+        )
+        stmt = (
+            select(OutboundDeliveryRecord)
+            .where(
+                OutboundDeliveryRecord.session_id.in_(session_ids),
+                OutboundDeliveryRecord.status.in_(["sent", "failed"]),
+            )
+            .order_by(OutboundDeliveryRecord.id.asc())
+            .limit(limit)
+        )
+        if after_delivery_id is not None:
+            stmt = stmt.where(OutboundDeliveryRecord.id > after_delivery_id)
         return list(db.scalars(stmt))
 
     def list_outbound_delivery_attempts(

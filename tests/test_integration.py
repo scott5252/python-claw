@@ -215,7 +215,12 @@ def test_restart_safe_session_reuse_and_duplicate_replay(tmp_path) -> None:
 
 def test_stale_claimed_recovery_and_history_paging(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'stale.db'}"
-    settings = Settings(database_url=database_url, runtime_mode="rule_based", dedupe_stale_after_seconds=1)
+    settings = Settings(
+        database_url=database_url,
+        runtime_mode="rule_based",
+        dedupe_stale_after_seconds=1,
+        runtime_transcript_context_limit=20,
+    )
     manager = DatabaseSessionManager(database_url)
     Base.metadata.create_all(manager.engine)
 
@@ -293,7 +298,7 @@ def test_stale_claimed_recovery_and_history_paging(tmp_path) -> None:
 
 def test_unapproved_tool_request_creates_governance_proposal_without_tool_artifact(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'unapproved.db'}"
-    settings = Settings(database_url=database_url, runtime_mode="rule_based")
+    settings = Settings(database_url=database_url, runtime_mode="rule_based", runtime_transcript_context_limit=20)
     manager = DatabaseSessionManager(database_url)
     Base.metadata.create_all(manager.engine)
 
@@ -360,7 +365,7 @@ def test_unapproved_tool_request_creates_governance_proposal_without_tool_artifa
 
 def test_governed_capability_requires_approval_then_activates_on_later_turn(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'governance.db'}"
-    settings = Settings(database_url=database_url, runtime_mode="rule_based")
+    settings = Settings(database_url=database_url, runtime_mode="rule_based", runtime_transcript_context_limit=20)
     manager = DatabaseSessionManager(database_url)
     Base.metadata.create_all(manager.engine)
 
@@ -473,7 +478,7 @@ def test_governed_capability_requires_approval_then_activates_on_later_turn(tmp_
 
 def test_duplicate_approval_and_later_revocation_are_idempotent(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'revoke.db'}"
-    settings = Settings(database_url=database_url, runtime_mode="rule_based")
+    settings = Settings(database_url=database_url, runtime_mode="rule_based", runtime_transcript_context_limit=20)
     manager = DatabaseSessionManager(database_url)
     Base.metadata.create_all(manager.engine)
 
@@ -631,7 +636,7 @@ def test_long_session_overflow_persists_degraded_manifest_and_repair_job(tmp_pat
 
 def test_governance_replay_survives_normalized_state_loss(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'governance-replay.db'}"
-    settings = Settings(database_url=database_url, runtime_mode="rule_based")
+    settings = Settings(database_url=database_url, runtime_mode="rule_based", runtime_transcript_context_limit=20)
     manager = DatabaseSessionManager(database_url)
     Base.metadata.create_all(manager.engine)
 
@@ -698,7 +703,12 @@ def test_inbound_attachments_are_normalized_before_context_manifest(tmp_path) ->
     media_root = tmp_path / "media-store"
     source_file = tmp_path / "note.txt"
     source_file.write_text("attachment body")
-    settings = Settings(database_url=database_url, runtime_mode="rule_based", media_storage_root=str(media_root))
+    settings = Settings(
+        database_url=database_url,
+        runtime_mode="rule_based",
+        runtime_transcript_context_limit=20,
+        media_storage_root=str(media_root),
+    )
     manager = DatabaseSessionManager(database_url)
     Base.metadata.create_all(manager.engine)
 
@@ -752,7 +762,7 @@ def test_inbound_attachments_are_normalized_before_context_manifest(tmp_path) ->
 
 def test_scheduler_replay_reuses_fire_run_and_transcript_trigger(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'scheduler-replay.db'}"
-    settings = Settings(database_url=database_url, runtime_mode="rule_based")
+    settings = Settings(database_url=database_url, runtime_mode="rule_based", runtime_transcript_context_limit=20)
     manager = DatabaseSessionManager(database_url)
     Base.metadata.create_all(manager.engine)
 
@@ -821,7 +831,7 @@ def test_scheduler_replay_reuses_fire_run_and_transcript_trigger(tmp_path) -> No
 
 def test_expired_lane_lease_recovers_abandoned_run_before_later_same_session_run(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'stale-lane-recovery.db'}"
-    settings = Settings(database_url=database_url, runtime_mode="rule_based")
+    settings = Settings(database_url=database_url, runtime_mode="rule_based", runtime_transcript_context_limit=20)
     manager = DatabaseSessionManager(database_url)
     Base.metadata.create_all(manager.engine)
 
@@ -890,7 +900,7 @@ def test_expired_lane_lease_recovers_abandoned_run_before_later_same_session_run
 
 def test_global_concurrency_limit_blocks_second_claim_until_slot_is_released(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'global-cap.db'}"
-    settings = Settings(database_url=database_url, runtime_mode="rule_based")
+    settings = Settings(database_url=database_url, runtime_mode="rule_based", runtime_transcript_context_limit=20)
     manager = DatabaseSessionManager(database_url)
     Base.metadata.create_all(manager.engine)
 
@@ -975,7 +985,7 @@ def test_global_concurrency_limit_blocks_second_claim_until_slot_is_released(tmp
 
 def test_scheduler_routing_tuple_target_creates_session_via_routing_rules(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'scheduler-routing-tuple.db'}"
-    settings = Settings(database_url=database_url, runtime_mode="rule_based")
+    settings = Settings(database_url=database_url, runtime_mode="rule_based", runtime_transcript_context_limit=20)
     manager = DatabaseSessionManager(database_url)
     Base.metadata.create_all(manager.engine)
 

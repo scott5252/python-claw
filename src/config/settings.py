@@ -1,13 +1,57 @@
 from functools import lru_cache
+from typing import Literal
 
 from dotenv import find_dotenv, load_dotenv
-from pydantic import model_validator
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv(find_dotenv(usecwd=True), override=False)
 
 
+class ChannelAccountConfig(BaseModel):
+    channel_account_id: str
+    channel_kind: Literal["slack", "telegram", "webchat"]
+    mode: Literal["fake", "real"] = "fake"
+    outbound_token: str | None = None
+    signing_secret: str | None = None
+    verification_token: str | None = None
+    webhook_secret: str | None = None
+    base_url: str | None = None
+    transport_policy_id: str | None = None
+    webchat_client_token: str | None = None
+
+    @model_validator(mode="after")
+    def validate_required_credentials(self) -> "ChannelAccountConfig":
+        self.channel_account_id = self.channel_account_id.strip()
+        if not self.channel_account_id:
+            raise ValueError("channel_account_id must not be empty")
+        if self.mode == "fake":
+            return self
+        if self.channel_kind == "slack":
+            if not self.outbound_token or not self.signing_secret:
+                raise ValueError("real slack accounts require outbound_token and signing_secret")
+        elif self.channel_kind == "telegram":
+            if not self.outbound_token or not self.webhook_secret:
+                raise ValueError("real telegram accounts require outbound_token and webhook_secret")
+        elif self.channel_kind == "webchat":
+            if not self.webchat_client_token:
+                raise ValueError("real webchat accounts require webchat_client_token")
+        return self
+
+
+def _default_channel_accounts() -> list[ChannelAccountConfig]:
+    account_ids = ("acct", "acct-1")
+    channel_kinds = ("slack", "telegram", "webchat")
+    return [
+        ChannelAccountConfig(channel_account_id=account_id, channel_kind=channel_kind, mode="fake")
+        for account_id in account_ids
+        for channel_kind in channel_kinds
+    ]
+
+
 class Settings(BaseSettings):
+    _channel_account_lookup: dict[tuple[str, str], ChannelAccountConfig] = PrivateAttr(default_factory=dict)
+
     app_name: str = "python-claw-gateway"
     database_url: str = "postgresql+psycopg://openassistant:openassistant@localhost:5432/openassistant"
     dedupe_retention_days: int = 30
@@ -85,6 +129,7 @@ class Settings(BaseSettings):
     outbound_delivery_stale_after_seconds: int = 300
     node_execution_stale_after_seconds: int = 300
     attachment_stale_after_seconds: int = 300
+    channel_accounts: list[ChannelAccountConfig] = Field(default_factory=_default_channel_accounts)
 
     model_config = SettingsConfigDict(
         env_prefix="PYTHON_CLAW_",
@@ -132,7 +177,21 @@ class Settings(BaseSettings):
             raise ValueError("attachment_same_run_timeout_seconds must be greater than 0")
         if self.attachment_same_run_fast_path_enabled and not self.attachment_extraction_enabled:
             raise ValueError("attachment extraction must be enabled when same-run fast path is enabled")
+        lookup: dict[tuple[str, str], ChannelAccountConfig] = {}
+        for account in self.channel_accounts:
+            key = (account.channel_kind, account.channel_account_id)
+            if key in lookup:
+                raise ValueError(f"duplicate channel account configured for {account.channel_kind}:{account.channel_account_id}")
+            lookup[key] = account
+        self._channel_account_lookup = lookup
         return self
+
+    def get_channel_account(self, *, channel_kind: str, channel_account_id: str) -> ChannelAccountConfig:
+        key = (channel_kind.strip(), channel_account_id.strip())
+        account = self._channel_account_lookup.get(key)
+        if account is None:
+            raise ValueError(f"channel account not configured for {key[0]}:{key[1]}")
+        return account
 
 
 @lru_cache
