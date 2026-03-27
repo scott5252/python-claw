@@ -46,8 +46,8 @@ The current implementation focuses on twelve delivered capability areas:
 
 The project is still a foundation, not a finished end-user assistant platform. Important planned capabilities are still pending, including:
 
-- real provider-backed transport APIs for Slack, Telegram, or web chat
 - token-by-token streaming or SSE delivery
+- richer provider-native channel layouts, interactive actions, and advanced receipt callbacks
 - cross-session retrieval, external vector infrastructure, and more advanced memory policies
 - production-grade sandbox/container enforcement
 - sub-agent orchestration
@@ -237,6 +237,14 @@ This means the runtime can now assemble one turn from recent transcript, the lat
 
 With Spec 008, continuity is also easier to inspect operationally. Developers can now use diagnostics to see whether context assembly degraded, whether outbox follow-up work is pending or failed, and how recent runs for a session behaved without manually reconstructing the state from raw SQL alone.
 
+Spec 011 turns that continuity layer into a more complete context system. In practical terms:
+
+- transcript remains the only canonical conversation record
+- summary snapshots, durable memories, retrieval rows, and attachment extractions remain additive derived state only
+- the worker can use a bounded same-run fast path for small text files and text-extractable PDFs
+- heavier or later-stage enrichment work continues through after-turn jobs instead of blocking the original accepted request
+- context manifests explain which summary, memory, retrieval, and attachment-derived records were used for a given turn
+
 #### Channels, chunking, and media handling
 
 The system now includes a shared outbound delivery layer for three supported channel kinds in this phase:
@@ -333,6 +341,9 @@ The database currently stores the system's durable state in tables such as:
 - `agent_sandbox_profiles`
 - `node_execution_audits`
 - `summary_snapshots`
+- `session_memories`
+- `attachment_extractions`
+- `retrieval_records`
 - `outbox_jobs`
 - `context_manifests`
 
@@ -365,7 +376,7 @@ Implemented now:
 Planned or partial:
 
 - cross-session or externally backed retrieval
-- production transport API integrations beyond the current thin channel adapters
+- richer transport behavior beyond the current verified Slack and Telegram ingress plus polling-based webchat
 - stronger production sandbox isolation
 - richer metrics exporters, tracing backends, and alerting integrations
 - presence or real-time end-user activity surfaces
@@ -428,6 +439,23 @@ Key variables include:
 - `PYTHON_CLAW_MEDIA_ALLOWED_SCHEMES`
 - `PYTHON_CLAW_MEDIA_ALLOWED_MIME_PREFIXES`
 - `PYTHON_CLAW_MEDIA_MAX_BYTES`
+- `PYTHON_CLAW_RETRIEVAL_ENABLED`
+- `PYTHON_CLAW_RETRIEVAL_STRATEGY_ID`
+- `PYTHON_CLAW_RETRIEVAL_TOTAL_ITEMS`
+- `PYTHON_CLAW_RETRIEVAL_MEMORY_ITEMS`
+- `PYTHON_CLAW_RETRIEVAL_ATTACHMENT_ITEMS`
+- `PYTHON_CLAW_RETRIEVAL_OTHER_ITEMS`
+- `PYTHON_CLAW_RETRIEVAL_CHUNK_CHARS`
+- `PYTHON_CLAW_RETRIEVAL_MIN_SCORE`
+- `PYTHON_CLAW_MEMORY_ENABLED`
+- `PYTHON_CLAW_MEMORY_STRATEGY_ID`
+- `PYTHON_CLAW_ATTACHMENT_EXTRACTION_ENABLED`
+- `PYTHON_CLAW_ATTACHMENT_EXTRACTION_STRATEGY_ID`
+- `PYTHON_CLAW_ATTACHMENT_SAME_RUN_FAST_PATH_ENABLED`
+- `PYTHON_CLAW_ATTACHMENT_SAME_RUN_MAX_BYTES`
+- `PYTHON_CLAW_ATTACHMENT_SAME_RUN_PDF_PAGE_LIMIT`
+- `PYTHON_CLAW_ATTACHMENT_SAME_RUN_TIMEOUT_SECONDS`
+- `PYTHON_CLAW_CHANNEL_ACCOUNTS`
 - `PYTHON_CLAW_REMOTE_EXECUTION_ENABLED`
 - `PYTHON_CLAW_NODE_RUNNER_SIGNING_KEY_ID`
 - `PYTHON_CLAW_NODE_RUNNER_SIGNING_SECRET`
@@ -466,6 +494,29 @@ PYTHON_CLAW_DIAGNOSTICS_INTERNAL_SERVICE_TOKEN=change-me-internal
 PYTHON_CLAW_HEALTH_READY_REQUIRES_AUTH=true
 ```
 
+For channel transport configuration, Spec 012 adds one typed channel-account registry:
+
+```text
+PYTHON_CLAW_CHANNEL_ACCOUNTS=[
+  {"channel_account_id":"acct","channel_kind":"slack","mode":"fake"},
+  {"channel_account_id":"acct","channel_kind":"telegram","mode":"fake"},
+  {"channel_account_id":"acct","channel_kind":"webchat","mode":"fake"}
+]
+```
+
+This registry is now the main runtime source for:
+
+- selecting fake versus real channel mode
+- outbound channel credentials
+- inbound verification settings
+- bounded per-account transport settings
+
+In practical terms:
+
+- use `mode=fake` for local development and CI
+- switch an entry to `mode=real` only when you have the required provider credentials for that channel kind
+- startup fails closed if a real account is missing required settings such as Slack signing secrets, Telegram webhook secrets, or webchat client tokens
+
 For local scaffold mode, leave `PYTHON_CLAW_RUNTIME_MODE=rule_based`.
 
 To enable provider-backed turns, set at minimum:
@@ -478,6 +529,29 @@ PYTHON_CLAW_LLM_MODEL=gpt-4o-mini
 ```
 
 If provider mode is selected without the required credentials, startup fails closed rather than silently falling back to the rule-based adapter.
+
+To make the Spec 011 context features easy to understand locally, the most important optional settings are:
+
+```text
+PYTHON_CLAW_RETRIEVAL_ENABLED=true
+PYTHON_CLAW_RETRIEVAL_STRATEGY_ID=lexical-v1
+PYTHON_CLAW_RETRIEVAL_TOTAL_ITEMS=4
+PYTHON_CLAW_RETRIEVAL_MEMORY_ITEMS=2
+PYTHON_CLAW_RETRIEVAL_ATTACHMENT_ITEMS=2
+PYTHON_CLAW_RETRIEVAL_OTHER_ITEMS=2
+PYTHON_CLAW_MEMORY_ENABLED=true
+PYTHON_CLAW_MEMORY_STRATEGY_ID=memory-v1
+PYTHON_CLAW_ATTACHMENT_EXTRACTION_ENABLED=true
+PYTHON_CLAW_ATTACHMENT_EXTRACTION_STRATEGY_ID=attachment-v1
+PYTHON_CLAW_ATTACHMENT_SAME_RUN_FAST_PATH_ENABLED=true
+```
+
+These control whether the system:
+
+- builds durable memory rows after turns
+- creates retrieval rows from supported source artifacts
+- extracts usable attachment-derived content
+- makes bounded same-run attachment understanding available for supported file types
 
 ### Step 3: Start local infrastructure
 
@@ -509,6 +583,20 @@ uv run alembic upgrade head
 ```
 
 This creates the currently migrated database tables needed by the gateway, queueing, governance, media normalization, outbound delivery auditing, node-runner flows, and observability metadata used by diagnostics.
+
+Spec 012 also adds additive transport-facing persistence for:
+
+- durable session transport addresses
+- bounded outbound provider metadata
+- richer outbound attempt metadata for retryability and correlation
+
+Spec 011 added the additive context tables and records that make retrieval, memory, and attachment understanding inspectable and rebuildable:
+
+- `session_memories`
+- `attachment_extractions`
+- `retrieval_records`
+- enriched `outbox_jobs` payloads for source-specific after-turn work
+- richer `context_manifests` explaining what context was assembled
 
 ### Step 5: Start the gateway API
 
@@ -577,6 +665,7 @@ uv run pytest tests/test_typed_tool_schemas.py
 uv run pytest tests/test_async_queueing_coverage.py
 uv run pytest tests/test_node_sandbox.py
 uv run pytest tests/test_channels_media.py
+uv run pytest tests/test_spec_012.py
 ```
 
 Note: the tests primarily use temporary SQLite fixtures and provider fakes, so they do not require local PostgreSQL, Redis, or live provider credentials to pass.
@@ -600,9 +689,21 @@ Note: the tests primarily use temporary SQLite fixtures and provider fakes, so t
 
 Today, the main way to interact with the system is through the gateway HTTP API.
 
-The primary write entrypoint is:
+The primary canonical write entrypoint is:
 
 - `POST /inbound/message`
+
+For understanding Spec 011, it is useful to remember that `POST /inbound/message` still only accepts and persists canonical inbound state. It does not synchronously generate summaries, perform retrieval indexing, or run general attachment extraction inline. Those remain worker-owned and after-turn responsibilities.
+
+Spec 012 also adds provider-facing write entrypoints:
+
+- `POST /providers/slack/events`
+- `POST /providers/telegram/webhook/{channel_account_id}`
+- `POST /providers/webchat/accounts/{channel_account_id}/messages`
+
+Spec 012 adds one client-facing webchat read surface for completed whole-message delivery results:
+
+- `GET /providers/webchat/accounts/{channel_account_id}/poll`
 
 The main read/inspection entrypoints are:
 
@@ -631,6 +732,9 @@ These node-runner endpoints are internal system endpoints, not general external 
 
 The practical distinction between these surfaces is:
 
+- `/inbound/message` remains the canonical backend-owned message-ingress contract and test seam
+- provider-facing channel routes verify and translate transport payloads, then call the same session service path in-process
+- webchat polling reads already-persisted delivery state and does not introduce token streaming
 - session and run routes are narrower product-facing read APIs
 - health routes are service-supervision endpoints
 - diagnostics routes are operator-facing inspection endpoints with explicit authorization
@@ -730,41 +834,47 @@ curl http://127.0.0.1:8000/diagnostics/runs -H "Authorization: Bearer change-me"
 curl http://127.0.0.1:8000/diagnostics/runs/<run_id> -H "Authorization: Bearer change-me"
 ```
 
-### Example: use the `webchat` adapter locally
+### Example: use production-style `webchat`
 
-The current `webchat` adapter is a thin local channel adapter, not a full browser chat frontend. In local development, the easiest way to use it is to treat `webchat` as another `channel_kind` on the same gateway API and send messages through `POST /inbound/message`.
+Spec 012 changes `webchat` from a local-only channel kind into a production-style transport contract with:
 
-This is useful when you want to test:
-
-- a browser-like direct-message channel identity
-- outbound chunking through a non-Slack, non-Telegram adapter
-- the shared dispatcher and adapter contracts without involving an external provider
+- authenticated HTTP inbound submission
+- durable whole-message outbound polling
+- the same gateway, session, run, and dispatcher ownership model as the other channels
 
 Send a basic `webchat` message:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/inbound/message \
+curl -X POST http://127.0.0.1:8000/providers/webchat/accounts/acct/messages \
   -H "Content-Type: application/json" \
+  -H "X-Webchat-Client-Token: fake-webchat-token" \
   -d '{
-    "channel_kind": "webchat",
-    "channel_account_id": "local-webchat",
-    "external_message_id": "web-msg-1",
-    "sender_id": "browser-user-1",
+    "actor_id": "browser-user-1",
     "content": "hello from webchat",
-    "peer_id": "browser-user-1"
+    "peer_id": "browser-user-1",
+    "stream_id": "stream-browser-user-1",
+    "message_id": "web-msg-1"
   }'
+```
+
+Then poll for completed outbound replies:
+
+```bash
+curl "http://127.0.0.1:8000/providers/webchat/accounts/acct/poll?stream_id=stream-browser-user-1" \
+  -H "X-Webchat-Client-Token: fake-webchat-token"
 ```
 
 Expected local flow:
 
-1. The gateway accepts the `webchat` message and returns `202 Accepted`.
-2. The worker later claims the queued run and executes the assistant turn.
-3. If the turn produces an outbound intent, the shared dispatcher routes it to the `webchat` adapter.
-4. Delivery is recorded in `outbound_deliveries` and `outbound_delivery_attempts`.
+1. The gateway authenticates the webchat client request.
+2. It translates the message into the canonical inbound contract and queues a run.
+3. The worker later claims the queued run and executes the assistant turn.
+4. The dispatcher records outbound delivery rows.
+5. The polling route returns already-persisted whole-message delivery results.
 
-In other words, `webchat` is currently exercised through the same gateway surface as the other channels. There is not yet a separate browser transport server, WebSocket feed, or UI bundle in this repository.
+This is intentionally not token streaming, SSE, or a browser UI bundle. It is the bounded production webchat transport contract added by Spec 012.
 
-### Webchat adapter flow
+### Webchat transport flow
 
 ```mermaid
 sequenceDiagram
@@ -776,7 +886,7 @@ sequenceDiagram
     participant Dispatcher
     participant Webchat as Webchat Adapter
 
-    Browser->>Gateway: POST /inbound/message (channel_kind=webchat)
+    Browser->>Gateway: POST /providers/webchat/accounts/{id}/messages
     Gateway->>DB: persist inbound message and queued run
     Gateway-->>Browser: 202 Accepted + session_id + run_id
     Worker->>DB: claim queued run
@@ -785,7 +895,40 @@ sequenceDiagram
     Worker->>Dispatcher: dispatch completed turn output
     Dispatcher->>Webchat: send text chunk or media instruction
     Dispatcher->>DB: persist outbound delivery and attempt rows
+    Browser->>Gateway: GET /providers/webchat/accounts/{id}/poll
+    Gateway-->>Browser: completed whole-message delivery rows
 ```
+
+### Example: use the Slack provider ingress route
+
+Slack traffic now has a provider-facing ingress route that verifies the request before transcript writes.
+
+Example flow:
+
+1. send a signed Slack webhook payload to `POST /providers/slack/events`
+2. the gateway verifies the Slack signature
+3. the payload is translated into canonical inbound fields
+4. the existing session and dedupe flow runs
+5. the worker later dispatches outbound delivery through the Slack adapter
+
+The important architectural point is that Slack-specific routes are translation-only boundaries. They do not bypass the existing gateway-owned session service.
+
+### Example: use the Telegram provider ingress route
+
+Telegram traffic now has a provider-facing webhook route:
+
+- `POST /providers/telegram/webhook/{channel_account_id}`
+
+The local fake-mode version expects:
+
+- header `X-Telegram-Bot-Api-Secret-Token: fake-telegram-secret`
+
+This route:
+
+1. verifies the Telegram webhook secret
+2. translates supported Telegram message updates into canonical inbound fields
+3. ignores unsupported update types such as edited messages or callback queries in this phase
+4. passes accepted traffic into the same gateway-owned session flow as every other channel
 
 ### Example interaction patterns
 
