@@ -1,0 +1,132 @@
+{
+  "info": {
+    "_postman_id": "4ab2f52c-fefd-4ab7-a3d4-6aa06f8a5f77",
+    "name": "Python-Claw-011-retrieval-memory-attachments",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "41171391"
+  },
+  "variable": [
+    {
+      "key": "BASE",
+      "value": "http://127.0.0.1:8000"
+    },
+    {
+      "key": "AUTH",
+      "value": "Bearer change-me"
+    },
+    {
+      "key": "INTAKE_FILE_URL",
+      "value": "file:///tmp/demo011-maya-intake.txt"
+    },
+    {
+      "key": "session_id",
+      "value": ""
+    },
+    {
+      "key": "run_id",
+      "value": ""
+    },
+    {
+      "key": "trace_id",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Live",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{BASE}}/health/live",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "health",
+            "live"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Health Ready",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/health/ready",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "health",
+            "ready"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 1 - Submit first user message with attachment",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var jsonData = pm.response.json();",
+              "pm.collectionVariables.set(\"session_id\", jsonData.session_id || \"\");",
+              "pm.collectionVariables.set(\"run_id\", jsonData.run_id || \"\");",
+              "pm.collectionVariables.set(\"trace_id\", jsonData.trace_id || \"\");"
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          },
+          {
+            "key": "Accept",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channel_kind\": \"webchat\",\n  \"channel_account_id\": \"bike-shop-demo\",\n  \"external_message_id\": \"demo011-msg-1\",\n  \"sender_id\": \"employee-alex\",\n  \"content\": \"Please read this repair intake note and tell me the best pickup reminder plan for Maya.\",\n  \"peer_id\": \"customer-maya\",\n  \"attachments\": [\n    {\n      \"source_url\": \"{{INTAKE_FILE_URL}}\",\n      \"mime_type\": \"text/plain\",\n      \"filename\": \"maya-intake.txt\",\n      \"byte_size\": 260,\n      \"provider_metadata\": {}\n    }\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE}}/inbound/message",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "inbound",
+            "message"
+          ]
+        }
+      },
+      "response": []
+    }
+  ]
+}

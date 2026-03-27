@@ -323,27 +323,23 @@ In Terminal D, run:
 ```bash
 curl -s $BASE/inbound/message \
   -H 'Content-Type: application/json' \
-  -d "{
-    \"channel_kind\": \"webchat\",
-    \"channel_account_id\": \"bike-shop-demo\",
-    \"external_message_id\": \"demo011-msg-1\",
-    \"sender_id\": \"employee-alex\",
-    \"content\": \"Please read this repair intake note and tell me the best pickup reminder plan for Maya.\",
-    \"peer_id\": \"customer-maya\",
-    \"attachments\": [
+  -d '{
+    "channel_kind": "webchat",
+    "channel_account_id": "bike-shop-demo",
+    "external_message_id": "demo011-msg-1",
+    "sender_id": "employee-alex",
+    "content": "Please read this repair intake note and tell me the best pickup reminder plan for Maya.",
+    "peer_id": "customer-maya",
+    "attachments": [
       {
-        \"source_url\": \"$(python - <<'PY'
-from pathlib import Path
-print(Path('/tmp/demo011-maya-intake.txt').as_uri())
-PY
-)\",
-        \"mime_type\": \"text/plain\",
-        \"filename\": \"maya-intake.txt\",
-        \"byte_size\": 260,
-        \"provider_metadata\": {}
+        "source_url": "file:///tmp/demo011-maya-intake.txt",
+        "mime_type": "text/plain",
+        "filename": "maya-intake.txt",
+        "byte_size": 260,
+        "provider_metadata": {}
       }
     ]
-  }"
+  }'
 ```
 
 Expected result:
@@ -355,6 +351,44 @@ Write down:
 
 - `session_id`
 - `message_id`
+
+Postman-friendly version:
+
+- this endpoint accepts plain JSON, so you can send the same request from Postman without multipart upload
+- set a Postman variable such as `INTAKE_FILE_URL=file:///tmp/demo011-maya-intake.txt`
+- the variable format is a literal URL string that the gateway machine can read
+- for a local file on the same machine as the gateway, use `file:///absolute/path/to/file.txt`
+- example local values:
+  - `file:///tmp/demo011-maya-intake.txt`
+  - `file:///Users/scottcornell/Documents/maya-intake.txt`
+- if the gateway is running on another machine, use an HTTPS URL instead, for example `https://example.com/demo011-maya-intake.txt`
+- use this raw JSON body in Postman:
+
+```json
+{
+  "channel_kind": "webchat",
+  "channel_account_id": "bike-shop-demo",
+  "external_message_id": "demo011-msg-1",
+  "sender_id": "employee-alex",
+  "content": "Please read this repair intake note and tell me the best pickup reminder plan for Maya.",
+  "peer_id": "customer-maya",
+  "attachments": [
+    {
+      "source_url": "{{INTAKE_FILE_URL}}",
+      "mime_type": "text/plain",
+      "filename": "maya-intake.txt",
+      "byte_size": 260,
+      "provider_metadata": {}
+    }
+  ]
+}
+```
+
+Important note:
+
+- Postman can send the JSON, but the gateway still reads the attachment from the server-visible `source_url`
+- for local demos, `file:///tmp/demo011-maya-intake.txt` works when the gateway is running on the same machine
+- if the gateway runs elsewhere, host the file at an `https://...` URL instead because the current implementation accepts `file` and `https` attachment schemes
 
 What is happening in the system:
 
@@ -489,7 +523,7 @@ queries = {
 
 with manager.session() as db:
     for name, sql in queries.items():
-        print(f\"\\n== {name} ==\")
+        print(f"\n== {name} ==")
         for row in db.execute(text(sql)):
             print(row)
 PY
@@ -554,12 +588,107 @@ curl -s $BASE/sessions/$SESSION_ID/messages
 
 Expected result:
 
-- the later assistant message should still mention:
+- one of these two outcomes is currently valid:
+  - best case: the later assistant message still mentions:
+    - Maya prefers pickup after 3 PM
+    - the repair order is `BR-1042`
+    - the reminder about the rear light mount
+  - degraded case: the later assistant message says `I could not safely fit the required session context into the model window for this turn. Continuity repair has been queued.`
+
+How to interpret the degraded case:
+
+- this demo intentionally sets `PYTHON_CLAW_RUNTIME_TRANSCRIPT_CONTEXT_LIMIT=2`
+- after the first completed turn, the session usually has only two transcript rows, which is not enough for the current summary generation path to create a summary snapshot
+- when the second user message arrives, the worker may have more transcript than it can safely fit and no valid summary yet, so it emits the degraded continuity-repair message
+- this is still a valid Spec 011 behavior because the system fails closed and queues repair work instead of silently dropping context
+
+If you get the degraded message, continue with this recovery proof:
+
+### Step 8A: Run the outbox enrichment helper again
+
+In Terminal C, run:
+
+```bash
+uv run python - <<'PY'
+from datetime import datetime, timezone
+from pathlib import Path
+
+from src.config.settings import get_settings
+from src.context.outbox import OutboxWorker
+from src.db.session import DatabaseSessionManager
+from src.media.extraction import MediaExtractionService
+from src.memory.service import MemoryService
+from src.retrieval.service import RetrievalService
+from src.sessions.repository import SessionRepository
+
+settings = get_settings()
+manager = DatabaseSessionManager(settings.database_url)
+worker = OutboxWorker(
+    repository=SessionRepository(),
+    memory_service=MemoryService(strategy_id=settings.memory_strategy_id),
+    retrieval_service=RetrievalService(
+        strategy_id=settings.retrieval_strategy_id,
+        chunk_chars=settings.retrieval_chunk_chars,
+        min_score=settings.retrieval_min_score,
+    ),
+    attachment_extraction_service=MediaExtractionService(
+        storage_root=Path(settings.media_storage_root),
+        strategy_id=settings.attachment_extraction_strategy_id,
+        same_run_max_bytes=settings.attachment_same_run_max_bytes,
+        same_run_pdf_page_limit=settings.attachment_same_run_pdf_page_limit,
+        same_run_timeout_seconds=settings.attachment_same_run_timeout_seconds,
+    ),
+)
+with manager.session() as db:
+    print(worker.run_pending(db, now=datetime.now(timezone.utc), limit=20))
+    db.commit()
+PY
+```
+
+Expected result:
+
+- output should include `continuity_repair` and usually `summary_generation`
+
+### Step 8B: Ask the follow-up one more time after repair
+
+In Terminal D, run:
+
+```bash
+curl -s $BASE/inbound/message \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "channel_kind": "webchat",
+    "channel_account_id": "bike-shop-demo",
+    "external_message_id": "demo011-msg-3",
+    "sender_id": "employee-alex",
+    "content": "Now that continuity repair has run, remind me of Maya'\''s preferred pickup time, the repair order number, and the extra reminder.",
+    "peer_id": "customer-maya"
+  }'
+```
+
+Then in Terminal B, process the queued run again:
+
+```bash
+uv run python - <<'PY'
+from apps.worker.jobs import run_once
+print(run_once())
+PY
+```
+
+Finally, read the session messages again:
+
+```bash
+curl -s $BASE/sessions/$SESSION_ID/messages
+```
+
+Expected recovery result:
+
+- the newest assistant message should mention:
   - Maya prefers pickup after 3 PM
   - the repair order is `BR-1042`
   - the reminder about the rear light mount
 
-This proves the system can preserve useful context after the original attachment is no longer on the current message.
+This proves the system can preserve useful context after the original attachment is no longer on the current message, either immediately or after the queued continuity-repair path completes.
 
 ## Part D: Prove The Backend Used Additive Derived Context
 

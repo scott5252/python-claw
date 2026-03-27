@@ -1,6 +1,6 @@
 # Environment Settings Guide
 
-This document explains every setting in [.env.example](/Users/scottcornell/src/my-projects/python-claw/.env.example) and how it relates to the behavior described in the README and Specs 001 through 009.
+This document explains every setting in [.env.example](/Users/scottcornell/src/my-projects/python-claw/.env.example) and how it relates to the behavior described in the README and Specs 001 through 011.
 
 ## How configuration is loaded
 
@@ -523,6 +523,210 @@ PYTHON_CLAW_MEDIA_ALLOWED_MIME_PREFIXES=image/,application/pdf
 
 ```env
 PYTHON_CLAW_MEDIA_MAX_BYTES=5242880
+```
+
+### `PYTHON_CLAW_RETRIEVAL_ENABLED`
+
+- Default: `true`
+- Type: boolean
+- What it does: Enables the Spec 011 retrieval layer that can inject bounded durable-memory, attachment-derived, and other non-transcript context into prompt assembly.
+- How to configure it: Leave this enabled for normal Spec 011 behavior. Set it to `false` if you want transcript-plus-summary continuity only or need to isolate retrieval-related issues.
+- Example:
+
+```env
+PYTHON_CLAW_RETRIEVAL_ENABLED=true
+```
+
+### `PYTHON_CLAW_RETRIEVAL_STRATEGY_ID`
+
+- Default: `lexical-v1`
+- Type: string
+- Validation: must not be empty
+- What it does: Names the retrieval derivation and ranking strategy. This identifier participates in deterministic rebuild and duplicate-suppression behavior for Spec 011 retrieval records.
+- How to configure it: Use a stable versioned identifier such as `lexical-v1`. Change it when you intentionally ship a materially different retrieval strategy and want fresh derived rows.
+- Example:
+
+```env
+PYTHON_CLAW_RETRIEVAL_STRATEGY_ID=lexical-v1
+```
+
+### `PYTHON_CLAW_RETRIEVAL_TOTAL_ITEMS`
+
+- Default: `4`
+- Type: integer
+- Validation: must be greater than or equal to `0`
+- What it does: Caps the total number of retrieval-derived context items `ContextService` may include in one assembled turn.
+- How to configure it: Raise it only if you have prompt budget for more retrieved context. Keep it small so transcript-first assembly stays bounded and predictable.
+- Example:
+
+```env
+PYTHON_CLAW_RETRIEVAL_TOTAL_ITEMS=4
+```
+
+### `PYTHON_CLAW_RETRIEVAL_MEMORY_ITEMS`
+
+- Default: `2`
+- Type: integer
+- Validation: must be greater than or equal to `0`
+- What it does: Caps how many retrieved durable-memory items may be included in one assembled turn.
+- How to configure it: Increase this if memory recall is more important than attachment or other retrieved context for your workload. The sum of the per-source caps must cover `PYTHON_CLAW_RETRIEVAL_TOTAL_ITEMS`.
+- Example:
+
+```env
+PYTHON_CLAW_RETRIEVAL_MEMORY_ITEMS=2
+```
+
+### `PYTHON_CLAW_RETRIEVAL_ATTACHMENT_ITEMS`
+
+- Default: `2`
+- Type: integer
+- Validation: must be greater than or equal to `0`
+- What it does: Caps how many retrieved attachment-derived items may be included in one assembled turn.
+- How to configure it: Raise this only if attachment understanding is a primary use case and you have room in the prompt budget. The sum of the per-source caps must cover `PYTHON_CLAW_RETRIEVAL_TOTAL_ITEMS`.
+- Example:
+
+```env
+PYTHON_CLAW_RETRIEVAL_ATTACHMENT_ITEMS=2
+```
+
+### `PYTHON_CLAW_RETRIEVAL_OTHER_ITEMS`
+
+- Default: `2`
+- Type: integer
+- Validation: must be greater than or equal to `0`
+- What it does: Caps how many non-memory, non-attachment retrieval items, such as transcript- or summary-derived retrieval rows, may be included in one assembled turn.
+- How to configure it: Tune this alongside the other per-source caps so the mix of retrieved context matches your priorities. The sum of the per-source caps must cover `PYTHON_CLAW_RETRIEVAL_TOTAL_ITEMS`.
+- Example:
+
+```env
+PYTHON_CLAW_RETRIEVAL_OTHER_ITEMS=2
+```
+
+### `PYTHON_CLAW_RETRIEVAL_CHUNK_CHARS`
+
+- Default: `280`
+- Type: integer
+- Validation: must be greater than `0`
+- What it does: Sets the target chunk size used when building bounded retrieval records from canonical source artifacts.
+- How to configure it: Keep this relatively small so retrieved snippets stay focused. Increase it if the current chunks are too fragmented to be useful.
+- Example:
+
+```env
+PYTHON_CLAW_RETRIEVAL_CHUNK_CHARS=280
+```
+
+### `PYTHON_CLAW_RETRIEVAL_MIN_SCORE`
+
+- Default: `1.0`
+- Type: float
+- What it does: Sets the minimum retrieval score a candidate must meet before it can be considered for prompt assembly.
+- How to configure it: Lower it if retrieval feels too sparse; raise it if low-value matches are crowding out better context.
+- Example:
+
+```env
+PYTHON_CLAW_RETRIEVAL_MIN_SCORE=1.0
+```
+
+### `PYTHON_CLAW_MEMORY_ENABLED`
+
+- Default: `true`
+- Type: boolean
+- What it does: Enables durable-memory extraction and use for Spec 011. Transcript rows remain canonical even when this is enabled.
+- How to configure it: Leave it on for normal long-running continuity. Set it to `false` if you want to disable durable-memory derivation while keeping transcript and summary continuity intact.
+- Example:
+
+```env
+PYTHON_CLAW_MEMORY_ENABLED=true
+```
+
+### `PYTHON_CLAW_MEMORY_STRATEGY_ID`
+
+- Default: `memory-v1`
+- Type: string
+- Validation: must not be empty
+- What it does: Names the durable-memory extraction strategy so memory derivation, retry dedupe, and rebuild behavior stay explicit and versionable.
+- How to configure it: Use a stable version string and change it only when you intentionally revise the memory-extraction logic in a way that should produce new derived state.
+- Example:
+
+```env
+PYTHON_CLAW_MEMORY_STRATEGY_ID=memory-v1
+```
+
+### `PYTHON_CLAW_ATTACHMENT_EXTRACTION_ENABLED`
+
+- Default: `true`
+- Type: boolean
+- What it does: Enables durable attachment-content extraction for normalized files so prompt assembly can use extracted content when it is already available.
+- How to configure it: Leave it enabled for Spec 011 attachment understanding. Set it to `false` if you want attachments to remain metadata-only.
+- Example:
+
+```env
+PYTHON_CLAW_ATTACHMENT_EXTRACTION_ENABLED=true
+```
+
+### `PYTHON_CLAW_ATTACHMENT_EXTRACTION_STRATEGY_ID`
+
+- Default: `attachment-v1`
+- Type: string
+- Validation: must not be empty
+- What it does: Names the attachment extraction strategy version used for durable extraction records, retries, and rebuild decisions.
+- How to configure it: Keep a stable versioned identifier and bump it when PDF parsing, text extraction, or similar extraction behavior changes materially.
+- Example:
+
+```env
+PYTHON_CLAW_ATTACHMENT_EXTRACTION_STRATEGY_ID=attachment-v1
+```
+
+### `PYTHON_CLAW_ATTACHMENT_SAME_RUN_FAST_PATH_ENABLED`
+
+- Default: `true`
+- Type: boolean
+- Validation: requires `PYTHON_CLAW_ATTACHMENT_EXTRACTION_ENABLED=true`
+- What it does: Allows the worker-owned same-run fast path for supported text files and text-extractable PDFs after normalization and before context assembly.
+- How to configure it: Leave it enabled if you want bounded same-turn attachment understanding. Set it to `false` to make all attachment extraction asynchronous and later-turn only.
+- Example:
+
+```env
+PYTHON_CLAW_ATTACHMENT_SAME_RUN_FAST_PATH_ENABLED=true
+```
+
+### `PYTHON_CLAW_ATTACHMENT_SAME_RUN_MAX_BYTES`
+
+- Default: `262144`
+- Type: integer
+- Validation: must be greater than `0`
+- What it does: Caps the maximum attachment size eligible for same-run fast-path extraction. The default is 256 KiB.
+- How to configure it: Raise it cautiously if you need same-turn extraction for larger text or PDF files and can tolerate the added latency.
+- Example:
+
+```env
+PYTHON_CLAW_ATTACHMENT_SAME_RUN_MAX_BYTES=262144
+```
+
+### `PYTHON_CLAW_ATTACHMENT_SAME_RUN_PDF_PAGE_LIMIT`
+
+- Default: `5`
+- Type: integer
+- Validation: must be greater than `0`
+- What it does: Caps how many pages of a PDF may be considered for same-run fast-path extraction.
+- How to configure it: Keep this low so same-turn extraction stays bounded. Increase it only if short PDFs are not enough for your workflow.
+- Example:
+
+```env
+PYTHON_CLAW_ATTACHMENT_SAME_RUN_PDF_PAGE_LIMIT=5
+```
+
+### `PYTHON_CLAW_ATTACHMENT_SAME_RUN_TIMEOUT_SECONDS`
+
+- Default: `2`
+- Type: integer
+- Validation: must be greater than `0`
+- What it does: Limits how long the same-run attachment fast path may spend extracting supported content before it degrades safely to metadata-only context.
+- How to configure it: Keep this short so accepted runs stay responsive. Raise it only if you intentionally want to spend more latency budget on same-turn attachment understanding.
+- Example:
+
+```env
+PYTHON_CLAW_ATTACHMENT_SAME_RUN_TIMEOUT_SECONDS=2
 ```
 
 ## Remote Execution And Node Runner
