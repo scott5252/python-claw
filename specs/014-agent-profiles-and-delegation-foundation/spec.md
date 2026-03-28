@@ -142,6 +142,7 @@ Add durable agent identity, agent-owned session metadata, and per-agent executio
 - Spec 014 does not yet create delegation records, but it must make `child` session shape durable now so Spec 015 can build on stable ownership semantics.
 - Session ownership is immutable in this spec after session creation.
 - The canonical session key from Spec 001 remains unchanged and does not include `owner_agent_id`.
+- Because the canonical session key remains unchanged in this slice, routing-tuple session resolution cannot create a parallel `system` session alongside an existing `primary` session for the same tuple.
 - For existing routing tuples, the persisted session owner wins over current settings. Changing `default_agent_id` must not silently reassign existing sessions.
 
 ### Session Creation and Bootstrap Contract
@@ -154,16 +155,25 @@ Add durable agent identity, agent-owned session metadata, and per-agent executio
   - the owner agent must be enabled
   - the linked model profile must be enabled
   - the linked policy and tool profile keys must resolve successfully
+- For a first-time canonical session, owner resolution and validation must complete before inserting the `sessions` row so invalid bootstrap ownership cannot create an empty or partially initialized session.
 - If the resolved owner agent is disabled or invalid, the request must fail closed and must not append a new transcript row or create an execution run.
 
 ### Run Creation Contract
 - `execution_runs.agent_id` must always equal the owning session’s `owner_agent_id`.
 - New `execution_runs` rows must also persist the resolved `model_profile_key`, `policy_profile_key`, and `tool_profile_key` used for that run.
 - For runs attached to an existing session, the run profile keys must come from the owning session’s current agent profile at queue time.
+- Queued execution must use the persisted run profile keys as the execution-profile identity for that run rather than silently switching to whatever profile links the agent points to later.
+- Worker-time validation must still fail closed if:
+  - the owning agent is now disabled
+  - any persisted run profile key no longer resolves
+  - any persisted linked profile is now disabled
 - For new session creation plus run creation in the same request path, session owner resolution and run profile resolution must occur in one transaction boundary before the run is returned.
 - Scheduler-created work must also resolve through explicit agent ownership:
   - if targeting an existing session, the session owner is authoritative
-  - if creating or targeting a `system` session by routing tuple, the scheduled job must supply or resolve one enabled owner agent explicitly
+  - if targeting a routing tuple in this slice, the scheduler must reuse or create the canonical session for that tuple as a `primary` session
+  - creation of new `system` sessions is not permitted through routing-tuple resolution in this slice
+  - `system` sessions may exist only when explicitly created through an internal control-plane path or when a scheduler job targets an already-known `session_id`
+  - when `scheduled_jobs.agent_id` is present, it must match the resolved owner or the submission must fail closed before transcript mutation or run creation
 
 ### Runtime Binding Contract
 - Graph assembly and invocation must consume an `AgentExecutionBinding` or equivalent typed structure containing at minimum:
@@ -237,6 +247,7 @@ Add durable agent identity, agent-owned session metadata, and per-agent executio
 - Existing sessions keep their owner even if `default_agent_id` changes later.
 - New primary sessions cannot be created for disabled or invalid agents.
 - Tool binding and policy binding are resolved from the current run’s owning agent, not from process-wide defaults.
+- Queued runs execute against their persisted profile-key identity and do not silently drift to newly linked agent profiles after queue time.
 - Sandbox identity remains exact to the resolved `agent_id`.
 - Session kinds are explicit now even though `child` sessions are not yet orchestrated in this spec.
 
@@ -252,12 +263,24 @@ Add durable agent identity, agent-owned session metadata, and per-agent executio
   - if a session has execution runs with exactly one distinct historical `agent_id`, backfill `owner_agent_id` to that agent id
   - if a session has no historical runs, backfill `owner_agent_id=<current default_agent_id>`
   - if a session has conflicting historical run agent ids, the migration must fail loudly rather than silently choosing an owner
+- The migration must backfill `session_kind` deterministically:
+  - all existing sessions must backfill to `session_kind=primary`
+  - all existing sessions must backfill `parent_session_id=null`
+  - new sessions created through inbound traffic or scheduler routing-tuple resolution in this slice must default to `session_kind=primary`
 - The migration must backfill existing execution runs with `model_profile_key`, `policy_profile_key`, and `tool_profile_key` derived from a seeded or migrated `agent_profile` matching each run’s existing `agent_id`.
+- When historical execution runs reference distinct `agent_id` values from before Spec 014:
+  - the migration must create or seed one enabled `agent_profile` for each distinct historical `agent_id`
+  - each migrated historical agent must default to the seeded default `model_profile_key`, `policy_profile_key`, and `tool_profile_key` unless an explicit operator-provided override map is supplied
+  - the migration must not leave historical runs with null or unknown profile keys after backfill completes
 - The application must seed at least one enabled default `agent_profile` and one enabled default `model_profile` that preserve current single-agent behavior, and it must also seed or migrate any additional distinct historical agent ids needed to satisfy referential integrity for backfilled sessions or runs.
 - Seeded defaults must map cleanly to current behavior:
   - default agent id equals the existing `default_agent_id`
   - default model profile reflects the current global runtime settings
   - default policy and tool profile keys preserve the current capability exposure
+- Startup/bootstrap order in this slice must be:
+  - apply migrations
+  - perform idempotent seeding for required default profiles and any historical-agent backfill records
+  - run startup validation
 - If startup validation finds that the configured default agent id does not exist or is disabled, startup must fail loudly rather than letting inbound traffic create invalid sessions.
 - Historical runs may point to profile keys whose current settings-backed definitions have changed; diagnostics should expose both the persisted keys and the current resolved definitions when available.
 
@@ -383,6 +406,7 @@ Selected option:
 Decision:
 - `execution_runs` persist `model_profile_key`, `policy_profile_key`, and `tool_profile_key`.
 - Detailed current resolved definitions may still come from admin or diagnostics services, but the historical key identity is durable on the run.
+- Worker execution uses those persisted keys as the run’s execution identity and must not silently swap to an agent’s newly linked profiles after queue time.
 
 ### Gap 8: Sandbox Profile Linkage
 Spec 006 already added `agent_sandbox_profiles`, but current runtime behavior can still end up using the wrong agent if run creation is not ownership-driven.
@@ -400,14 +424,140 @@ Decision:
 - `agent_sandbox_profiles` remain the sandbox source for this slice.
 - Spec 014 fixes the missing upstream ownership guarantee by ensuring the resolved run `agent_id` always comes from the owning session’s durable agent profile.
 
+### Gap 9: `system` Sessions vs Unchanged Canonical Routing Keys
+This spec introduces `system` sessions while also preserving the Spec 001 canonical session key, so it must define whether routing-tuple resolution may create a distinct `system` session alongside the existing tuple-owned session.
+
+Options considered:
+- Option A: allow routing-tuple resolution to create `system` sessions by implicitly extending the key with hidden kind metadata
+- Option B: keep routing-tuple resolution bound to the existing canonical session and reserve new `system` session creation for explicit internal creation paths or known `session_id` targets
+- Option C: change the canonical session key now to include `session_kind`
+- Option D: remove `system` sessions from this slice
+
+Selected option:
+- Option B
+
+Decision:
+- Routing-tuple resolution in this slice always reuses or creates the canonical tuple-owned `primary` session.
+- New `system` sessions are allowed only through explicit internal creation flows or by targeting an already-known `session_id`.
+- This keeps Spec 001 and Spec 005 stable while preserving `system` as a durable session shape for later use.
+
+### Gap 10: Historical Agent Migration When Legacy Runtime Was Global
+The pre-014 runtime was effectively single-profile even if historical rows contain multiple `agent_id` values, so the migration must define how those legacy agent ids map onto the new profile system.
+
+Options considered:
+- Option A: fail migration on any historical `agent_id` that is not the current `default_agent_id`
+- Option B: auto-create enabled `agent_profiles` for each distinct historical `agent_id`, all defaulting to the seeded default model, policy, and tool profiles unless an explicit override map is supplied
+- Option C: require an operator-authored mapping for every historical `agent_id`
+- Option D: backfill agent ownership but leave legacy run profile keys null
+
+Selected option:
+- Option B
+
+Decision:
+- The migration must enumerate distinct historical `agent_id` values and create one enabled `agent_profile` for each.
+- Unless the operator provides an explicit override map, each migrated historical agent defaults to the same seeded default model, policy, and tool profile keys that preserve current single-agent behavior.
+- Legacy runs must receive non-null backfilled profile keys derived from the migrated agent profile for that `agent_id`.
+
+### Gap 11: Deterministic `session_kind` Backfill
+This spec adds a non-null `session_kind`, but historical rows predate any durable distinction between `primary`, `child`, and `system`.
+
+Options considered:
+- Option A: backfill all existing sessions to `primary` and default all new inbound or routing-tuple-created sessions in this slice to `primary`
+- Option B: infer `system` from scheduler-authored messages or run history
+- Option C: infer session kind from transcript artifacts and governance state
+- Option D: allow null during migration and repair later
+
+Selected option:
+- Option A
+
+Decision:
+- All existing sessions backfill to `session_kind=primary` with `parent_session_id=null`.
+- New sessions created through current inbound or scheduler routing-tuple flows also default to `primary` in this slice.
+- `child` and `system` remain explicit durable shapes for future use, not inferred retrospective categories.
+
+### Gap 12: Seed and Startup-Validation Ordering
+The spec requires seeded default profiles and also requires startup failure when the configured default agent is missing or disabled, so it must define ordering on fresh or migrated databases.
+
+Options considered:
+- Option A: validate first and fail on empty databases
+- Option B: require all seeding to happen completely out of band before app startup
+- Option C: define startup/bootstrap order as migrate, idempotently seed required records, then validate
+- Option D: lazily create the default agent at first request time
+
+Selected option:
+- Option C
+
+Decision:
+- Startup/bootstrap order is: apply migrations, idempotently seed required defaults and historical-agent rows, then run validation.
+- Validation still fails closed if the resulting seeded state is invalid, incomplete, or disabled.
+- Request-time lazy creation is not allowed.
+
+### Gap 13: Scheduled Job Agent Identity vs Durable Session Ownership
+`scheduled_jobs` already persist an `agent_id`, but this slice makes durable session ownership authoritative for existing sessions and bootstrap ownership authoritative for new routing-tuple sessions. The spec must define what happens if those identities disagree.
+
+Options considered:
+- Option A: keep `scheduled_jobs.agent_id` authoritative
+- Option B: ignore `scheduled_jobs.agent_id` entirely
+- Option C: keep `scheduled_jobs.agent_id` as additive metadata, but require it to match the resolved owner and fail closed on mismatch
+- Option D: remove `scheduled_jobs.agent_id` in this slice
+
+Selected option:
+- Option C
+
+Decision:
+- `scheduled_jobs.agent_id` remains additive metadata in this slice.
+- If a scheduled job targets an existing session, the persisted session owner remains authoritative.
+- If a scheduled job targets a routing tuple, bootstrap ownership resolution remains authoritative for any newly created canonical `primary` session.
+- When `scheduled_jobs.agent_id` is present, it must match the resolved owner for the targeted work; mismatches fail closed and must not append transcript rows or create runs.
+
+### Gap 14: Invalid First-Time Owner Resolution and Empty Session Rows
+This slice requires owner validation before transcript mutation and run creation, but the current repository shape can create a session row before that validation happens. The spec must define whether invalid ownership is allowed to leave behind an empty session.
+
+Options considered:
+- Option A: allow empty session rows to remain after failed owner validation
+- Option B: resolve and validate owner identity before inserting a new session row
+- Option C: create the session row first and delete it on failure
+- Option D: create a partial session state for later repair
+
+Selected option:
+- Option B
+
+Decision:
+- For a first-time canonical session, the runtime must resolve and validate owner identity before inserting the `sessions` row.
+- Invalid bootstrap ownership must fail closed without creating an empty or partially initialized session.
+
+### Gap 15: Historical-Agent Override Mapping Shape
+The migration allows optional operator overrides for historical `agent_id` rows, but this slice needs one concrete contract for where that mapping lives and what it can override.
+
+Options considered:
+- Option A: remove override support and always map historical agents to the default profiles
+- Option B: define a settings-backed override map keyed by legacy `agent_id` with explicit profile-key overrides
+- Option C: require manual database edits before migration
+- Option D: add an interactive admin migration flow
+
+Selected option:
+- Option B
+
+Decision:
+- Historical-agent override mapping is settings-backed in this slice.
+- The mapping is keyed by legacy `agent_id` and may explicitly override seeded default linkage for:
+  - model profile selection
+  - `policy_profile_key`
+  - `tool_profile_key`
+- If no override exists for a historical `agent_id`, migration falls back to the seeded default profile linkage that preserves current single-agent behavior.
+
 ## Acceptance Criteria
 - The system stores at least one durable `agent_profile` and one durable `model_profile` that preserve current single-agent behavior after migration.
 - Every session has an `owner_agent_id`, `session_kind`, and valid parent-session semantics for its kind.
 - The migration handles historical non-default `agent_id` rows safely and fails loudly if one session has conflicting historical run owners.
+- Historical sessions backfill deterministically to `session_kind=primary` and `parent_session_id=null`.
 - Existing sessions remain bound to their backfilled owner even if `default_agent_id` changes later.
 - New runs persist `agent_id`, `model_profile_key`, `policy_profile_key`, and `tool_profile_key` resolved from the owning session’s agent profile.
+- Queued runs execute using their persisted profile keys and fail closed if those persisted keys become invalid or disabled before execution.
 - The runtime chooses model settings, tool exposure, and policy behavior from the owning agent profile rather than from one global default.
 - Disabled agents cannot receive new work through inbound or scheduler-driven run creation.
+- Invalid bootstrap ownership cannot create an empty first-time session row.
+- Scheduler routing-tuple resolution does not create new `system` sessions in this slice.
 - Admin endpoints can list agent profiles, retrieve agent details, and list sessions owned by an agent.
 - Session read endpoints expose agent ownership metadata.
 - Diagnostics surfaces can show the effective execution profile keys for a run and the current linked profile details for an agent.
@@ -418,7 +568,12 @@ Decision:
   - creation of `agent_profiles` and `model_profiles`
   - backfill of existing sessions with `owner_agent_id` and `session_kind`
   - backfill of existing runs with resolved profile keys
+  - creation of migrated `agent_profiles` for distinct legacy `agent_id` values using default profile linkage when no override map is supplied
   - failure when one historical session has conflicting run agent ids
+- Migration and service tests proving scheduler routing-tuple resolution reuses or creates `primary` sessions rather than creating parallel `system` sessions
+- Migration tests proving settings-backed historical-agent overrides are applied when present
+- Startup tests proving bootstrap order is migrate, seed, then validate
+- Startup or service tests proving invalid bootstrap owner resolution does not create an empty session row
 - Unit tests for agent-profile validation:
   - missing linked model profile
   - disabled linked model profile
@@ -430,9 +585,11 @@ Decision:
 - Unit tests for disabled-agent handling:
   - inbound processing fails closed for a disabled owner agent
   - scheduler run creation fails closed for a disabled owner agent
+- Unit tests proving scheduled-job `agent_id` mismatches fail closed against the resolved owner
 - Unit tests for per-agent tool exposure showing two enabled agents can bind different tool sets from the same registry
 - Unit tests for per-agent policy resolution showing remote execution or other denied capabilities differ by policy profile
 - Unit tests for model binding showing two agents can resolve different model profiles without changing graph topology
+- Worker tests proving queued runs keep their persisted profile-key identity even if the owning agent later points at different profiles
 - Integration tests for inbound message processing proving:
   - session owner is written on first creation
   - execution run uses the session owner
