@@ -12,6 +12,9 @@ from src.observability.audit import ToolAuditSink
 from src.policies.service import PolicyService, canonicalize_params, hash_payload
 from src.providers.models import ModelAdapter
 from src.routing.service import RoutingInput, normalize_routing_input
+from src.jobs.repository import JobsRepository
+from src.jobs.service import FailureClassifier, RunExecutionService
+from src.sessions.concurrency import SessionConcurrencyService
 from src.sessions.repository import SessionRepository
 from src.tools.local_safe import create_echo_text_tool
 from src.tools.messaging import create_send_message_tool
@@ -184,6 +187,65 @@ def test_tool_failure_cannot_fabricate_success_response(session_manager) -> None
     assert state.response_text == "I could not complete that tool request."
     assert [artifact.artifact_kind for artifact in artifacts] == ["tool_proposal", "tool_result"]
     assert json.loads(artifacts[-1].payload_json)["error"] == "tool not available in runtime context"
+
+
+def test_worker_persists_assistant_message_after_dispatch(session_manager) -> None:
+    session_id, message_id = _create_session(session_manager)
+    repository = SessionRepository()
+    graph = _build_graph(
+        repository=repository,
+        policy_service=PolicyService(),
+        model=StubModel(
+            ModelTurnResult(
+                needs_tools=False,
+                tool_requests=[],
+                response_text="plain streamed response",
+            )
+        ),
+        registry=ToolRegistry(factories={}),
+    )
+
+    class CheckingDispatcher:
+        def dispatch_run(self, *, db, repository, session, execution_run_id, assistant_text):
+            messages = repository.list_messages(db, session_id=session.id, limit=10, before_message_id=None)
+            assert [message.role for message in messages] == ["user"]
+            assert assistant_text == "plain streamed response"
+
+    with session_manager.session() as db:
+        jobs = JobsRepository()
+        run = jobs.create_or_get_execution_run(
+            db,
+            session_id=session_id,
+            message_id=message_id,
+            agent_id="agent-1",
+            trigger_kind="inbound_message",
+            trigger_ref="run-test-1",
+            lane_key=session_id,
+            max_attempts=1,
+        )
+        db.commit()
+
+    service = RunExecutionService(
+        settings=None,
+        jobs_repository=JobsRepository(),
+        session_repository=repository,
+        concurrency_service=SessionConcurrencyService(repository=JobsRepository(), lease_seconds=60, global_concurrency_limit=4),
+        assistant_graph_factory=lambda: graph,
+        failure_classifier=FailureClassifier(),
+        base_backoff_seconds=1,
+        max_backoff_seconds=10,
+        outbound_dispatcher=CheckingDispatcher(),
+    )
+
+    with session_manager.session() as db:
+        run_id = service.process_next_run(db, worker_id="worker-1")
+        db.commit()
+        run = JobsRepository().get_execution_run(db, run_id=run_id)
+        messages = repository.list_messages(db, session_id=session_id, limit=10, before_message_id=None)
+
+    assert run is not None
+    assert run.status == "completed"
+    assert [message.content for message in messages][-1] == "plain streamed response"
 
 
 def test_canonicalization_and_exact_approval_matching() -> None:

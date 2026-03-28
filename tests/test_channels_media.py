@@ -305,3 +305,119 @@ def test_dispatcher_sends_chunked_text_and_media(session_manager, tmp_path) -> N
     assert [delivery.delivery_kind for delivery in deliveries] == ["text_chunk", "media"]
     assert all(delivery.status == "sent" for delivery in deliveries)
     assert all(delivery.trace_id == "trace-1" for delivery in deliveries)
+
+
+def test_dispatcher_streams_webchat_text_with_append_only_events(session_manager) -> None:
+    repository = SessionRepository()
+    routing = normalize_routing_input(
+        RoutingInput(
+            channel_kind="webchat",
+            channel_account_id="acct",
+            sender_id="sender",
+            peer_id="peer",
+        )
+    )
+
+    with session_manager.session() as db:
+        session = repository.get_or_create_session(db, routing)
+        db.add(
+            ExecutionRunRecord(
+                id="run-stream-1",
+                session_id=session.id,
+                message_id=None,
+                agent_id="agent-1",
+                trigger_kind="test",
+                trigger_ref="test-stream-1",
+                lane_key=session.id,
+                status="queued",
+                attempt_count=0,
+                max_attempts=1,
+                available_at=datetime.now(timezone.utc),
+                trace_id="trace-stream-1",
+                correlation_id="trace-stream-1",
+            )
+        )
+        repository.append_outbound_intent(
+            db,
+            session_id=session.id,
+            correlation_id="corr-stream-1",
+            payload={"text": "stream this response please", "execution_run_id": "run-stream-1"},
+        )
+        dispatcher = OutboundDispatcher(adapters={"webchat": WebchatAdapter()}, settings=Settings(database_url="sqlite://"))
+        dispatcher.dispatch_run(
+            db=db,
+            repository=repository,
+            session=session,
+            execution_run_id="run-stream-1",
+            assistant_text="stream this response please",
+        )
+        deliveries = repository.list_outbound_deliveries(db, session_id=session.id)
+        attempts = repository.list_outbound_delivery_attempts(db, delivery_id=deliveries[0].id)
+        events = repository.list_delivery_stream_events(db, delivery_id=deliveries[0].id)
+
+    assert [delivery.delivery_kind for delivery in deliveries] == ["stream_text"]
+    assert deliveries[0].status == "sent"
+    assert attempts[0].stream_status == "finalized"
+    assert [event.event_kind for event in events][0] == "stream_started"
+    assert [event.event_kind for event in events][-1] == "stream_finalized"
+    assert any(event.event_kind == "text_delta" for event in events)
+
+
+def test_dispatcher_falls_back_to_whole_message_before_first_delta(session_manager) -> None:
+    repository = SessionRepository()
+    routing = normalize_routing_input(
+        RoutingInput(
+            channel_kind="webchat",
+            channel_account_id="acct",
+            sender_id="sender",
+            peer_id="peer",
+        )
+    )
+
+    class FailingWebchatAdapter(WebchatAdapter):
+        def begin_text_stream(self, **kwargs):  # type: ignore[override]
+            raise RuntimeError("stream setup failed")
+
+    with session_manager.session() as db:
+        session = repository.get_or_create_session(db, routing)
+        db.add(
+            ExecutionRunRecord(
+                id="run-stream-2",
+                session_id=session.id,
+                message_id=None,
+                agent_id="agent-1",
+                trigger_kind="test",
+                trigger_ref="test-stream-2",
+                lane_key=session.id,
+                status="queued",
+                attempt_count=0,
+                max_attempts=1,
+                available_at=datetime.now(timezone.utc),
+                trace_id="trace-stream-2",
+                correlation_id="trace-stream-2",
+            )
+        )
+        repository.append_outbound_intent(
+            db,
+            session_id=session.id,
+            correlation_id="corr-stream-2",
+            payload={"text": "fallback please", "execution_run_id": "run-stream-2"},
+        )
+        dispatcher = OutboundDispatcher(adapters={"webchat": FailingWebchatAdapter()}, settings=Settings(database_url="sqlite://"))
+        dispatcher.dispatch_run(
+            db=db,
+            repository=repository,
+            session=session,
+            execution_run_id="run-stream-2",
+            assistant_text="fallback please",
+        )
+        deliveries = repository.list_outbound_deliveries(db, session_id=session.id)
+        attempts = repository.list_outbound_delivery_attempts(db, delivery_id=deliveries[0].id)
+        events = repository.list_delivery_stream_events(db, delivery_id=deliveries[0].id)
+
+    assert deliveries[0].delivery_kind == "stream_text"
+    assert deliveries[0].status == "sent"
+    assert len(attempts) == 2
+    assert attempts[0].status == "failed"
+    assert attempts[1].stream_status == "fallback_sent"
+    assert events == []

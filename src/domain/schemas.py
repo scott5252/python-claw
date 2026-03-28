@@ -231,3 +231,13 @@ class WebchatDeliveryPollItem(BaseModel):
 class WebchatDeliveryPollResponse(BaseModel):
     items: list[WebchatDeliveryPollItem]
     next_after_delivery_id: int | None = None
+
+
+class WebchatStreamEventPayload(BaseModel):
+    event_id: int
+    delivery_id: int
+    attempt_id: int
+    sequence_number: int
+    event_kind: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime

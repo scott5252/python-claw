@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from src.graphs.nodes import GraphDependencies, assemble_state, execute_turn
+from src.graphs.nodes import GraphDependencies, assemble_state, execute_turn_with_options, persist_final_state
 from src.graphs.state import AssistantState
 
 
@@ -23,6 +23,7 @@ class AssistantGraph:
         sender_id: str,
         user_text: str,
         execution_run_id: str | None = None,
+        persist_final_message: bool = True,
     ) -> AssistantState:
         state = assemble_state(
             db=db,
@@ -36,7 +37,15 @@ class AssistantGraph:
         )
         if execution_run_id is not None:
             state.context_manifest["execution_run_id"] = execution_run_id
-        return execute_turn(db=db, state=state, dependencies=self.dependencies)
+        return execute_turn_with_options(
+            db=db,
+            state=state,
+            dependencies=self.dependencies,
+            persist_final_message=persist_final_message,
+        )
+
+    def persist_final_state(self, *, db: Session, state: AssistantState) -> AssistantState:
+        return persist_final_state(db=db, state=state, dependencies=self.dependencies)
 
 
 @dataclass

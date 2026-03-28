@@ -116,6 +116,7 @@ class RunExecutionService:
                 sender_id=message.sender_id,
                 user_text=message.content,
                 execution_run_id=run.id,
+                persist_final_message=False,
             )
             if self.outbound_dispatcher is not None:
                 session = self.session_repository.get_session(db, run.session_id)
@@ -128,6 +129,7 @@ class RunExecutionService:
                     execution_run_id=run.id,
                     assistant_text=state.response_text,
                 )
+            graph.persist_final_state(db=db, state=state)
             self._enqueue_after_turn_jobs(
                 db,
                 session_id=run.session_id,

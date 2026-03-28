@@ -106,6 +106,17 @@ def test_provider_adapter_translates_plain_text_response() -> None:
     assert result.execution_metadata["provider_attempt_count"] == 1
 
 
+def test_provider_adapter_exposes_final_answer_stream_deltas() -> None:
+    settings = Settings(database_url="sqlite://", runtime_mode="provider", llm_api_key="test-key")
+    client = FakeProviderClient(response={"output_text": "Natural language reply", "output": []})
+    adapter = ProviderBackedModelAdapter(settings=settings, client=client)
+
+    deltas, result = adapter.stream_final_answer(state=_build_state(), available_tools=["echo_text"])
+
+    assert result.response_text == "Natural language reply"
+    assert "".join(deltas) == "Natural language reply"
+
+
 def test_provider_adapter_translates_tool_calls_and_generates_correlation_ids() -> None:
     settings = Settings(database_url="sqlite://", runtime_mode="provider", llm_api_key="test-key")
     client = FakeProviderClient(
@@ -153,6 +164,27 @@ def test_provider_adapter_rejects_malformed_tool_calls_safely() -> None:
     assert result.rejected_tool_requests[0].capability_name == "send_message"
     assert result.execution_metadata["semantic_fallback_kind"] == "rejected_tool_request"
     assert "could not safely use" in result.response_text
+
+
+def test_provider_stream_final_answer_does_not_emit_tool_planning_deltas() -> None:
+    settings = Settings(database_url="sqlite://", runtime_mode="provider", llm_api_key="test-key")
+    client = FakeProviderClient(
+        response={
+            "output": [
+                {
+                    "type": "function_call",
+                    "name": "echo_text",
+                    "arguments": {"text": "hello"},
+                }
+            ]
+        }
+    )
+    adapter = ProviderBackedModelAdapter(settings=settings, client=client)
+
+    deltas, result = adapter.stream_final_answer(state=_build_state(), available_tools=["echo_text"])
+
+    assert deltas == []
+    assert result.needs_tools is True
 
 
 def test_provider_adapter_retries_retryable_provider_errors() -> None:

@@ -5,6 +5,7 @@ import random
 import time
 from dataclasses import dataclass, field
 from uuid import uuid4
+from typing import Iterator
 
 import httpx
 
@@ -77,6 +78,11 @@ class ModelAdapter:
     def runtime_services(self) -> ToolRuntimeServices:
         return ToolRuntimeServices()
 
+    def stream_final_answer(self, *, state: AssistantState, available_tools: list[str]) -> tuple[list[str], ModelTurnResult]:
+        result = self.complete_turn(state=state, available_tools=available_tools)
+        deltas = [result.response_text] if result.response_text else []
+        return deltas, result
+
 
 @dataclass
 class RuleBasedModelAdapter(ModelAdapter):
@@ -110,6 +116,12 @@ class RuleBasedModelAdapter(ModelAdapter):
                 "semantic_fallback_kind": None,
             },
         )
+
+    def stream_final_answer(self, *, state: AssistantState, available_tools: list[str]) -> tuple[list[str], ModelTurnResult]:
+        result = self.complete_turn(state=state, available_tools=available_tools)
+        text = result.response_text
+        deltas = [text[index : index + 24] for index in range(0, len(text), 24)] if text else []
+        return deltas, result
 
 
 def map_provider_exception(exc: Exception) -> ProviderError:
@@ -255,6 +267,14 @@ class ProviderBackedModelAdapter(ModelAdapter):
                     time.sleep(self._retry_delay_seconds(attempt_number=attempts))
                     continue
                 raise
+
+    def stream_final_answer(self, *, state: AssistantState, available_tools: list[str]) -> tuple[list[str], ModelTurnResult]:
+        result = self.complete_turn(state=state, available_tools=available_tools)
+        if result.needs_tools:
+            return [], result
+        text = result.response_text
+        deltas = [text[index : index + 24] for index in range(0, len(text), 24)] if text else []
+        return deltas, result
 
     def _translate_response(
         self,

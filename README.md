@@ -27,7 +27,7 @@ In simpler terms, this project is the backend skeleton for an AI assistant syste
 
 ### What it does today
 
-The current implementation focuses on twelve delivered capability areas:
+The current implementation focuses on thirteen delivered capability areas:
 
 1. Gateway sessions and deterministic routing
 2. Runtime tools and typed tool execution
@@ -41,12 +41,12 @@ The current implementation focuses on twelve delivered capability areas:
 10. Typed tool schemas with shared backend validation and hybrid intent control for approvals or revocations
 11. Retrieval, durable memory, and attachment-content understanding as additive context
 12. Production channel ingress and delivery contracts for Slack, Telegram, and polling-based webchat
+13. Streaming-safe real-time delivery for webchat with durable SSE replay and append-only stream events
 
 ### What it does not do yet
 
 The project is still a foundation, not a finished end-user assistant platform. Important planned capabilities are still pending, including:
 
-- token-by-token streaming or SSE delivery
 - richer provider-native channel layouts, interactive actions, and advanced receipt callbacks
 - cross-session retrieval, external vector infrastructure, and more advanced memory policies
 - production-grade sandbox/container enforcement
@@ -78,8 +78,8 @@ That means the project keeps routing, session identity, policy decisions, persis
 - Memory and retrieval services: build additive durable context from transcript, summaries, memories, and extracted attachments
 - Tool registry and policy layer: controls which tools are visible and executable
 - Typed tool schema layer: validates tool arguments, exports provider-facing schemas, and canonicalizes approval identity
-- Outbound dispatcher: parses directives, chunks text, applies channel capability rules, and records delivery attempts
-- Channel adapters: transport-specific send and ingress translation interfaces for `webchat`, `slack`, and `telegram`
+- Outbound dispatcher: parses directives, chunks text, applies channel capability rules, records delivery attempts, and owns streaming delivery state
+- Channel adapters: transport-specific send and ingress translation interfaces for `webchat`, `slack`, and `telegram`, including capability-based streaming support
 - Observability layer: emits structured events, redacts sensitive fields, classifies failures, and supports diagnostics queries
 - Database: stores sessions, messages, approvals, artifacts, runs, and audits
 - Node runner: isolated internal execution boundary for remote command execution
@@ -132,9 +132,10 @@ sequenceDiagram
     Worker->>DB: claim queued run
     Worker->>DB: normalize attachments to terminal states
     Worker->>Runtime: execute assistant turn
-    Runtime->>DB: append assistant message, artifacts, manifests, audits
-    Worker->>DB: create outbound delivery records and attempts
-    Worker->>Channel: send chunked text and bounded media instructions
+    Runtime->>DB: prepare final assistant result, artifacts, manifests, audits
+    Worker->>DB: create outbound delivery records, attempts, and optional stream events
+    Worker->>Channel: send streamed text or bounded whole-message/media instructions
+    Worker->>DB: append final assistant message after authoritative completion
     Worker->>DB: mark run terminal state
     Note over Gateway,Worker: health, readiness, and diagnostics now expose correlated operational state
 ```
@@ -152,6 +153,7 @@ The gateway is the main API service. It currently exposes:
 - `POST /providers/slack/events`
 - `POST /providers/telegram/webhook/{channel_account_id}`
 - `POST /providers/webchat/accounts/{channel_account_id}/messages`
+- `GET /providers/webchat/accounts/{channel_account_id}/stream`
 - `GET /providers/webchat/accounts/{channel_account_id}/poll`
 - `GET /sessions/{session_id}`
 - `GET /sessions/{session_id}/messages`
@@ -186,7 +188,7 @@ After the gateway accepts work, the worker becomes responsible for execution. Th
 - applies lane and global concurrency rules
 - performs first-pass attachment normalization for inbound-triggered runs
 - invokes the assistant runtime
-- dispatches outbound text and media after the assistant turn completes
+- dispatches outbound text and media after the assistant turn reaches a dispatchable answer phase
 - persists results, errors, and diagnostics
 - preserves the parent run `trace_id` when follow-on work creates additional operational records
 
@@ -264,7 +266,12 @@ In practical terms, the platform now supports:
 - deterministic post-turn chunking for large outbound text
 - append-only delivery and delivery-attempt auditing
 
-This is an important distinction for both non-developers and developers: the system now accepts verified provider traffic for Slack and Telegram, and production webchat now uses authenticated inbound HTTP plus durable polling for whole outbound messages. It still does not provide token-by-token streaming, SSE delivery, or richer provider-native layouts in this phase.
+This is an important distinction for both non-developers and developers: the system now accepts verified provider traffic for Slack and Telegram, and production webchat now uses authenticated inbound HTTP, durable polling, and a durable SSE replay surface for streamed assistant text. Streaming is still intentionally bounded in this phase:
+
+- only supported channels use it
+- only plain-text assistant responses are eligible
+- partial output is delivery-side operational state rather than canonical transcript truth
+- richer provider-native layouts are still out of scope
 
 #### Remote node-runner and sandboxing
 
@@ -338,6 +345,7 @@ The database currently stores the system's durable state in tables such as:
 - `scheduled_job_fires`
 - `outbound_deliveries`
 - `outbound_delivery_attempts`
+- `outbound_delivery_stream_events`
 - `agent_sandbox_profiles`
 - `node_execution_audits`
 - `summary_snapshots`
@@ -366,6 +374,7 @@ Implemented now:
 - after-turn enrichment jobs for summary rollover, memory extraction, retrieval indexing, and attachment extraction
 - shared outbound dispatch with directive stripping and deterministic chunking
 - append-only outbound delivery auditing for `webchat`, `slack`, and `telegram`
+- durable streaming event persistence and SSE replay for eligible `webchat` responses
 - signed internal node-runner requests
 - audit persistence for remote execution
 - stable run correlation with `trace_id`
@@ -376,7 +385,7 @@ Implemented now:
 Planned or partial:
 
 - cross-session or externally backed retrieval
-- richer transport behavior beyond the current verified Slack and Telegram ingress plus polling-based webchat
+- richer transport behavior beyond the current verified Slack and Telegram ingress plus webchat polling and bounded SSE streaming
 - stronger production sandbox isolation
 - richer metrics exporters, tracing backends, and alerting integrations
 - presence or real-time end-user activity surfaces
@@ -421,6 +430,10 @@ Key variables include:
 - `PYTHON_CLAW_DEDUPE_STALE_AFTER_SECONDS`
 - `PYTHON_CLAW_RUNTIME_TRANSCRIPT_CONTEXT_LIMIT`
 - `PYTHON_CLAW_RUNTIME_MODE`
+- `PYTHON_CLAW_RUNTIME_STREAMING_ENABLED`
+- `PYTHON_CLAW_RUNTIME_STREAMING_CHUNK_CHARS`
+- `PYTHON_CLAW_WEBCHAT_SSE_ENABLED`
+- `PYTHON_CLAW_WEBCHAT_SSE_REPLAY_LIMIT`
 - `PYTHON_CLAW_LLM_PROVIDER`
 - `PYTHON_CLAW_LLM_API_KEY`
 - `PYTHON_CLAW_LLM_BASE_URL`
@@ -519,6 +532,22 @@ In practical terms:
 
 For local scaffold mode, leave `PYTHON_CLAW_RUNTIME_MODE=rule_based`.
 
+For local Spec 013 streaming demos, the most important optional settings are:
+
+```text
+PYTHON_CLAW_RUNTIME_STREAMING_ENABLED=true
+PYTHON_CLAW_RUNTIME_STREAMING_CHUNK_CHARS=24
+PYTHON_CLAW_WEBCHAT_SSE_ENABLED=true
+PYTHON_CLAW_WEBCHAT_SSE_REPLAY_LIMIT=100
+```
+
+These control whether the system:
+
+- enables the delivery-side streaming path for eligible assistant text responses
+- breaks streamed text into bounded partial chunks
+- exposes the authenticated webchat SSE replay endpoint
+- keeps replay reads bounded instead of unbounded
+
 To enable provider-backed turns, set at minimum:
 
 ```text
@@ -589,6 +618,12 @@ Spec 012 also adds additive transport-facing persistence for:
 - durable session transport addresses
 - bounded outbound provider metadata
 - richer outbound attempt metadata for retryability and correlation
+
+Spec 013 extends that delivery model with additive streaming persistence for:
+
+- streaming-aware delivery completion metadata
+- streaming-aware attempt lifecycle fields
+- append-only `outbound_delivery_stream_events` rows used for replay, diagnostics, and recovery
 
 Spec 011 added the additive context tables and records that make retrieval, memory, and attachment understanding inspectable and rebuildable:
 
@@ -666,6 +701,8 @@ uv run pytest tests/test_async_queueing_coverage.py
 uv run pytest tests/test_node_sandbox.py
 uv run pytest tests/test_channels_media.py
 uv run pytest tests/test_spec_012.py
+uv run pytest tests/test_repository.py
+uv run pytest tests/test_api.py -k webchat
 ```
 
 Note: the tests primarily use temporary SQLite fixtures and provider fakes, so they do not require local PostgreSQL, Redis, or live provider credentials to pass.
@@ -701,7 +738,11 @@ Spec 012 also adds provider-facing write entrypoints:
 - `POST /providers/telegram/webhook/{channel_account_id}`
 - `POST /providers/webchat/accounts/{channel_account_id}/messages`
 
-Spec 012 adds one client-facing webchat read surface for completed whole-message delivery results:
+Spec 013 adds one client-facing webchat real-time read surface for durable streamed delivery replay:
+
+- `GET /providers/webchat/accounts/{channel_account_id}/stream`
+
+Spec 012 and Spec 013 together leave webchat with one durable completed-message replay surface:
 
 - `GET /providers/webchat/accounts/{channel_account_id}/poll`
 
@@ -734,7 +775,8 @@ The practical distinction between these surfaces is:
 
 - `/inbound/message` remains the canonical backend-owned message-ingress contract and test seam
 - provider-facing channel routes verify and translate transport payloads, then call the same session service path in-process
-- webchat polling reads already-persisted delivery state and does not introduce token streaming
+- webchat SSE reads already-persisted stream-event state and does not depend on worker-local memory
+- webchat polling reads already-persisted delivery state and remains the completed-message replay and fallback surface
 - session and run routes are narrower product-facing read APIs
 - health routes are service-supervision endpoints
 - diagnostics routes are operator-facing inspection endpoints with explicit authorization
@@ -836,11 +878,14 @@ curl http://127.0.0.1:8000/diagnostics/runs/<run_id> -H "Authorization: Bearer c
 
 ### Example: use production-style `webchat`
 
-Spec 012 changes `webchat` from a local-only channel kind into a production-style transport contract with:
+Specs 012 and 013 change `webchat` from a local-only channel kind into a production-style transport contract with:
 
 - authenticated HTTP inbound submission
 - durable whole-message outbound polling
+- durable SSE replay for streamed assistant text
 - the same gateway, session, run, and dispatcher ownership model as the other channels
+
+If you want a full guided walkthrough instead of ad hoc commands, use [Demo013.md](/Users/scottcornell/src/my-projects/python-claw/docs/demo/Demo013.md).
 
 Send a basic `webchat` message:
 
@@ -864,15 +909,27 @@ curl "http://127.0.0.1:8000/providers/webchat/accounts/acct/poll?stream_id=strea
   -H "X-Webchat-Client-Token: fake-webchat-token"
 ```
 
+If streaming is enabled and the response is eligible, you can also replay streamed events:
+
+```bash
+curl -N "http://127.0.0.1:8000/providers/webchat/accounts/acct/stream?stream_id=stream-browser-user-1" \
+  -H "X-Webchat-Client-Token: fake-webchat-token"
+```
+
 Expected local flow:
 
 1. The gateway authenticates the webchat client request.
 2. It translates the message into the canonical inbound contract and queues a run.
 3. The worker later claims the queued run and executes the assistant turn.
-4. The dispatcher records outbound delivery rows.
-5. The polling route returns already-persisted whole-message delivery results.
+4. For eligible plain-text replies, the dispatcher records one logical streamed delivery, append-only attempts, and append-only stream events before fan-out.
+5. The worker persists the final assistant transcript row after authoritative completion.
+6. The SSE route replays persisted stream events, and the polling route still returns the completed delivery row.
 
-This is intentionally not token streaming, SSE, or a browser UI bundle. It is the bounded production webchat transport contract added by Spec 012.
+Important ownership note:
+
+- partial streamed output is operational delivery state
+- the canonical conversation transcript still lives in `messages`
+- if a stream never reaches durable completion, the system does not fabricate a completed transcript message from partial output
 
 ### Webchat transport flow
 
@@ -891,10 +948,13 @@ sequenceDiagram
     Gateway-->>Browser: 202 Accepted + session_id + run_id
     Worker->>DB: claim queued run
     Worker->>Runtime: execute assistant turn
-    Runtime->>DB: persist assistant message and outbound intent
-    Worker->>Dispatcher: dispatch completed turn output
-    Dispatcher->>Webchat: send text chunk or media instruction
-    Dispatcher->>DB: persist outbound delivery and attempt rows
+    Runtime->>DB: persist outbound intent and turn artifacts
+    Worker->>Dispatcher: dispatch answer-phase output
+    Dispatcher->>DB: persist delivery, attempt, and stream-event rows
+    Dispatcher->>Webchat: fan out streamed text or whole-message/media instruction
+    Worker->>DB: persist final assistant message after completion
+    Browser->>Gateway: GET /providers/webchat/accounts/{id}/stream
+    Gateway-->>Browser: replayable SSE event rows
     Browser->>Gateway: GET /providers/webchat/accounts/{id}/poll
     Gateway-->>Browser: completed whole-message delivery rows
 ```
@@ -1048,11 +1108,12 @@ If you are specifically working on adapter behavior, start with:
 The current repository is intentionally narrow. A few important limitations to keep in mind:
 
 - the default assistant behavior remains `rule_based` unless configuration explicitly selects provider mode
-- the first provider-backed path is intentionally bounded: no token streaming, no retrieval, no attachment-content understanding, and no multi-provider orchestration yet
+- the first provider-backed path is intentionally bounded: no provider-native planning stream exposure, no multi-provider orchestration yet
 - Redis is provisioned but not yet central to the request path
 - outbound delivery is channel-aware and audited, but current adapters are still thin local implementations rather than production provider clients
 - media handling is limited to normalization, classification, safe storage references, and bounded outbound media dispatch
-- true incremental streaming is not implemented; this phase uses post-turn chunked delivery
+- streaming in this phase is bounded to delivery-side webchat text replay rather than a full multi-channel token-streaming platform
+- Slack and Telegram still use the whole-message path in this phase
 - remote execution policy and auditing are implemented more fully than sandbox enforcement
 
 ### Future specs and planned growth
@@ -1076,7 +1137,7 @@ Today that LLM layer includes:
 Future work is still expected in areas such as:
 
 - richer retrieval and memory-aware prompt assembly
-- streaming responses and partial output persistence
+- richer multi-channel streaming behavior and transport-specific finalize or receipt semantics
 - additional provider support and auth-profile management
 - attachment-content understanding and multimodal reasoning
 

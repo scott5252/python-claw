@@ -18,6 +18,7 @@ from src.db.models import (
     MessageAttachmentRecord,
     OutboundDeliveryAttemptRecord,
     OutboundDeliveryRecord,
+    OutboundDeliveryStreamEventRecord,
     OutboxJobRecord,
     RetrievalRecord,
     ResourceApprovalRecord,
@@ -401,6 +402,7 @@ class SessionRepository:
         outbound_delivery_id: int,
         trace_id: str | None,
         provider_idempotency_key: str | None,
+        stream_status: str | None = None,
     ) -> OutboundDeliveryAttemptRecord:
         last_attempt = db.scalar(
             select(OutboundDeliveryAttemptRecord)
@@ -415,6 +417,7 @@ class SessionRepository:
             attempt_number=1 if last_attempt is None else last_attempt.attempt_number + 1,
             provider_idempotency_key=provider_idempotency_key,
             status="started",
+            stream_status=stream_status,
             trace_id=trace_id,
         )
         db.add(attempt)
@@ -435,12 +438,14 @@ class SessionRepository:
         if delivery is None or attempt is None:
             raise RuntimeError("outbound delivery state missing")
         delivery.status = "sent"
+        delivery.completion_status = "sent"
         delivery.provider_message_id = provider_message_id
         delivery.provider_metadata_json = json.dumps(provider_metadata or {}, sort_keys=True)
         delivery.error_code = None
         delivery.error_detail = None
         delivery.failure_category = None
         attempt.status = "sent"
+        attempt.stream_status = "finalized" if attempt.stream_status else None
         attempt.provider_message_id = provider_message_id
         attempt.provider_metadata_json = json.dumps(provider_metadata or {}, sort_keys=True)
         attempt.retryable = False
@@ -464,11 +469,13 @@ class SessionRepository:
         if delivery is None or attempt is None:
             raise RuntimeError("outbound delivery state missing")
         delivery.status = "failed"
+        delivery.completion_status = "failed"
         delivery.error_code = error_code
         delivery.error_detail = error_detail
         delivery.failure_category = "delivery_failed"
         delivery.provider_metadata_json = json.dumps(provider_metadata or {}, sort_keys=True)
         attempt.status = "failed"
+        attempt.stream_status = "failed" if attempt.stream_status else attempt.stream_status
         attempt.error_code = error_code
         attempt.error_detail = error_detail
         attempt.provider_metadata_json = json.dumps(provider_metadata or {}, sort_keys=True)
@@ -482,6 +489,149 @@ class SessionRepository:
             .order_by(OutboundDeliveryRecord.created_at.asc(), OutboundDeliveryRecord.id.asc())
         )
         return list(db.scalars(stmt))
+
+    def append_stream_event(
+        self,
+        db: Session,
+        *,
+        delivery_id: int,
+        attempt_id: int,
+        sequence_number: int,
+        event_kind: str,
+        payload: dict[str, Any] | None = None,
+    ) -> OutboundDeliveryStreamEventRecord:
+        event = OutboundDeliveryStreamEventRecord(
+            outbound_delivery_id=delivery_id,
+            outbound_delivery_attempt_id=attempt_id,
+            sequence_number=sequence_number,
+            event_kind=event_kind,
+            payload_json=json.dumps(payload or {}, sort_keys=True),
+        )
+        db.add(event)
+        attempt = db.get(OutboundDeliveryAttemptRecord, attempt_id)
+        if attempt is None:
+            raise RuntimeError("outbound delivery attempt missing")
+        attempt.last_sequence_number = sequence_number
+        if event_kind == "stream_started":
+            attempt.stream_status = "streaming"
+        db.flush()
+        return event
+
+    def mark_stream_attempt_state(
+        self,
+        db: Session,
+        *,
+        delivery_id: int,
+        attempt_id: int,
+        attempt_status: str,
+        stream_status: str,
+        completion_reason: str | None = None,
+        provider_message_id: str | None = None,
+        provider_stream_id: str | None = None,
+        provider_metadata: dict[str, Any] | None = None,
+        error_code: str | None = None,
+        error_detail: str | None = None,
+        retryable: bool | None = None,
+    ) -> None:
+        delivery = db.get(OutboundDeliveryRecord, delivery_id)
+        attempt = db.get(OutboundDeliveryAttemptRecord, attempt_id)
+        if delivery is None or attempt is None:
+            raise RuntimeError("outbound delivery state missing")
+        attempt.status = attempt_status
+        attempt.stream_status = stream_status
+        attempt.completion_reason = completion_reason
+        attempt.provider_stream_id = provider_stream_id
+        if provider_message_id is not None:
+            attempt.provider_message_id = provider_message_id
+            delivery.provider_message_id = provider_message_id
+        if provider_metadata is not None:
+            encoded = json.dumps(provider_metadata, sort_keys=True)
+            attempt.provider_metadata_json = encoded
+            delivery.provider_metadata_json = encoded
+        attempt.error_code = error_code
+        attempt.error_detail = error_detail
+        attempt.retryable = retryable
+        if attempt_status == "sent":
+            delivery.status = "sent"
+            delivery.completion_status = "sent"
+            delivery.error_code = None
+            delivery.error_detail = None
+            delivery.failure_category = None
+        elif attempt_status in {"failed", "cancelled"}:
+            delivery.status = attempt_status
+            delivery.completion_status = attempt_status
+            delivery.error_code = error_code
+            delivery.error_detail = error_detail
+            delivery.failure_category = "delivery_failed"
+        db.flush()
+
+    def list_delivery_stream_events(
+        self,
+        db: Session,
+        *,
+        delivery_id: int,
+    ) -> list[OutboundDeliveryStreamEventRecord]:
+        stmt = (
+            select(OutboundDeliveryStreamEventRecord)
+            .where(OutboundDeliveryStreamEventRecord.outbound_delivery_id == delivery_id)
+            .order_by(
+                OutboundDeliveryStreamEventRecord.sequence_number.asc(),
+                OutboundDeliveryStreamEventRecord.id.asc(),
+            )
+        )
+        return list(db.scalars(stmt))
+
+    def list_webchat_stream_events(
+        self,
+        db: Session,
+        *,
+        channel_account_id: str,
+        stream_id: str,
+        after_event_id: int | None,
+        limit: int,
+    ) -> list[OutboundDeliveryStreamEventRecord]:
+        session_ids = select(SessionRecord.id).where(
+            SessionRecord.channel_kind == "webchat",
+            SessionRecord.channel_account_id == channel_account_id,
+            SessionRecord.transport_address_key == stream_id,
+        )
+        delivery_ids = select(OutboundDeliveryRecord.id).where(
+            OutboundDeliveryRecord.session_id.in_(session_ids),
+            OutboundDeliveryRecord.delivery_kind == "stream_text",
+        )
+        stmt = (
+            select(OutboundDeliveryStreamEventRecord)
+            .where(OutboundDeliveryStreamEventRecord.outbound_delivery_id.in_(delivery_ids))
+            .order_by(OutboundDeliveryStreamEventRecord.id.asc())
+            .limit(limit)
+        )
+        if after_event_id is not None:
+            stmt = stmt.where(OutboundDeliveryStreamEventRecord.id > after_event_id)
+        return list(db.scalars(stmt))
+
+    def stream_text_for_attempt(self, db: Session, *, attempt_id: int) -> str:
+        stmt = (
+            select(OutboundDeliveryStreamEventRecord)
+            .where(
+                OutboundDeliveryStreamEventRecord.outbound_delivery_attempt_id == attempt_id,
+                OutboundDeliveryStreamEventRecord.event_kind == "text_delta",
+            )
+            .order_by(OutboundDeliveryStreamEventRecord.sequence_number.asc(), OutboundDeliveryStreamEventRecord.id.asc())
+        )
+        parts: list[str] = []
+        for row in db.scalars(stmt):
+            payload = json.loads(row.payload_json or "{}")
+            text = payload.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+        return "".join(parts)
+
+    def delivery_has_stream_text_delta(self, db: Session, *, delivery_id: int) -> bool:
+        stmt = select(OutboundDeliveryStreamEventRecord.id).where(
+            OutboundDeliveryStreamEventRecord.outbound_delivery_id == delivery_id,
+            OutboundDeliveryStreamEventRecord.event_kind == "text_delta",
+        )
+        return db.scalar(stmt) is not None
 
     def list_webchat_deliveries(
         self,

@@ -247,3 +247,48 @@ def test_diagnostics_delivery_and_attachment_views_are_sanitized(client, drain_q
     deliveries = client.get("/diagnostics/deliveries", headers=headers)
     assert deliveries.status_code == 200
     assert "items" in deliveries.json()
+
+
+def test_webchat_sse_replays_durable_stream_events(client, drain_queue) -> None:
+    response = client.post(
+        "/providers/webchat/accounts/acct/messages",
+        headers={"X-Webchat-Client-Token": "fake-webchat-token"},
+        json={
+            "actor_id": "user-1",
+            "content": "hello streamed world",
+            "peer_id": "peer-1",
+            "stream_id": "stream-1",
+        },
+    )
+    assert response.status_code == 202
+    drain_queue()
+
+    stream = client.get(
+        "/providers/webchat/accounts/acct/stream",
+        headers={"X-Webchat-Client-Token": "fake-webchat-token"},
+        params={"stream_id": "stream-1"},
+    )
+    assert stream.status_code == 200
+    body = stream.text
+    assert "event: delivery" in body
+    assert '"event_kind":"stream_started"' in body
+    assert '"event_kind":"text_delta"' in body
+    assert '"event_kind":"stream_finalized"' in body
+
+    first_id = None
+    for line in body.splitlines():
+        if line.startswith("id: "):
+            first_id = line.split(": ", 1)[1]
+            break
+    assert first_id is not None
+
+    replay = client.get(
+        "/providers/webchat/accounts/acct/stream",
+        headers={
+            "X-Webchat-Client-Token": "fake-webchat-token",
+            "Last-Event-ID": first_id,
+        },
+        params={"stream_id": "stream-1"},
+    )
+    assert replay.status_code == 200
+    assert f"id: {first_id}" not in replay.text

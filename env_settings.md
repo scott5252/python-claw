@@ -1,6 +1,6 @@
 # Environment Settings Guide
 
-This document explains every setting in [.env.example](/Users/scottcornell/src/my-projects/python-claw/.env.example) and how it relates to the behavior described in the README and Specs 001 through 012.
+This document explains every setting in [.env.example](/Users/scottcornell/src/my-projects/python-claw/.env.example) and how it relates to the behavior described in the README and Specs 001 through 013.
 
 ## How configuration is loaded
 
@@ -341,6 +341,60 @@ PYTHON_CLAW_RUNTIME_TRANSCRIPT_CONTEXT_LIMIT=20
 
 ```env
 PYTHON_CLAW_RUNTIME_MODE=provider
+```
+
+### `PYTHON_CLAW_RUNTIME_STREAMING_ENABLED`
+
+- Default: `true`
+- Type: boolean
+- What it does: Enables the Spec 013 delivery-side streaming path for eligible assistant text responses. When enabled, the worker and dispatcher may expose incremental text events for supported channels such as `webchat`, while still persisting one authoritative final assistant transcript row only after the turn completes.
+- How to configure it: Keep this enabled if you want near-real-time assistant delivery on supported channels. Set it to `false` if you want to force all channels back onto the existing whole-message delivery path.
+- Important behavior note: turning this off does not disable the rest of the runtime. It only disables the additive streaming behavior and keeps whole-message dispatch as the active path.
+- Example:
+
+```env
+PYTHON_CLAW_RUNTIME_STREAMING_ENABLED=true
+```
+
+### `PYTHON_CLAW_RUNTIME_STREAMING_CHUNK_CHARS`
+
+- Default: `24`
+- Type: integer
+- Validation: must be greater than `0`
+- What it does: Sets the maximum number of text characters the backend places into each streaming delta event when the current adapter path uses streaming. In the current Spec 013 implementation, this controls how the final assistant text is broken into bounded delivery-side chunks for webchat SSE replay.
+- How to configure it: Use a smaller value if you want more frequent, shorter deltas for demos or UI experiments. Use a larger value if you want fewer, bigger partial events with less event overhead.
+- Important behavior note: this setting affects delivery granularity, not transcript persistence. The canonical transcript still stores one final assistant message regardless of chunk size.
+- Example:
+
+```env
+PYTHON_CLAW_RUNTIME_STREAMING_CHUNK_CHARS=24
+```
+
+### `PYTHON_CLAW_WEBCHAT_SSE_ENABLED`
+
+- Default: `true`
+- Type: boolean
+- What it does: Enables the authenticated `webchat` server-sent events route added in Spec 013. This route reads durable stream-event rows and exposes them as replayable SSE events scoped by `channel_account_id` and `stream_id`.
+- How to configure it: Keep this enabled when demonstrating or using the browser-style real-time delivery path. Set it to `false` if you want to keep webchat on the polling-only experience from Spec 012.
+- Important behavior note: disabling this setting does not disable webchat inbound or webchat polling. It disables only the additive SSE read surface.
+- Example:
+
+```env
+PYTHON_CLAW_WEBCHAT_SSE_ENABLED=true
+```
+
+### `PYTHON_CLAW_WEBCHAT_SSE_REPLAY_LIMIT`
+
+- Default: `100`
+- Type: integer
+- Validation: must be greater than `0`
+- What it does: Sets the configured upper bound for how many durable stream events should be replayed in one webchat SSE read window. This exists to keep reconnect and replay bounded instead of allowing an unbounded event dump in one response.
+- How to configure it: Increase it if your webchat clients need a larger replay window after reconnect. Decrease it if you want stricter per-request bounds on replay cost and response size.
+- Important behavior note: the current API route also applies its own request-time limit bounds, so this setting should be treated as the application-level default or operational cap rather than a promise of infinite replay.
+- Example:
+
+```env
+PYTHON_CLAW_WEBCHAT_SSE_REPLAY_LIMIT=100
 ```
 
 ### `PYTHON_CLAW_LLM_PROVIDER`

@@ -516,3 +516,125 @@ def test_attachment_and_delivery_records_are_append_only_and_chunk_idempotent(se
     assert attempts[0].status == "failed"
     assert attempts[1].status == "sent"
     assert attempts[0].trace_id == "trace-1"
+
+
+def test_stream_delivery_events_are_append_only_and_reconstruct_text(session_manager) -> None:
+    repository = SessionRepository()
+    routing = normalize_routing_input(
+        RoutingInput(
+            channel_kind="webchat",
+            channel_account_id="acct",
+            sender_id="sender",
+            peer_id="peer",
+        )
+    )
+
+    with session_manager.session() as db:
+        session = repository.get_or_create_session(db, routing)
+        artifact = repository.append_outbound_intent(
+            db,
+            session_id=session.id,
+            correlation_id="corr-stream",
+            payload={"text": "hello streamed world", "execution_run_id": "run-1"},
+        )
+        delivery = repository.create_or_get_outbound_delivery(
+            db,
+            session_id=session.id,
+            execution_run_id="run-1",
+            trace_id="trace-1",
+            outbound_intent_id=artifact.id,
+            channel_kind="webchat",
+            channel_account_id="acct",
+            delivery_kind="stream_text",
+            chunk_index=0,
+            chunk_count=1,
+            reply_to_external_id=None,
+            attachment_id=None,
+            delivery_payload={"streaming": True},
+        )
+        attempt_one = repository.create_outbound_delivery_attempt(
+            db,
+            outbound_delivery_id=delivery.id,
+            trace_id="trace-1",
+            provider_idempotency_key="stream-1",
+            stream_status="pending",
+        )
+        repository.append_stream_event(
+            db,
+            delivery_id=delivery.id,
+            attempt_id=attempt_one.id,
+            sequence_number=1,
+            event_kind="stream_started",
+            payload={},
+        )
+        repository.append_stream_event(
+            db,
+            delivery_id=delivery.id,
+            attempt_id=attempt_one.id,
+            sequence_number=2,
+            event_kind="text_delta",
+            payload={"text": "hello "},
+        )
+        repository.append_stream_event(
+            db,
+            delivery_id=delivery.id,
+            attempt_id=attempt_one.id,
+            sequence_number=3,
+            event_kind="text_delta",
+            payload={"text": "streamed"},
+        )
+        repository.mark_stream_attempt_state(
+            db,
+            delivery_id=delivery.id,
+            attempt_id=attempt_one.id,
+            attempt_status="failed",
+            stream_status="failed",
+            completion_reason="interrupted",
+            error_code="transport_closed",
+            error_detail="transport closed",
+            retryable=True,
+        )
+        attempt_two = repository.create_outbound_delivery_attempt(
+            db,
+            outbound_delivery_id=delivery.id,
+            trace_id="trace-1",
+            provider_idempotency_key="stream-2",
+            stream_status="pending",
+        )
+        repository.append_stream_event(
+            db,
+            delivery_id=delivery.id,
+            attempt_id=attempt_two.id,
+            sequence_number=1,
+            event_kind="stream_started",
+            payload={},
+        )
+        repository.append_stream_event(
+            db,
+            delivery_id=delivery.id,
+            attempt_id=attempt_two.id,
+            sequence_number=2,
+            event_kind="text_delta",
+            payload={"text": "hello streamed world"},
+        )
+        repository.mark_stream_attempt_state(
+            db,
+            delivery_id=delivery.id,
+            attempt_id=attempt_two.id,
+            attempt_status="sent",
+            stream_status="finalized",
+            completion_reason="completed",
+            provider_message_id="provider-1",
+            provider_metadata={"stream_id": "peer"},
+        )
+        db.commit()
+
+    with session_manager.session() as db:
+        events = repository.list_delivery_stream_events(db, delivery_id=delivery.id)
+        attempts = repository.list_outbound_delivery_attempts(db, delivery_id=delivery.id)
+        reconstructed = repository.stream_text_for_attempt(db, attempt_id=attempt_two.id)
+
+    assert delivery.id == attempts[0].outbound_delivery_id == attempts[1].outbound_delivery_id
+    assert [event.sequence_number for event in events if event.outbound_delivery_attempt_id == attempt_one.id] == [1, 2, 3]
+    assert reconstructed == "hello streamed world"
+    assert [attempt.attempt_number for attempt in attempts] == [1, 2]

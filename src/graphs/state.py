@@ -214,3 +214,6 @@ class AssistantState:
     needs_tools: bool = False
     awaiting_approval: bool = False
     bound_tools: dict[str, ToolDefinition] = field(default_factory=dict)
+    streaming_eligible: bool = False
+    streaming_used: bool = False
+    streaming_metadata: dict[str, Any] = field(default_factory=dict)

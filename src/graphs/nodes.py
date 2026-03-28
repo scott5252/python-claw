@@ -399,22 +399,38 @@ def _record_rejected_tool_request(
 
 
 def execute_turn(*, db: Session, state: AssistantState, dependencies: GraphDependencies) -> AssistantState:
+    return execute_turn_with_options(db=db, state=state, dependencies=dependencies, persist_final_message=True)
+
+
+def persist_final_state(*, db: Session, state: AssistantState, dependencies: GraphDependencies) -> AssistantState:
+    assistant_message = dependencies.repository.append_message(
+        db,
+        dependencies.repository.get_session(db, state.session_id),
+        role="assistant",
+        content=state.response_text,
+        external_message_id=None,
+        sender_id=state.agent_id,
+        last_activity_at=datetime.now(timezone.utc),
+    )
+    state.assistant_message_id = assistant_message.id
+    dependencies.context_service.persist_manifest(db=db, repository=dependencies.repository, state=state)
+    return state
+
+
+def execute_turn_with_options(
+    *,
+    db: Session,
+    state: AssistantState,
+    dependencies: GraphDependencies,
+    persist_final_message: bool,
+) -> AssistantState:
     if state.degraded:
         state.response_text = (
             "I could not safely fit the required session context into the model window for this turn. "
             "Continuity repair has been queued."
         )
-        assistant_message = dependencies.repository.append_message(
-            db,
-            dependencies.repository.get_session(db, state.session_id),
-            role="assistant",
-            content=state.response_text,
-            external_message_id=None,
-            sender_id=state.agent_id,
-            last_activity_at=datetime.now(timezone.utc),
-        )
-        state.assistant_message_id = assistant_message.id
-        dependencies.context_service.persist_manifest(db=db, repository=dependencies.repository, state=state)
+        if persist_final_message:
+            persist_final_state(db=db, state=state, dependencies=dependencies)
         return state
 
     context = _build_context(state=state, dependencies=dependencies, db=db)
@@ -680,15 +696,6 @@ def execute_turn(*, db: Session, state: AssistantState, dependencies: GraphDepen
         elif model_result is not None and not state.response_text:
             state.response_text = model_result.response_text
 
-    assistant_message = dependencies.repository.append_message(
-        db,
-        dependencies.repository.get_session(db, state.session_id),
-        role="assistant",
-        content=state.response_text,
-        external_message_id=None,
-        sender_id=state.agent_id,
-        last_activity_at=datetime.now(timezone.utc),
-    )
-    state.assistant_message_id = assistant_message.id
-    dependencies.context_service.persist_manifest(db=db, repository=dependencies.repository, state=state)
+    if persist_final_message:
+        persist_final_state(db=db, state=state, dependencies=dependencies)
     return state

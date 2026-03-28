@@ -70,6 +70,20 @@ class OutboundDispatcher:
             ]
         for artifact in artifacts:
             payload = json.loads(artifact.payload_json)
+            if self._should_stream_payload(session=session, adapter=adapter, payload=payload):
+                self._dispatch_streaming_intent(
+                    db=db,
+                    repository=repository,
+                    session=session,
+                    execution_run_id=execution_run_id,
+                    trace_id=trace_id,
+                    artifact_id=artifact.id,
+                    payload=payload,
+                    adapter=adapter,
+                    account=account,
+                    transport_address=transport_address,
+                )
+                continue
             self._dispatch_intent(
                 db=db,
                 repository=repository,
@@ -82,6 +96,226 @@ class OutboundDispatcher:
                 account=account,
                 transport_address=transport_address,
             )
+
+    def _should_stream_payload(self, *, session, adapter: ChannelAdapter, payload: dict[str, object]) -> bool:
+        if session.channel_kind != "webchat":
+            return False
+        if not self.settings.runtime_streaming_enabled:
+            return False
+        if not adapter.capabilities.supports_streaming_text:
+            return False
+        if not self.settings.webchat_sse_enabled:
+            return False
+        text = str(payload.get("text", ""))
+        if not text.strip():
+            return False
+        try:
+            directives = parse_reply_directives(text)
+        except ReplyDirectiveError:
+            return False
+        return not directives.reply_to_external_id and not directives.media_refs and not directives.voice_media_ref
+
+    def _stream_text_chunks(self, *, text: str) -> list[str]:
+        size = max(1, self.settings.runtime_streaming_chunk_chars)
+        return [text[index : index + size] for index in range(0, len(text), size)] or [text]
+
+    def _dispatch_streaming_intent(
+        self,
+        *,
+        db: Session,
+        repository,
+        session,
+        execution_run_id: str,
+        trace_id: str | None,
+        artifact_id: int,
+        payload: dict[str, object],
+        adapter: ChannelAdapter,
+        account,
+        transport_address: DurableTransportAddress,
+    ) -> None:
+        text = str(payload.get("text", ""))
+        delivery = repository.create_or_get_outbound_delivery(
+            db,
+            session_id=session.id,
+            execution_run_id=execution_run_id,
+            trace_id=trace_id,
+            outbound_intent_id=artifact_id,
+            channel_kind=session.channel_kind,
+            channel_account_id=session.channel_account_id,
+            delivery_kind="stream_text",
+            chunk_index=0,
+            chunk_count=1,
+            reply_to_external_id=None,
+            attachment_id=None,
+            delivery_payload={"streaming": True, "text": text},
+        )
+        if delivery.status == "sent":
+            return
+
+        attempt = repository.create_outbound_delivery_attempt(
+            db,
+            outbound_delivery_id=delivery.id,
+            trace_id=trace_id,
+            provider_idempotency_key=f"{artifact_id}:stream",
+            stream_status="pending",
+        )
+        provider_message_id: str | None = None
+        sequence_number = 0
+        try:
+            begin = adapter.begin_text_stream(
+                account=account,
+                transport_address=transport_address,
+                session_id=session.id,
+                provider_idempotency_key=attempt.provider_idempotency_key,
+            )
+            provider_message_id = begin.provider_message_id
+            repository.mark_stream_attempt_state(
+                db,
+                delivery_id=delivery.id,
+                attempt_id=attempt.id,
+                attempt_status="started",
+                stream_status="streaming",
+                provider_message_id=provider_message_id,
+                provider_stream_id=begin.provider_metadata.get("stream_id") if isinstance(begin.provider_metadata, dict) else None,
+                provider_metadata=begin.provider_metadata,
+            )
+            db.commit()
+
+            sequence_number += 1
+            repository.append_stream_event(
+                db,
+                delivery_id=delivery.id,
+                attempt_id=attempt.id,
+                sequence_number=sequence_number,
+                event_kind="stream_started",
+                payload={"delivery_id": delivery.id},
+            )
+            db.commit()
+
+            for delta in self._stream_text_chunks(text=text):
+                sequence_number += 1
+                event = repository.append_stream_event(
+                    db,
+                    delivery_id=delivery.id,
+                    attempt_id=attempt.id,
+                    sequence_number=sequence_number,
+                    event_kind="text_delta",
+                    payload={"text": delta},
+                )
+                db.commit()
+                adapter.append_text_delta(
+                    account=account,
+                    transport_address=transport_address,
+                    session_id=session.id,
+                    provider_message_id=provider_message_id,
+                    text=delta,
+                    sequence_number=event.sequence_number,
+                )
+
+            adapter.finalize_text_stream(
+                account=account,
+                transport_address=transport_address,
+                session_id=session.id,
+                provider_message_id=provider_message_id,
+            )
+            sequence_number += 1
+            repository.append_stream_event(
+                db,
+                delivery_id=delivery.id,
+                attempt_id=attempt.id,
+                sequence_number=sequence_number,
+                event_kind="stream_finalized",
+                payload={"final_text": text},
+            )
+            repository.mark_stream_attempt_state(
+                db,
+                delivery_id=delivery.id,
+                attempt_id=attempt.id,
+                attempt_status="sent",
+                stream_status="finalized",
+                completion_reason="completed",
+                provider_message_id=provider_message_id,
+                provider_metadata={"stream_id": transport_address.address_key, "transport_mode": "sse", "finalized": True},
+            )
+            db.commit()
+        except Exception as exc:
+            error_code = "adapter_send_failed"
+            retryable = None
+            provider_metadata: dict[str, object] | None = None
+            if isinstance(exc, ChannelSendError):
+                error_code = exc.error_code
+                retryable = exc.retryable
+                provider_metadata = exc.provider_metadata
+
+            if provider_message_id is not None:
+                try:
+                    adapter.abort_text_stream(
+                        account=account,
+                        transport_address=transport_address,
+                        session_id=session.id,
+                        provider_message_id=provider_message_id,
+                        reason=error_code,
+                    )
+                except Exception:
+                    pass
+
+            if repository.delivery_has_stream_text_delta(db, delivery_id=delivery.id):
+                repository.mark_stream_attempt_state(
+                    db,
+                    delivery_id=delivery.id,
+                    attempt_id=attempt.id,
+                    attempt_status="failed",
+                    stream_status="failed",
+                    completion_reason="post_first_delta_failure",
+                    provider_message_id=provider_message_id,
+                    provider_metadata=provider_metadata,
+                    error_code=error_code,
+                    error_detail=str(exc),
+                    retryable=retryable,
+                )
+                db.commit()
+                raise OutboundDispatchError(str(exc)) from exc
+
+            repository.mark_stream_attempt_state(
+                db,
+                delivery_id=delivery.id,
+                attempt_id=attempt.id,
+                attempt_status="failed",
+                stream_status="failed",
+                completion_reason="pre_first_delta_failure",
+                provider_message_id=provider_message_id,
+                provider_metadata=provider_metadata,
+                error_code=error_code,
+                error_detail=str(exc),
+                retryable=retryable,
+            )
+            db.commit()
+            fallback_attempt = repository.create_outbound_delivery_attempt(
+                db,
+                outbound_delivery_id=delivery.id,
+                trace_id=trace_id,
+                provider_idempotency_key=f"{artifact_id}:fallback",
+                stream_status="fallback",
+            )
+            result = adapter.send_text_chunk(
+                account=account,
+                transport_address=transport_address,
+                session_id=session.id,
+                text=text,
+                reply_to_external_id=None,
+                provider_idempotency_key=fallback_attempt.provider_idempotency_key,
+            )
+            repository.mark_stream_attempt_state(
+                db,
+                delivery_id=delivery.id,
+                attempt_id=fallback_attempt.id,
+                attempt_status="sent",
+                stream_status="fallback_sent",
+                completion_reason="fallback_whole_message",
+                provider_message_id=result.provider_message_id,
+                provider_metadata=result.provider_metadata,
+            )
+            db.commit()
 
     def _dispatch_intent(
         self,

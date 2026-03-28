@@ -4,11 +4,18 @@ from uuid import uuid4
 import json
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 
 from apps.gateway.deps import get_db, get_session_manager, get_session_service, get_settings
 from src.config.settings import Settings
 from src.db.session import DatabaseSessionManager
-from src.domain.schemas import WebchatDeliveryPollItem, WebchatDeliveryPollResponse, WebchatInboundRequest, WebchatInboundResponse
+from src.domain.schemas import (
+    WebchatDeliveryPollItem,
+    WebchatDeliveryPollResponse,
+    WebchatInboundRequest,
+    WebchatInboundResponse,
+    WebchatStreamEventPayload,
+)
 from src.sessions.repository import SessionRepository
 from src.sessions.service import SessionService
 
@@ -94,3 +101,49 @@ def poll_webchat_deliveries(
     ]
     next_after = items[-1].delivery_id if items else after_delivery_id
     return WebchatDeliveryPollResponse(items=items, next_after_delivery_id=next_after)
+
+
+@router.get("/accounts/{channel_account_id}/stream")
+def stream_webchat_deliveries(
+    channel_account_id: str,
+    stream_id: str = Query(...),
+    after_event_id: int | None = Query(default=None, ge=0),
+    last_event_id: str | None = Header(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    x_webchat_client_token: str | None = Header(default=None),
+    db=Depends(get_db),
+    settings: Settings = Depends(get_settings),
+):
+    account = settings.get_channel_account(channel_kind="webchat", channel_account_id=channel_account_id)
+    _verify_webchat_access(account=account, token=x_webchat_client_token)
+    repository = SessionRepository()
+    resolved_after = after_event_id
+    if resolved_after is None and last_event_id:
+        try:
+            resolved_after = int(last_event_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid Last-Event-ID") from exc
+    rows = repository.list_webchat_stream_events(
+        db,
+        channel_account_id=channel_account_id,
+        stream_id=stream_id,
+        after_event_id=resolved_after,
+        limit=limit,
+    )
+
+    def event_iter():
+        for row in rows:
+            payload = WebchatStreamEventPayload(
+                event_id=row.id,
+                delivery_id=row.outbound_delivery_id,
+                attempt_id=row.outbound_delivery_attempt_id,
+                sequence_number=row.sequence_number,
+                event_kind=row.event_kind,
+                payload=json.loads(row.payload_json or "{}"),
+                created_at=row.created_at,
+            )
+            yield f"id: {payload.event_id}\n"
+            yield "event: delivery\n"
+            yield f"data: {payload.model_dump_json()}\n\n"
+
+    return StreamingResponse(event_iter(), media_type="text/event-stream")

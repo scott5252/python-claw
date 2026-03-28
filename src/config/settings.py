@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     llm_tool_call_mode: str = "auto"
     llm_max_tool_requests_per_turn: int = 4
     llm_disable_tools: bool = False
+    runtime_streaming_enabled: bool = True
+    runtime_streaming_chunk_chars: int = 24
+    webchat_sse_enabled: bool = True
+    webchat_sse_replay_limit: int = 100
     execution_run_lease_seconds: int = 60
     execution_run_max_attempts: int = 5
     execution_run_backoff_seconds: int = 5
@@ -148,6 +152,10 @@ class Settings(BaseSettings):
             raise ValueError("llm_max_retries must be greater than or equal to 0")
         if self.llm_max_tool_requests_per_turn <= 0:
             raise ValueError("llm_max_tool_requests_per_turn must be greater than 0")
+        if self.runtime_streaming_chunk_chars <= 0:
+            raise ValueError("runtime_streaming_chunk_chars must be greater than 0")
+        if self.webchat_sse_replay_limit <= 0:
+            raise ValueError("webchat_sse_replay_limit must be greater than 0")
         if self.llm_max_output_tokens is not None and self.llm_max_output_tokens <= 0:
             raise ValueError("llm_max_output_tokens must be greater than 0 when set")
         if self.runtime_mode == "provider" and not self.llm_api_key:

@@ -592,6 +592,7 @@ class OutboundDeliveryRecord(Base):
     delivery_payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     provider_metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    completion_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     trace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -611,12 +612,41 @@ class OutboundDeliveryAttemptRecord(Base):
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
     provider_idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    stream_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    provider_stream_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_sequence_number: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completion_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
     provider_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     provider_metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     retryable: Mapped[bool | None] = mapped_column(nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     trace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class OutboundDeliveryStreamEventRecord(Base):
+    __tablename__ = "outbound_delivery_stream_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "outbound_delivery_attempt_id",
+            "sequence_number",
+            name="uq_outbound_delivery_stream_events_attempt_sequence",
+        ),
+        Index(
+            "ix_outbound_delivery_stream_events_attempt_sequence",
+            "outbound_delivery_attempt_id",
+            "sequence_number",
+        ),
+        Index("ix_outbound_delivery_stream_events_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    outbound_delivery_id: Mapped[int] = mapped_column(ForeignKey("outbound_deliveries.id"), nullable=False)
+    outbound_delivery_attempt_id: Mapped[int] = mapped_column(ForeignKey("outbound_delivery_attempts.id"), nullable=False)
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
