@@ -33,6 +33,7 @@ Make agent identity a durable first-class backend concept so sessions, runs, con
 - Fold existing per-agent sandbox configuration into the same durable agent-identity model instead of leaving it as an isolated side table with no primary agent registry
 - Extend `sessions` so every session has an owning agent and a declared session relationship kind suitable for future child or system sessions
 - Update inbound session creation, scheduler session creation, execution-run creation, graph invocation, context assembly, and dispatcher-owned post-turn work so they consistently resolve behavior from the owning agent profile
+- Preserve the current single-agent local-development path by modeling both `rule_based` and provider-backed runtime selection durably while still keeping credentials in deployment settings
 - Add read-only admin and diagnostics surfaces for agent profiles, model or policy linkage, enabled state, and agent-to-session relationships
 - Add migrations, seed or bootstrap behavior, and tests for agent lookup, disabled agents, profile linkage, and fail-closed runtime behavior
 
@@ -41,6 +42,7 @@ Make agent identity a durable first-class backend concept so sessions, runs, con
 - `sessions` currently have no durable `agent_id`, `owner_agent_id`, `parent_session_id`, or `session_kind` fields in [src/db/models.py](/Users/scottcornell/src/my-projects/python-claw/src/db/models.py).
 - `execution_runs`, governance records, node-execution audits, and sandbox profiles already persist `agent_id`, but they treat it as a free-form string rather than a foreign-key-backed identity.
 - Graph invocation, context assembly, policy lookup, and sandbox resolution already accept `agent_id` inputs, which means the runtime seam is present but the agent source of truth is not.
+- Runtime model selection is currently split across `Settings.runtime_mode`, `Settings.llm_provider`, and related `Settings.llm_*` fields in [src/config/settings.py](/Users/scottcornell/src/my-projects/python-claw/src/config/settings.py), with no durable per-agent profile source for `rule_based` versus provider-backed execution.
 - Admin and diagnostics routes can already filter runs by `agent_id`, but there is no read surface for agent profile definitions or for which agent owns a session.
 - `agent_sandbox_profiles` already exist from Spec 006, but they are not anchored to an explicit `agent_profiles` registry.
 
@@ -53,7 +55,6 @@ Make agent identity a durable first-class backend concept so sessions, runs, con
 - `status` with values `enabled` or `disabled`
 - `default_model_profile_id`
 - `policy_profile_id`
-- `tool_profile_id` nullable in this slice if tool policy remains settings-backed or policy-derived
 - `sandbox_profile_id` nullable when no explicit sandbox profile applies
 - `is_default` boolean with at most one active default profile
 - `created_at`
@@ -64,6 +65,7 @@ Make agent identity a durable first-class backend concept so sessions, runs, con
 
 ### `model_profiles`
 - `id` primary key
+- `runtime_mode` with values `rule_based` or `provider`
 - `provider`
 - `model_name`
 - `temperature`
@@ -76,6 +78,9 @@ Make agent identity a durable first-class backend concept so sessions, runs, con
 - `updated_at`
 - Notes:
   - this slice makes model choice durable and agent-bound
+  - `runtime_mode` is the canonical selector for whether an agent uses the deterministic local adapter or the provider-backed adapter path already present in the codebase
+  - when `runtime_mode=rule_based`, `provider` must be the stable sentinel value `rule_based`, provider credentials are ignored, and `model_name` should use a stable adapter label such as `rule-based-adapter`
+  - when `runtime_mode=provider`, `provider` and `model_name` must resolve to the existing provider adapter boundary
   - provider credentials still remain deployment settings, not database rows
 
 ### `policy_profiles`
@@ -94,6 +99,7 @@ Make agent identity a durable first-class backend concept so sessions, runs, con
 - `updated_at`
 - Notes:
   - `delegation_enabled=false` and `max_delegation_depth=0` are mandatory in this slice because actual delegation is out of scope but future policy shape must be reserved now
+  - `policy_profiles` are the only durable tool-governance source in this slice; this spec does not add a separate `tool_profiles` model
 
 ### `agent_sandbox_profiles`
 - Preserve the existing table from Spec 006 but anchor it to the durable registry
@@ -120,6 +126,7 @@ Make agent identity a durable first-class backend concept so sessions, runs, con
 - Prefer additive foreign-key constraints or validation discipline rather than broad schema rewrites
 - `execution_runs.agent_id`, governance proposal `agent_id`, and node execution audit `agent_id` must resolve to an enabled or historically valid agent profile rather than arbitrary strings
 - Historical runs and approvals must remain queryable even if an agent is later disabled
+- This slice should not require broad historical-table rewrites just to make the app runnable after migration; new writes must use registry-backed agents, while older rows remain readable through additive validation or targeted backfill
 
 ## Contracts
 ### Agent Resolution Contract
@@ -154,6 +161,10 @@ Make agent identity a durable first-class backend concept so sessions, runs, con
 ### Model Profile Contract
 - Runtime model selection must move from global settings-only selection to agent-resolved profile selection.
 - The provider adapter boundary in [src/providers/models.py](/Users/scottcornell/src/my-projects/python-claw/src/providers/models.py) remains intact, but the selected provider and model settings must come from the resolved model profile plus deployment credentials.
+- The model profile must be sufficient to preserve both currently supported runtime modes:
+  - `rule_based` for local development, tests, and fail-safe single-agent operation
+  - `provider` for the provider-backed path introduced in earlier specs
+- Runtime code may still read deployment settings for credentials and environment-level ceilings, but it may not decide `rule_based` versus `provider` execution from global settings alone once this spec lands.
 - Credentials, secrets, and base URLs remain deployment-configured, not stored in model-profile rows.
 - A disabled or missing model profile must fail the run safely before provider invocation.
 
@@ -161,12 +172,37 @@ Make agent identity a durable first-class backend concept so sessions, runs, con
 - Tool exposure, governed-action eligibility, and future delegation permissions must resolve from the session owner’s linked policy profile.
 - Deterministic approval and revocation handling remain in [src/policies/service.py](/Users/scottcornell/src/my-projects/python-claw/src/policies/service.py).
 - This slice may keep current tool-governance logic internally, but the selected policy profile must become the explicit runtime input that decides what the policy service exposes or denies.
+- `policy_profiles.tool_allowlist_json` is the only durable per-agent tool-governance input added in this slice.
 - A disabled or missing policy profile must fail closed before model or tool execution begins.
 
 ### Sandbox Profile Contract
 - Sandbox resolution continues to work through [src/sandbox/service.py](/Users/scottcornell/src/my-projects/python-claw/src/sandbox/service.py), but profile lookup must be anchored in the resolved agent profile rather than a free-floating `agent_id` string assumption.
 - Existing Spec 006 behavior for `off`, `shared`, and `agent` sandbox modes remains unchanged.
 - This slice does not add per-run sandbox overrides or child-session sandbox inheritance rules beyond reserving clean ownership boundaries for Spec 015.
+
+### Scheduler Resolution Contract
+- Scheduler-created work must obey the same durable session-ownership rules as inbound work.
+- For `scheduled_job.target_kind=session`:
+  - the existing session owner is authoritative
+  - any explicit scheduler `agent_id` must either match `sessions.owner_agent_id` or fail closed before run creation
+  - created runs must use the session owner as `execution_runs.agent_id`
+- For `scheduled_job.target_kind=routing_tuple`:
+  - the scheduler must provide one explicit target `agent_id`
+  - that agent must resolve to an enabled agent profile before session lookup or creation
+  - if routing resolves to an existing session with a different owner, the fire must fail closed rather than reassigning the session
+  - if routing creates a new session, that session must be created with `owner_agent_id` equal to the validated scheduler agent
+
+### Bootstrap And Cutover Contract
+- The rollout must be staged so the application remains runnable before, during, and after migration.
+- The migration or bootstrap path must idempotently ensure:
+  - one enabled default `agent_profiles` row keyed by the configured bootstrap `default_agent_id`
+  - one enabled linked `model_profiles` row derived from the current runtime defaults
+  - one enabled linked `policy_profiles` row derived from the current single-agent policy defaults
+- Backfill rules for existing rows in this slice are:
+  - existing `sessions` are backfilled to the durable default agent, `session_kind=primary`, `parent_session_id=null`, and `origin_kind` set only when it can be inferred safely
+  - existing `execution_runs` created from the historical single-agent path must remain readable and should be backfilled to the default agent where needed for consistency
+  - broader historical governance and audit tables may use additive validation instead of mandatory foreign-key rewrites in the same migration, as long as post-cutover runtime writes are registry-backed
+- Until bootstrap validation succeeds, readiness must fail closed and new inbound or scheduler work must not proceed.
 
 ### Diagnostics and Admin Contract
 - Add read-only admin surfaces for:
@@ -291,10 +327,67 @@ Selected option:
 Decision:
 - This slice adds the minimum durable session relationship model needed to support future child sessions cleanly, without creating any delegation flow yet.
 
+### Gap 9: Runtime mode must stay compatible with existing `rule_based` and provider-backed execution
+Options considered:
+- Option A: keep runtime mode selection global in `Settings` and make model profiles provider-only
+- Option B: make every agent provider-backed and remove the `rule_based` path
+- Option C: add a durable `runtime_mode` to `model_profiles` so agent resolution selects either `rule_based` or provider-backed execution while credentials remain settings-owned
+- Option D: encode runtime mode indirectly inside free-form `provider` strings only
+
+Selected option:
+- Option C
+
+Decision:
+- `model_profiles` become the durable source for `rule_based` versus provider-backed execution.
+- This preserves current local and CI behavior while still moving agent behavior out of global settings.
+
+### Gap 10: Bootstrap and migration cutover are too ambiguous for a safe rollout
+Options considered:
+- Option A: require operators to seed agent, model, and policy rows manually before deploying code
+- Option B: let runtime lazily create missing rows during the first inbound request
+- Option C: define an idempotent migration or bootstrap contract that seeds or validates the default linked profiles before runtime traffic is accepted
+- Option D: defer durable-agent enforcement until a later cleanup release
+
+Selected option:
+- Option C
+
+Decision:
+- This spec now requires an explicit bootstrap and cutover contract.
+- The application must fail readiness closed until the default durable agent stack exists and session backfill has completed safely.
+
+### Gap 11: Scheduler agent targeting versus session ownership is underspecified
+Options considered:
+- Option A: let scheduler fires override session ownership freely
+- Option B: ignore scheduler `agent_id` and always use the default agent
+- Option C: define explicit precedence rules where existing session ownership wins, routing-tuple jobs require a validated target agent, and ownership conflicts fail closed
+- Option D: remove scheduler-created sessions from this slice
+
+Selected option:
+- Option C
+
+Decision:
+- Scheduler behavior now follows one explicit ownership contract aligned with inbound sessions.
+- This prevents silent session reassignment and run-agent drift.
+
+### Gap 12: `tool_profile_id` creates an overlapping tool-governance model with no runtime contract
+Options considered:
+- Option A: keep `tool_profile_id` and invent a second tool-governance profile in this slice
+- Option B: keep `tool_profile_id` as an undocumented reserved nullable field
+- Option C: remove `tool_profile_id` from this slice and make `policy_profiles` the only durable tool-governance source
+- Option D: move all tool-governance rules out of policy profiles and into a new tool-profile model
+
+Selected option:
+- Option C
+
+Decision:
+- This slice keeps tool-governance durable but single-sourced through `policy_profiles`.
+- A separate tool-profile layer can still be added later if a real need emerges, without making this implementation ambiguous.
+
 ## Runtime Invariants
 - Every session has exactly one owning agent profile.
 - New inbound sessions resolve ownership through the default enabled durable agent profile.
 - New runs for an existing session reuse the session owner.
+- Scheduler-created sessions and runs obey explicit ownership precedence and may not reassign an existing session silently.
 - Disabled or missing linked profiles fail closed before model or tool execution.
 - Session ownership is durable and does not change as part of ordinary message handling in this slice.
 - Admin and diagnostics views can explain which agent profile a session or run used.
@@ -314,6 +407,7 @@ Decision:
 - Diagnostics should distinguish configuration errors such as missing default agent profile, disabled linked profile, or invalid session owner from provider or tool failures.
 - Seed or bootstrap behavior must work in local development and CI without manual database setup beyond normal migrations.
 - The implementation should prefer additive schema changes and staged runtime cutover so the application remains runnable throughout rollout.
+- The durable model-profile shape must preserve the current `rule_based` runtime path so local development and CI remain runnable without live provider credentials.
 
 ## Acceptance Criteria
 - The database contains a durable enabled default agent profile linked to valid model and policy profiles after migration or bootstrap.
@@ -321,8 +415,10 @@ Decision:
 - Inbound processing resolves the session owner from the durable default agent profile instead of using `Settings.default_agent_id` directly during run creation.
 - Execution runs created for a session use that session’s `owner_agent_id`.
 - Graph invocation, context assembly, policy binding, provider model selection, and sandbox resolution all consume the resolved owning agent profile.
+- The durable model-profile contract can represent both current `rule_based` execution and provider-backed execution without relying on global runtime-mode selection.
 - Disabled agents cannot receive new session or run creation, but historical runs and sessions remain readable.
 - Missing linked model or policy profiles fail closed with bounded diagnostics rather than silently falling back.
+- Scheduler fires either honor the existing session owner or fail closed on ownership mismatch; they do not silently reassign sessions.
 - Operator read surfaces can list agent profiles and inspect agent-to-session ownership relationships.
 - Existing single-agent behavior remains functionally intact when only one enabled default agent profile exists.
 
@@ -332,6 +428,8 @@ Decision:
 - Session-service tests proving inbound session creation and run creation resolve through the durable default agent profile
 - Scheduler tests proving explicit scheduler agent targeting validates against the registry and preserves session or run ownership rules
 - Runtime tests proving graph invocation, context assembly, policy inputs, provider model selection, and sandbox lookup all use the resolved agent profile
+- Runtime-selection tests proving agent-linked model profiles correctly preserve both `rule_based` and provider-backed execution behavior
 - Failure-path tests for disabled agents, missing default agent profile, missing linked model profile, missing linked policy profile, and inconsistent session-owner or run-agent combinations
+- Bootstrap and readiness tests proving the app fails closed until the default linked profile stack exists and then becomes runnable once bootstrap succeeds
 - API tests for new agent admin or diagnostics read surfaces and for existing session or run surfaces returning the new ownership metadata where appropriate
 - Regression tests proving current single-agent flows still pass when one default enabled profile is configured
