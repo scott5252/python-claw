@@ -39,6 +39,55 @@ class ChannelAccountConfig(BaseModel):
         return self
 
 
+class PolicyProfileConfig(BaseModel):
+    key: str
+    remote_execution_enabled: bool = False
+    denied_capability_names: list[str] = Field(default_factory=list)
+    delegation_enabled: bool = False
+
+    @model_validator(mode="after")
+    def validate_policy_profile(self) -> "PolicyProfileConfig":
+        self.key = self.key.strip()
+        if not self.key:
+            raise ValueError("policy profile key must not be empty")
+        self.denied_capability_names = sorted({item.strip() for item in self.denied_capability_names if item.strip()})
+        return self
+
+
+class ToolProfileConfig(BaseModel):
+    key: str
+    allowed_capability_names: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_tool_profile(self) -> "ToolProfileConfig":
+        self.key = self.key.strip()
+        if not self.key:
+            raise ValueError("tool profile key must not be empty")
+        self.allowed_capability_names = sorted({item.strip() for item in self.allowed_capability_names if item.strip()})
+        if not self.allowed_capability_names:
+            raise ValueError("tool profile allowed_capability_names must not be empty")
+        return self
+
+
+class HistoricalAgentProfileOverrideConfig(BaseModel):
+    agent_id: str
+    model_profile_key: str = "default"
+    policy_profile_key: str = "default"
+    tool_profile_key: str = "default"
+
+    @model_validator(mode="after")
+    def validate_override(self) -> "HistoricalAgentProfileOverrideConfig":
+        self.agent_id = self.agent_id.strip()
+        if not self.agent_id:
+            raise ValueError("historical agent override agent_id must not be empty")
+        self.model_profile_key = self.model_profile_key.strip()
+        self.policy_profile_key = self.policy_profile_key.strip()
+        self.tool_profile_key = self.tool_profile_key.strip()
+        if not self.model_profile_key or not self.policy_profile_key or not self.tool_profile_key:
+            raise ValueError("historical agent override profile keys must not be empty")
+        return self
+
+
 def _default_channel_accounts() -> list[ChannelAccountConfig]:
     account_ids = ("acct", "acct-1")
     channel_kinds = ("slack", "telegram", "webchat")
@@ -49,8 +98,24 @@ def _default_channel_accounts() -> list[ChannelAccountConfig]:
     ]
 
 
+def _default_policy_profiles() -> list[PolicyProfileConfig]:
+    return [PolicyProfileConfig(key="default", remote_execution_enabled=False, denied_capability_names=[])]
+
+
+def _default_tool_profiles() -> list[ToolProfileConfig]:
+    return [
+        ToolProfileConfig(
+            key="default",
+            allowed_capability_names=["echo_text", "remote_exec", "send_message"],
+        )
+    ]
+
+
 class Settings(BaseSettings):
     _channel_account_lookup: dict[tuple[str, str], ChannelAccountConfig] = PrivateAttr(default_factory=dict)
+    _policy_profile_lookup: dict[str, PolicyProfileConfig] = PrivateAttr(default_factory=dict)
+    _tool_profile_lookup: dict[str, ToolProfileConfig] = PrivateAttr(default_factory=dict)
+    _historical_agent_override_lookup: dict[str, HistoricalAgentProfileOverrideConfig] = PrivateAttr(default_factory=dict)
 
     app_name: str = "python-claw-gateway"
     database_url: str = "postgresql+psycopg://openassistant:openassistant@localhost:5432/openassistant"
@@ -134,6 +199,9 @@ class Settings(BaseSettings):
     node_execution_stale_after_seconds: int = 300
     attachment_stale_after_seconds: int = 300
     channel_accounts: list[ChannelAccountConfig] = Field(default_factory=_default_channel_accounts)
+    policy_profiles: list[PolicyProfileConfig] = Field(default_factory=_default_policy_profiles)
+    tool_profiles: list[ToolProfileConfig] = Field(default_factory=_default_tool_profiles)
+    historical_agent_profile_overrides: list[HistoricalAgentProfileOverrideConfig] = Field(default_factory=list)
 
     model_config = SettingsConfigDict(
         env_prefix="PYTHON_CLAW_",
@@ -192,6 +260,32 @@ class Settings(BaseSettings):
                 raise ValueError(f"duplicate channel account configured for {account.channel_kind}:{account.channel_account_id}")
             lookup[key] = account
         self._channel_account_lookup = lookup
+        policy_lookup: dict[str, PolicyProfileConfig] = {}
+        for profile in self.policy_profiles:
+            if profile.key in policy_lookup:
+                raise ValueError(f"duplicate policy profile configured for {profile.key}")
+            policy_lookup[profile.key] = profile
+        tool_lookup: dict[str, ToolProfileConfig] = {}
+        for profile in self.tool_profiles:
+            if profile.key in tool_lookup:
+                raise ValueError(f"duplicate tool profile configured for {profile.key}")
+            tool_lookup[profile.key] = profile
+        override_lookup: dict[str, HistoricalAgentProfileOverrideConfig] = {}
+        for override in self.historical_agent_profile_overrides:
+            if override.agent_id in override_lookup:
+                raise ValueError(f"duplicate historical agent override configured for {override.agent_id}")
+            if override.policy_profile_key not in policy_lookup:
+                raise ValueError(f"unknown policy profile for historical override {override.agent_id}")
+            if override.tool_profile_key not in tool_lookup:
+                raise ValueError(f"unknown tool profile for historical override {override.agent_id}")
+            override_lookup[override.agent_id] = override
+        if "default" not in policy_lookup:
+            raise ValueError("default policy profile must be configured")
+        if "default" not in tool_lookup:
+            raise ValueError("default tool profile must be configured")
+        self._policy_profile_lookup = policy_lookup
+        self._tool_profile_lookup = tool_lookup
+        self._historical_agent_override_lookup = override_lookup
         return self
 
     def get_channel_account(self, *, channel_kind: str, channel_account_id: str) -> ChannelAccountConfig:
@@ -200,6 +294,21 @@ class Settings(BaseSettings):
         if account is None:
             raise ValueError(f"channel account not configured for {key[0]}:{key[1]}")
         return account
+
+    def get_policy_profile(self, key: str) -> PolicyProfileConfig:
+        profile = self._policy_profile_lookup.get(key.strip())
+        if profile is None:
+            raise ValueError(f"policy profile not configured for {key.strip()}")
+        return profile
+
+    def get_tool_profile(self, key: str) -> ToolProfileConfig:
+        profile = self._tool_profile_lookup.get(key.strip())
+        if profile is None:
+            raise ValueError(f"tool profile not configured for {key.strip()}")
+        return profile
+
+    def get_historical_agent_override(self, agent_id: str) -> HistoricalAgentProfileOverrideConfig | None:
+        return self._historical_agent_override_lookup.get(agent_id.strip())
 
 
 @lru_cache

@@ -1,6 +1,11 @@
 from fastapi import FastAPI
 
-from apps.gateway.deps import create_run_execution_service, create_scheduler_service, create_session_service
+from apps.gateway.deps import (
+    bootstrap_runtime_state,
+    create_run_execution_service,
+    create_scheduler_service,
+    create_session_service,
+)
 from apps.gateway.api.admin import router as admin_router
 from apps.gateway.api.health import router as health_router
 from apps.gateway.api.inbound import router as inbound_router
@@ -8,6 +13,7 @@ from apps.gateway.api.slack import router as slack_router
 from apps.gateway.api.telegram import router as telegram_router
 from apps.gateway.api.webchat import router as webchat_router
 from src.config.settings import Settings, get_settings
+from src.db.base import Base
 from src.db.session import DatabaseSessionManager
 
 
@@ -20,6 +26,8 @@ def create_app(
     app = FastAPI(title=resolved_settings.app_name)
     app.state.settings = resolved_settings
     app.state.session_manager = session_manager or DatabaseSessionManager(resolved_settings.database_url)
+    Base.metadata.create_all(app.state.session_manager.engine)
+    bootstrap_runtime_state(settings=resolved_settings, session_manager=app.state.session_manager)
     app.state.session_service = create_session_service(resolved_settings)
     app.state.run_execution_service = create_run_execution_service(resolved_settings)
     app.state.scheduler_service = create_scheduler_service(resolved_settings)

@@ -7,9 +7,12 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from src.agents.service import AgentProfileService
 from src.domain.schemas import (
+    AgentProfileResponse,
     ExecutionRunResponse,
     MessagePageResponse,
+    ModelProfileResponse,
     PendingApprovalResponse,
     SessionResponse,
     SessionRunPageResponse,
@@ -42,8 +45,8 @@ class SessionService:
         *,
         repository: SessionRepository,
         jobs_repository: JobsRepository,
+        agent_profile_service: AgentProfileService,
         idempotency_service: IdempotencyService,
-        default_agent_id: str,
         dedupe_retention_days: int,
         dedupe_stale_after_seconds: int,
         messages_page_default_limit: int,
@@ -54,8 +57,8 @@ class SessionService:
     ):
         self.repository = repository
         self.jobs_repository = jobs_repository
+        self.agent_profile_service = agent_profile_service
         self.idempotency_service = idempotency_service
-        self.default_agent_id = default_agent_id
         self.dedupe_retention_days = dedupe_retention_days
         self.dedupe_stale_after_seconds = dedupe_stale_after_seconds
         self.messages_page_default_limit = messages_page_default_limit
@@ -120,7 +123,18 @@ class SessionService:
             raise IdempotencyConflictError("dedupe claim is already in progress")
 
         now = datetime.now(timezone.utc)
-        session = self.repository.get_or_create_session(db, routing)
+        session = self.repository.get_session_by_key(db, session_key=routing.session_key)
+        binding = None
+        if session is None:
+            binding = self.agent_profile_service.resolve_bootstrap_binding(db)
+            session = self.repository.get_or_create_session(
+                db,
+                routing,
+                owner_agent_id=binding.agent_id,
+                session_kind=binding.session_kind,
+            )
+        else:
+            binding = self.agent_profile_service.resolve_binding_for_session(db, session=session)
         if transport_address_key and transport_address:
             self.repository.update_session_transport_address(
                 db,
@@ -148,7 +162,10 @@ class SessionService:
             db,
             session_id=session.id,
             message_id=message.id,
-            agent_id=self.default_agent_id,
+            agent_id=binding.agent_id,
+            model_profile_key=binding.model_profile_key,
+            policy_profile_key=binding.policy_profile_key,
+            tool_profile_key=binding.tool_profile_key,
             trigger_kind="inbound_message",
             trigger_ref=str(message.id),
             lane_key=session.id,
@@ -187,6 +204,9 @@ class SessionService:
         if existing_run is not None:
             return existing_run.id, existing_run.status
         session = self._resolve_scheduler_session(db, scheduled_job=scheduled_job)
+        binding = self.agent_profile_service.resolve_binding_for_session(db, session=session)
+        if scheduled_job.agent_id and scheduled_job.agent_id != binding.agent_id:
+            raise RuntimeError("scheduled job agent_id does not match resolved session owner")
         content = json.dumps(payload, sort_keys=True)
         message = self.repository.append_message(
             db,
@@ -201,7 +221,10 @@ class SessionService:
             db,
             session_id=session.id,
             message_id=message.id,
-            agent_id=scheduled_job.agent_id,
+            agent_id=binding.agent_id,
+            model_profile_key=binding.model_profile_key,
+            policy_profile_key=binding.policy_profile_key,
+            tool_profile_key=binding.tool_profile_key,
             trigger_kind="scheduler_fire",
             trigger_ref=fire.fire_key,
             lane_key=session.id,
@@ -230,7 +253,12 @@ class SessionService:
                 group_id=scheduled_job.group_id,
             )
         )
-        return self.repository.get_or_create_session(db, routing)
+        return self.repository.get_or_create_session(
+            db,
+            routing,
+            owner_agent_id=self.agent_profile_service.resolve_bootstrap_binding(db).agent_id,
+            session_kind="primary",
+        )
 
     def get_session(self, db: Session, session_id: str) -> SessionResponse | None:
         session = self.repository.get_session(db, session_id)
@@ -303,3 +331,33 @@ class SessionService:
         return SessionRunPageResponse(
             items=[ExecutionRunResponse.model_validate(run, from_attributes=True) for run in runs]
         )
+
+    def list_agents(self, db: Session) -> list[AgentProfileResponse]:
+        return [
+            AgentProfileResponse.model_validate(item, from_attributes=True)
+            for item in self.agent_profile_service.repository.list_agent_profiles(db)
+        ]
+
+    def get_agent(self, db: Session, *, agent_id: str) -> AgentProfileResponse | None:
+        item = self.agent_profile_service.repository.get_agent_profile(db, agent_id=agent_id)
+        if item is None:
+            return None
+        return AgentProfileResponse.model_validate(item, from_attributes=True)
+
+    def list_agent_sessions(self, db: Session, *, agent_id: str) -> list[SessionResponse]:
+        return [
+            SessionResponse.model_validate(item, from_attributes=True)
+            for item in self.repository.list_sessions_by_owner(db, owner_agent_id=agent_id)
+        ]
+
+    def list_model_profiles(self, db: Session) -> list[ModelProfileResponse]:
+        return [
+            ModelProfileResponse.model_validate(item, from_attributes=True)
+            for item in self.agent_profile_service.repository.list_model_profiles(db)
+        ]
+
+    def get_model_profile(self, db: Session, *, profile_key: str) -> ModelProfileResponse | None:
+        item = self.agent_profile_service.repository.get_model_profile_by_key(db, profile_key=profile_key)
+        if item is None:
+            return None
+        return ModelProfileResponse.model_validate(item, from_attributes=True)

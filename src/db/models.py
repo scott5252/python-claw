@@ -49,6 +49,63 @@ class NodeExecutionStatus(str, Enum):
     TIMED_OUT = "timed_out"
 
 
+class SessionKind(str, Enum):
+    PRIMARY = "primary"
+    CHILD = "child"
+    SYSTEM = "system"
+
+
+class ModelRuntimeMode(str, Enum):
+    RULE_BASED = "rule_based"
+    PROVIDER = "provider"
+
+
+class ModelProfileRecord(Base):
+    __tablename__ = "model_profiles"
+    __table_args__ = (
+        UniqueConstraint("profile_key", name="uq_model_profiles_profile_key"),
+        Index("ix_model_profiles_enabled_runtime_mode", "enabled", "runtime_mode"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    profile_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    runtime_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    temperature: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    max_output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    tool_call_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    streaming_enabled: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    enabled: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    base_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class AgentProfileRecord(Base):
+    __tablename__ = "agent_profiles"
+    __table_args__ = (
+        UniqueConstraint("agent_id", name="uq_agent_profiles_agent_id"),
+        Index("ix_agent_profiles_enabled_role_kind", "enabled", "role_kind"),
+        Index("ix_agent_profiles_default_model_profile_id", "default_model_profile_id"),
+    )
+
+    agent_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    role_kind: Mapped[str] = mapped_column(String(64), nullable=False, default="assistant")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    default_model_profile_id: Mapped[int] = mapped_column(ForeignKey("model_profiles.id"), nullable=False)
+    policy_profile_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    tool_profile_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    enabled: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+    default_model_profile: Mapped["ModelProfileRecord"] = relationship()
+
+
 class SessionRecord(Base):
     __tablename__ = "sessions"
     __table_args__ = (
@@ -67,6 +124,9 @@ class SessionRecord(Base):
             "group_id",
         ),
         Index("ix_sessions_transport_address", "channel_kind", "channel_account_id", "transport_address_key"),
+        Index("ix_sessions_owner_agent_created", "owner_agent_id", "created_at"),
+        Index("ix_sessions_parent_created", "parent_session_id", "created_at"),
+        Index("ix_sessions_session_kind_created", "session_kind", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
@@ -77,6 +137,13 @@ class SessionRecord(Base):
     peer_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     group_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     scope_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    owner_agent_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_profiles.agent_id"),
+        nullable=False,
+        default="default-agent",
+    )
+    session_kind: Mapped[str] = mapped_column(String(16), nullable=False, default=SessionKind.PRIMARY.value)
+    parent_session_id: Mapped[str | None] = mapped_column(ForeignKey("sessions.id"), nullable=True)
     transport_address_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     transport_address_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
@@ -217,12 +284,17 @@ class ExecutionRunRecord(Base):
         Index("ix_execution_runs_lane_status_available", "lane_key", "status", "available_at"),
         Index("ix_execution_runs_worker_status", "worker_id", "status"),
         Index("ix_execution_runs_status_updated", "status", "updated_at"),
+        Index("ix_execution_runs_agent_created", "agent_id", "created_at"),
+        Index("ix_execution_runs_model_profile_created", "model_profile_key", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
     message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id"), nullable=True)
     agent_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    model_profile_key: Mapped[str] = mapped_column(String(255), nullable=False, default="default")
+    policy_profile_key: Mapped[str] = mapped_column(String(255), nullable=False, default="default")
+    tool_profile_key: Mapped[str] = mapped_column(String(255), nullable=False, default="default")
     trigger_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     trigger_ref: Mapped[str] = mapped_column(String(255), nullable=False)
     lane_key: Mapped[str] = mapped_column(String(255), nullable=False)

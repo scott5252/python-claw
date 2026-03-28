@@ -9,6 +9,7 @@ from typing import Iterator
 
 import httpx
 
+from src.agents.service import ResolvedModelProfile
 from src.config.settings import Settings
 from src.graphs.state import (
     AssistantState,
@@ -33,6 +34,7 @@ class ProviderClient:
         *,
         prompt: dict[str, object],
         tools: list[dict[str, object]],
+        runtime_model: ResolvedModelProfile,
         settings: Settings,
     ) -> dict[str, object]:
         raise NotImplementedError
@@ -45,6 +47,7 @@ class OpenAIResponsesClient(ProviderClient):
         *,
         prompt: dict[str, object],
         tools: list[dict[str, object]],
+        runtime_model: ResolvedModelProfile,
         settings: Settings,
     ) -> dict[str, object]:
         try:
@@ -56,12 +59,16 @@ class OpenAIResponsesClient(ProviderClient):
                 detail="openai dependency is not installed",
             ) from exc
 
-        client = OpenAI(api_key=settings.llm_api_key, base_url=settings.llm_base_url or None, timeout=settings.llm_timeout_seconds)
+        client = OpenAI(
+            api_key=settings.llm_api_key,
+            base_url=runtime_model.base_url or settings.llm_base_url or None,
+            timeout=runtime_model.timeout_seconds,
+        )
         try:
             response = client.responses.create(
-                model=settings.llm_model,
-                temperature=settings.llm_temperature,
-                max_output_tokens=settings.llm_max_output_tokens,
+                model=runtime_model.model_name,
+                temperature=runtime_model.temperature,
+                max_output_tokens=runtime_model.max_output_tokens,
                 input=prompt["input"],
                 tools=tools or None,
             )
@@ -228,6 +235,7 @@ def _coerce_text(response: dict[str, object]) -> str:
 @dataclass
 class ProviderBackedModelAdapter(ModelAdapter):
     settings: Settings
+    model_profile: ResolvedModelProfile
     client: ProviderClient | None = None
     _default_client: ProviderClient = field(init=False, repr=False)
     _base_retry_delay_seconds: float = field(default=1.0, init=False, repr=False)
@@ -246,7 +254,7 @@ class ProviderBackedModelAdapter(ModelAdapter):
 
     def complete_turn(self, *, state: AssistantState, available_tools: list[str]) -> ModelTurnResult:
         prompt = _serialize_prompt(state)
-        tool_mode = "none" if self.settings.llm_disable_tools else self.settings.llm_tool_call_mode
+        tool_mode = "none" if self.settings.llm_disable_tools else self.model_profile.tool_call_mode
         tools = [] if tool_mode == "none" else _tool_schema_for_prompt(state, available_tools)
         client = self.client or self._default_client
 
@@ -254,7 +262,12 @@ class ProviderBackedModelAdapter(ModelAdapter):
         while True:
             attempts += 1
             try:
-                response = client.create_response(prompt=prompt, tools=tools, settings=self.settings)
+                response = client.create_response(
+                    prompt=prompt,
+                    tools=tools,
+                    runtime_model=self.model_profile,
+                    settings=self.settings,
+                )
                 return self._translate_response(
                     response=response,
                     available_tools=available_tools,
@@ -369,8 +382,8 @@ class ProviderBackedModelAdapter(ModelAdapter):
             tool_requests=tool_requests,
             response_text=response_text,
             execution_metadata={
-                "provider_name": self.settings.llm_provider,
-                "model_name": self.settings.llm_model,
+                "provider_name": self.model_profile.provider or self.settings.llm_provider,
+                "model_name": self.model_profile.model_name,
                 "prompt_strategy_id": state.llm_prompt.metadata["prompt_strategy_id"] if state.llm_prompt else "provider-runtime-v1",
                 "tool_call_mode": tool_mode,
                 "provider_attempt_count": attempts,

@@ -188,6 +188,8 @@ class ToolRuntimeContext:
     sender_id: str
     policy_context: dict[str, Any]
     runtime_services: ToolRuntimeServices
+    policy_profile_key: str = ""
+    tool_profile_key: str = ""
 
 
 @dataclass
@@ -199,6 +201,10 @@ class AssistantState:
     sender_id: str
     user_text: str
     messages: list[ConversationMessage]
+    session_kind: str = "primary"
+    model_profile_key: str = ""
+    policy_profile_key: str = ""
+    tool_profile_key: str = ""
     summary_context: SummaryContext | None = None
     memory_items: list[MemoryContextItem] = field(default_factory=list)
     retrieval_items: list[RetrievalContextItem] = field(default_factory=list)

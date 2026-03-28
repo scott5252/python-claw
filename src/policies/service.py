@@ -90,6 +90,9 @@ class TurnClassification:
 class PolicyService:
     denied_capabilities: set[str] = field(default_factory=set)
     remote_execution_enabled: bool = False
+    allowed_capabilities: set[str] | None = None
+    policy_profile_key: str = ""
+    tool_profile_key: str = ""
 
     def classify_turn(self, *, user_text: str) -> TurnClassification:
         lowered = user_text.strip().lower()
@@ -198,6 +201,8 @@ class PolicyService:
 
     def is_tool_visible(self, *, context: ToolRuntimeContext, capability_name: str) -> bool:
         _ = context
+        if self.allowed_capabilities is not None and capability_name not in self.allowed_capabilities:
+            return False
         if capability_name in self.denied_capabilities:
             return False
         if capability_name == "remote_exec" and not self.remote_execution_enabled:

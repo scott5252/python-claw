@@ -217,7 +217,7 @@ def test_worker_persists_assistant_message_after_dispatch(session_manager) -> No
             db,
             session_id=session_id,
             message_id=message_id,
-            agent_id="agent-1",
+            agent_id="default-agent",
             trigger_kind="inbound_message",
             trigger_ref="run-test-1",
             lane_key=session_id,

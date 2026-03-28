@@ -5,6 +5,9 @@ from pathlib import Path
 from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
+from src.agents.bootstrap import bootstrap_agent_profiles
+from src.agents.repository import AgentRepository
+from src.agents.service import AgentExecutionBinding, AgentProfileService
 from src.config.settings import Settings
 from src.capabilities.repository import CapabilitiesRepository
 from src.channels.dispatch_registry import build_dispatcher
@@ -41,12 +44,12 @@ from apps.node_runner.executor import NodeRunnerExecutor
 from apps.node_runner.policy import NodeRunnerPolicy
 
 
-def _build_model_adapter(settings: Settings):
-    if settings.runtime_mode == "rule_based":
+def _build_model_adapter(settings: Settings, *, binding: AgentExecutionBinding):
+    if binding.model.runtime_mode == "rule_based":
         return RuleBasedModelAdapter()
-    if settings.runtime_mode == "provider":
-        return ProviderBackedModelAdapter(settings=settings)
-    raise ValueError(f"unsupported runtime mode: {settings.runtime_mode}")
+    if binding.model.runtime_mode == "provider":
+        return ProviderBackedModelAdapter(settings=settings, model_profile=binding.model)
+    raise ValueError(f"unsupported runtime mode: {binding.model.runtime_mode}")
 
 
 def get_settings(request: Request) -> Settings:
@@ -64,7 +67,7 @@ def get_db(
         yield db
 
 
-def build_assistant_graph(settings: Settings, repository: SessionRepository):
+def build_assistant_graph(settings: Settings, repository: SessionRepository, *, binding: AgentExecutionBinding):
     capability_repository = CapabilitiesRepository()
     signing_service = SigningService({settings.node_runner_signing_key_id: settings.node_runner_signing_secret})
     audit_repository = ExecutionAuditRepository()
@@ -103,7 +106,13 @@ def build_assistant_graph(settings: Settings, repository: SessionRepository):
         signing_service=signing_service,
         runner_client=runner_client,
     )
-    policy_service = PolicyService(remote_execution_enabled=settings.remote_execution_enabled)
+    policy_service = PolicyService(
+        denied_capabilities=set(binding.policy_profile.denied_capability_names),
+        remote_execution_enabled=binding.policy_profile.remote_execution_enabled,
+        allowed_capabilities=set(binding.tool_profile.allowed_capability_names),
+        policy_profile_key=binding.policy_profile_key,
+        tool_profile_key=binding.tool_profile_key,
+    )
     retrieval_service = RetrievalService(
         strategy_id=settings.retrieval_strategy_id,
         chunk_chars=settings.retrieval_chunk_chars,
@@ -113,7 +122,7 @@ def build_assistant_graph(settings: Settings, repository: SessionRepository):
         GraphDependencies(
             repository=repository,
             policy_service=policy_service,
-            model=_build_model_adapter(settings),
+            model=_build_model_adapter(settings, binding=binding),
             tool_registry=ToolRegistry(
                 factories={
                     "echo_text": create_echo_text_tool,
@@ -135,11 +144,12 @@ def build_assistant_graph(settings: Settings, repository: SessionRepository):
 
 def create_session_service(settings: Settings) -> SessionService:
     repository = SessionRepository()
+    agent_profile_service = AgentProfileService(repository=AgentRepository(), settings=settings)
     return SessionService(
         repository=repository,
         jobs_repository=JobsRepository(),
+        agent_profile_service=agent_profile_service,
         idempotency_service=IdempotencyService(),
-        default_agent_id=settings.default_agent_id,
         dedupe_retention_days=settings.dedupe_retention_days,
         dedupe_stale_after_seconds=settings.dedupe_stale_after_seconds,
         messages_page_default_limit=settings.messages_page_default_limit,
@@ -153,6 +163,7 @@ def create_session_service(settings: Settings) -> SessionService:
 def create_run_execution_service(settings: Settings) -> RunExecutionService:
     repository = SessionRepository()
     jobs_repository = JobsRepository()
+    agent_profile_service = AgentProfileService(repository=AgentRepository(), settings=settings)
     dispatcher = build_dispatcher(settings)
     attachment_extraction_service = MediaExtractionService(
         storage_root=Path(settings.media_storage_root),
@@ -170,7 +181,8 @@ def create_run_execution_service(settings: Settings) -> RunExecutionService:
             lease_seconds=settings.execution_run_lease_seconds,
             global_concurrency_limit=settings.execution_run_global_concurrency,
         ),
-        assistant_graph_factory=lambda: build_assistant_graph(settings, repository),
+        agent_profile_service=agent_profile_service,
+        assistant_graph_factory=lambda binding: build_assistant_graph(settings, repository, binding=binding),
         failure_classifier=FailureClassifier(),
         base_backoff_seconds=settings.execution_run_backoff_seconds,
         max_backoff_seconds=settings.execution_run_backoff_max_seconds,
@@ -198,6 +210,12 @@ def create_scheduler_service(settings: Settings) -> SchedulerService:
         session_repository=repository,
         submit_scheduler_run=session_service.submit_scheduler_fire,
     )
+
+
+def bootstrap_runtime_state(*, settings: Settings, session_manager: DatabaseSessionManager) -> None:
+    with session_manager.session() as db:
+        bootstrap_agent_profiles(db, settings=settings)
+        db.commit()
 
 
 def get_session_service(

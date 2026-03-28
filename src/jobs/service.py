@@ -9,6 +9,8 @@ import logging
 
 from sqlalchemy.orm import Session
 
+from src.agents.repository import AgentRepository
+from src.agents.service import AgentExecutionBinding, AgentProfileService
 from src.graphs.assistant_graph import AssistantGraph
 from src.jobs.repository import JobsRepository
 from src.observability.failures import classify_failure
@@ -44,10 +46,11 @@ class RunExecutionService:
     jobs_repository: JobsRepository
     session_repository: SessionRepository
     concurrency_service: SessionConcurrencyService
-    assistant_graph_factory: Callable[[], AssistantGraph]
+    assistant_graph_factory: Callable[[AgentExecutionBinding], AssistantGraph]
     failure_classifier: FailureClassifier
     base_backoff_seconds: int
     max_backoff_seconds: int
+    agent_profile_service: AgentProfileService | None = None
     media_processor: object | None = None
     attachment_extraction_service: object | None = None
     outbound_dispatcher: object | None = None
@@ -56,6 +59,10 @@ class RunExecutionService:
     def process_next_run(self, db: Session, *, worker_id: str | None = None) -> str | None:
         resolved_worker_id = worker_id or f"{socket.gethostname()}-worker"
         settings = self.settings or Settings(database_url="sqlite://")
+        agent_profile_service = self.agent_profile_service or AgentProfileService(
+            repository=AgentRepository(),
+            settings=settings,
+        )
         claim = self.jobs_repository.claim_next_eligible_run(
             db,
             worker_id=resolved_worker_id,
@@ -95,10 +102,19 @@ class RunExecutionService:
                 worker_id=resolved_worker_id,
                 now=utc_now(),
             )
-            graph = self.assistant_graph_factory()
             message = self.session_repository.get_message(db, message_id=run.message_id) if run.message_id else None
             if message is None:
                 raise RuntimeError("missing canonical transcript state for execution run")
+            session = self.session_repository.get_session(db, run.session_id)
+            if session is None:
+                raise RuntimeError("session not found for execution run")
+            if run.agent_id != session.owner_agent_id:
+                raise RuntimeError("execution run agent_id does not match session owner")
+            binding = agent_profile_service.resolve_binding_for_run(db, run=run, session=session)
+            try:
+                graph = self.assistant_graph_factory(binding)
+            except TypeError:
+                graph = self.assistant_graph_factory()  # pragma: no cover - compatibility for older test doubles
             if run.trigger_kind == "inbound_message" and self.media_processor is not None:
                 self.media_processor.normalize_message_attachments(
                     db=db,
@@ -115,13 +131,11 @@ class RunExecutionService:
                 channel_kind=self.session_repository.get_session_channel_kind(db, session_id=run.session_id),
                 sender_id=message.sender_id,
                 user_text=message.content,
+                execution_binding=binding,
                 execution_run_id=run.id,
                 persist_final_message=False,
             )
             if self.outbound_dispatcher is not None:
-                session = self.session_repository.get_session(db, run.session_id)
-                if session is None:
-                    raise RuntimeError("session not found for outbound dispatch")
                 self.outbound_dispatcher.dispatch_run(
                     db=db,
                     repository=self.session_repository,

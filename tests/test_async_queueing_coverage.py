@@ -66,7 +66,7 @@ def _create_scheduled_job(session_manager, *, session_id: str, job_key: str = "j
     with session_manager.session() as db:
         job = ScheduledJobRecord(
             job_key=job_key,
-            agent_id="agent-1",
+            agent_id="default-agent",
             target_kind="session",
             session_id=session_id,
             cron_expr="* * * * *",
@@ -93,7 +93,7 @@ def _create_execution_run(
         run = ExecutionRunRecord(
             session_id=session_id,
             message_id=message_id,
-            agent_id="agent-1",
+            agent_id="default-agent",
             trigger_kind=trigger_kind,
             trigger_ref=trigger_ref,
             lane_key=session_id,
@@ -197,7 +197,7 @@ def test_run_execution_service_marks_scheduler_fire_failed_for_retryable_dead_le
         run = ExecutionRunRecord(
             session_id=session_id,
             message_id=message_id,
-            agent_id="agent-1",
+            agent_id="default-agent",
             trigger_kind="scheduler_fire",
             trigger_ref=fire.fire_key,
             lane_key=session_id,
@@ -272,7 +272,7 @@ def test_run_execution_service_marks_scheduler_fire_failed_for_non_retryable_err
         run = ExecutionRunRecord(
             session_id=session_id,
             message_id=None,
-            agent_id="agent-1",
+            agent_id="default-agent",
             trigger_kind="scheduler_fire",
             trigger_ref=fire_key,
             lane_key=session_id,

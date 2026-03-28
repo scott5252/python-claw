@@ -27,6 +27,7 @@ from src.db.models import (
     ScheduledJobRecord,
     SessionMemoryRecord,
     SessionArtifactRecord,
+    SessionKind,
     SessionRecord,
     SummarySnapshotRecord,
 )
@@ -37,10 +38,25 @@ from src.tools.typed_actions import get_typed_action
 
 
 class SessionRepository:
-    def get_or_create_session(self, db: Session, routing: RoutingResult) -> SessionRecord:
+    def get_or_create_session(
+        self,
+        db: Session,
+        routing: RoutingResult,
+        *,
+        owner_agent_id: str | None = "default-agent",
+        session_kind: str = SessionKind.PRIMARY.value,
+        parent_session_id: str | None = None,
+    ) -> SessionRecord:
         session = db.scalar(select(SessionRecord).where(SessionRecord.session_key == routing.session_key))
         if session is not None:
             return session
+
+        if owner_agent_id is None:
+            raise ValueError("owner_agent_id is required when creating a session")
+        if session_kind == SessionKind.PRIMARY.value and parent_session_id is not None:
+            raise ValueError("primary sessions must not have a parent_session_id")
+        if session_kind == SessionKind.CHILD.value and parent_session_id is None:
+            raise ValueError("child sessions must have a parent_session_id")
 
         session = SessionRecord(
             session_key=routing.session_key,
@@ -50,6 +66,9 @@ class SessionRepository:
             peer_id=routing.peer_id,
             group_id=routing.group_id,
             scope_name=routing.scope_name,
+            owner_agent_id=owner_agent_id,
+            session_kind=session_kind,
+            parent_session_id=parent_session_id,
         )
         db.add(session)
         try:
@@ -61,8 +80,20 @@ class SessionRepository:
                 raise
         return session
 
+    def list_sessions_by_owner(self, db: Session, *, owner_agent_id: str, limit: int = 100) -> list[SessionRecord]:
+        stmt = (
+            select(SessionRecord)
+            .where(SessionRecord.owner_agent_id == owner_agent_id)
+            .order_by(SessionRecord.created_at.desc(), SessionRecord.id.desc())
+            .limit(limit)
+        )
+        return list(db.scalars(stmt))
+
     def get_session(self, db: Session, session_id: str) -> SessionRecord | None:
         return db.get(SessionRecord, session_id)
+
+    def get_session_by_key(self, db: Session, *, session_key: str) -> SessionRecord | None:
+        return db.scalar(select(SessionRecord).where(SessionRecord.session_key == session_key))
 
     def get_session_channel_kind(self, db: Session, *, session_id: str) -> str:
         session = self.get_session(db, session_id)

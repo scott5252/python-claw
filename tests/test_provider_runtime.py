@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from src.agents.service import ResolvedModelProfile
 from src.config.settings import Settings
 from src.graphs.prompts import PROMPT_STRATEGY_ID, build_prompt_payload
 from src.graphs.state import AssistantState, ConversationMessage
@@ -69,14 +70,36 @@ class FakeProviderClient(ProviderClient):
     error: Exception | None = None
     calls: int = 0
 
-    def create_response(self, *, prompt: dict[str, object], tools: list[dict[str, object]], settings: Settings) -> dict[str, object]:
+    def create_response(
+        self,
+        *,
+        prompt: dict[str, object],
+        tools: list[dict[str, object]],
+        runtime_model: ResolvedModelProfile,
+        settings: Settings,
+    ) -> dict[str, object]:
         self.calls += 1
         assert isinstance(prompt["input"], str)
-        assert settings.llm_model
+        assert runtime_model.profile_key == "default"
         if self.error is not None:
             raise self.error
         assert tools
         return self.response or {"output_text": "", "output": []}
+
+
+def _provider_model() -> ResolvedModelProfile:
+    return ResolvedModelProfile(
+        profile_key="default",
+        runtime_mode="provider",
+        provider="openai",
+        model_name="gpt-4o-mini",
+        temperature=0.2,
+        max_output_tokens=512,
+        timeout_seconds=30,
+        tool_call_mode="auto",
+        streaming_enabled=True,
+        base_url=None,
+    )
 
 
 def test_prompt_payload_contains_required_sections() -> None:
@@ -96,7 +119,7 @@ def test_prompt_payload_contains_required_sections() -> None:
 def test_provider_adapter_translates_plain_text_response() -> None:
     settings = Settings(database_url="sqlite://", runtime_mode="provider", llm_api_key="test-key")
     client = FakeProviderClient(response={"output_text": "Natural language reply", "output": []})
-    adapter = ProviderBackedModelAdapter(settings=settings, client=client)
+    adapter = ProviderBackedModelAdapter(settings=settings, model_profile=_provider_model(), client=client)
 
     result = adapter.complete_turn(state=_build_state(), available_tools=["echo_text"])
 
@@ -109,7 +132,7 @@ def test_provider_adapter_translates_plain_text_response() -> None:
 def test_provider_adapter_exposes_final_answer_stream_deltas() -> None:
     settings = Settings(database_url="sqlite://", runtime_mode="provider", llm_api_key="test-key")
     client = FakeProviderClient(response={"output_text": "Natural language reply", "output": []})
-    adapter = ProviderBackedModelAdapter(settings=settings, client=client)
+    adapter = ProviderBackedModelAdapter(settings=settings, model_profile=_provider_model(), client=client)
 
     deltas, result = adapter.stream_final_answer(state=_build_state(), available_tools=["echo_text"])
 
@@ -130,7 +153,7 @@ def test_provider_adapter_translates_tool_calls_and_generates_correlation_ids() 
             ]
         }
     )
-    adapter = ProviderBackedModelAdapter(settings=settings, client=client)
+    adapter = ProviderBackedModelAdapter(settings=settings, model_profile=_provider_model(), client=client)
 
     result = adapter.complete_turn(state=_build_state(), available_tools=["echo_text"])
 
@@ -155,7 +178,7 @@ def test_provider_adapter_rejects_malformed_tool_calls_safely() -> None:
             ]
         }
     )
-    adapter = ProviderBackedModelAdapter(settings=settings, client=client)
+    adapter = ProviderBackedModelAdapter(settings=settings, model_profile=_provider_model(), client=client)
 
     result = adapter.complete_turn(state=_build_state(), available_tools=["send_message"])
 
@@ -179,7 +202,7 @@ def test_provider_stream_final_answer_does_not_emit_tool_planning_deltas() -> No
             ]
         }
     )
-    adapter = ProviderBackedModelAdapter(settings=settings, client=client)
+    adapter = ProviderBackedModelAdapter(settings=settings, model_profile=_provider_model(), client=client)
 
     deltas, result = adapter.stream_final_answer(state=_build_state(), available_tools=["echo_text"])
 
@@ -190,7 +213,7 @@ def test_provider_stream_final_answer_does_not_emit_tool_planning_deltas() -> No
 def test_provider_adapter_retries_retryable_provider_errors() -> None:
     settings = Settings(database_url="sqlite://", runtime_mode="provider", llm_api_key="test-key", llm_max_retries=1)
     client = FakeProviderClient(error=ProviderError(category="provider_timeout", retryable=True, detail="timeout"))
-    adapter = ProviderBackedModelAdapter(settings=settings, client=client)
+    adapter = ProviderBackedModelAdapter(settings=settings, model_profile=_provider_model(), client=client)
 
     with pytest.raises(ProviderError):
         adapter.complete_turn(state=_build_state(), available_tools=["echo_text"])
@@ -201,7 +224,7 @@ def test_provider_adapter_retries_retryable_provider_errors() -> None:
 def test_provider_adapter_applies_backoff_before_retry(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings(database_url="sqlite://", runtime_mode="provider", llm_api_key="test-key", llm_max_retries=1)
     client = FakeProviderClient(error=ProviderError(category="provider_rate_limited", retryable=True, detail="provider rate limited: 429 too many requests"))
-    adapter = ProviderBackedModelAdapter(settings=settings, client=client)
+    adapter = ProviderBackedModelAdapter(settings=settings, model_profile=_provider_model(), client=client)
     sleep_calls: list[float] = []
 
     monkeypatch.setattr("src.providers.models.random.uniform", lambda start, end: 0.5)

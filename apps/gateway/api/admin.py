@@ -3,9 +3,11 @@ from sqlalchemy.orm import Session
 
 from apps.gateway.deps import get_db, get_diagnostics_service, get_session_service, require_operator_access
 from src.domain.schemas import (
+    AgentProfileResponse,
     DiagnosticsPageResponse,
     ExecutionRunResponse,
     MessagePageResponse,
+    ModelProfileResponse,
     PendingApprovalResponse,
     RunDiagnosticsResponse,
     SessionContinuityDiagnosticsResponse,
@@ -28,6 +30,63 @@ def get_session(
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
     return session
+
+
+@router.get("/agents", response_model=list[AgentProfileResponse], dependencies=[Depends(require_operator_access)])
+def list_agents(
+    db: Session = Depends(get_db),
+    service: SessionService = Depends(get_session_service),
+) -> list[AgentProfileResponse]:
+    return service.list_agents(db)
+
+
+@router.get("/agents/{agent_id}", response_model=AgentProfileResponse, dependencies=[Depends(require_operator_access)])
+def get_agent(
+    agent_id: str,
+    db: Session = Depends(get_db),
+    service: SessionService = Depends(get_session_service),
+) -> AgentProfileResponse:
+    agent = service.get_agent(db, agent_id=agent_id)
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="agent not found")
+    return agent
+
+
+@router.get(
+    "/agents/{agent_id}/sessions",
+    response_model=list[SessionResponse],
+    dependencies=[Depends(require_operator_access)],
+)
+def get_agent_sessions(
+    agent_id: str,
+    db: Session = Depends(get_db),
+    service: SessionService = Depends(get_session_service),
+) -> list[SessionResponse]:
+    return service.list_agent_sessions(db, agent_id=agent_id)
+
+
+@router.get("/model-profiles", response_model=list[ModelProfileResponse], dependencies=[Depends(require_operator_access)])
+def list_model_profiles(
+    db: Session = Depends(get_db),
+    service: SessionService = Depends(get_session_service),
+) -> list[ModelProfileResponse]:
+    return service.list_model_profiles(db)
+
+
+@router.get(
+    "/model-profiles/{profile_key}",
+    response_model=ModelProfileResponse,
+    dependencies=[Depends(require_operator_access)],
+)
+def get_model_profile(
+    profile_key: str,
+    db: Session = Depends(get_db),
+    service: SessionService = Depends(get_session_service),
+) -> ModelProfileResponse:
+    profile = service.get_model_profile(db, profile_key=profile_key)
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="model profile not found")
+    return profile
 
 
 @router.get("/sessions/{session_id}/messages", response_model=MessagePageResponse)

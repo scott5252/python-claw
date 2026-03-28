@@ -86,6 +86,9 @@ class ExecutionRunResponse(BaseModel):
     session_id: str
     message_id: int | None
     agent_id: str
+    model_profile_key: str
+    policy_profile_key: str
+    tool_profile_key: str
     trigger_kind: str
     trigger_ref: str
     lane_key: str
@@ -119,6 +122,9 @@ class SessionResponse(BaseModel):
     peer_id: str | None
     group_id: str | None
     scope_name: str
+    owner_agent_id: str
+    session_kind: str
+    parent_session_id: str | None
     transport_address_key: str | None = None
     created_at: datetime
     last_activity_at: datetime
@@ -184,7 +190,38 @@ class RunDiagnosticsResponse(BaseModel):
     global_lease: dict[str, Any] | None = None
     recent_failures: list[str] = Field(default_factory=list)
     correlated_artifacts: dict[str, Any] = Field(default_factory=dict)
+    execution_binding: dict[str, Any] | None = None
     capability_status: str = "enabled"
+
+
+class AgentProfileResponse(BaseModel):
+    agent_id: str
+    display_name: str
+    role_kind: str
+    description: str | None = None
+    default_model_profile_id: int
+    policy_profile_key: str
+    tool_profile_key: str
+    enabled: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ModelProfileResponse(BaseModel):
+    id: int
+    profile_key: str
+    runtime_mode: str
+    provider: str | None = None
+    model_name: str | None = None
+    temperature: str | None = None
+    max_output_tokens: int | None = None
+    timeout_seconds: int
+    tool_call_mode: str
+    streaming_enabled: int
+    enabled: int
+    base_url: str | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class SessionContinuityDiagnosticsResponse(BaseModel):

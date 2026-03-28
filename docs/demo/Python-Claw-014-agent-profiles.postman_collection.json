@@ -1,0 +1,328 @@
+{
+  "info": {
+    "_postman_id": "6be66444-426f-4a26-aa6e-9f6b920f2d47",
+    "name": "Python-Claw-014-agent-profiles",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "41171391"
+  },
+  "item": [
+    {
+      "name": "a. check1",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{BASE}}/health/live",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "health",
+            "live"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "a. check2",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/health/ready",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "health",
+            "ready"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 1 - List Agents",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/agents",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "agents"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 2 - List Model Profiles",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/model-profiles",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "model-profiles"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 3 - Submit Customer Message",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var jsonData = pm.response.json();",
+              "",
+              "pm.environment.set(\"session_id\", jsonData.session_id);",
+              "pm.environment.set(\"run_id\", jsonData.run_id);",
+              "pm.environment.set(\"trace_id\", jsonData.trace_id);",
+              "pm.environment.set(\"message_id\", jsonData.message_id);"
+            ],
+            "type": "text/javascript",
+            "packages": {},
+            "requests": {}
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"channel_kind\": \"slack\",\n  \"channel_account_id\": \"acct\",\n  \"external_message_id\": \"demo014-msg-001\",\n  \"sender_id\": \"customer-riley\",\n  \"content\": \"Hi, can I bring my commuter bike in after 3 PM today for a tune-up?\",\n  \"peer_id\": \"customer-riley\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE}}/inbound/message",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "inbound",
+            "message"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 4 - Get Session Owner",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{BASE}}/sessions/{{session_id}}",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "sessions",
+            "{{session_id}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 6 - Get Run Binding",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{BASE}}/runs/{{run_id}}",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "runs",
+            "{{run_id}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Step 7 - List Sessions For Default Agent",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/agents/default-agent/sessions",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "agents",
+            "default-agent",
+            "sessions"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Dev Step 1 - Get Agent Detail",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/agents/default-agent",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "agents",
+            "default-agent"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Dev Step 2 - Get Model Profile Detail",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/model-profiles/default",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "model-profiles",
+            "default"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Dev Step 3 - Get Run Diagnostics",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "{{AUTH}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE}}/diagnostics/runs/{{run_id}}",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "diagnostics",
+            "runs",
+            "{{run_id}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Dev Step 4 - Get Session Messages",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{BASE}}/sessions/{{session_id}}/messages",
+          "host": [
+            "{{BASE}}"
+          ],
+          "path": [
+            "sessions",
+            "{{session_id}}",
+            "messages"
+          ]
+        }
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "BASE",
+      "value": "http://127.0.0.1:8000"
+    },
+    {
+      "key": "AUTH",
+      "value": "Bearer change-me"
+    },
+    {
+      "key": "session_id",
+      "value": ""
+    },
+    {
+      "key": "run_id",
+      "value": ""
+    },
+    {
+      "key": "trace_id",
+      "value": ""
+    },
+    {
+      "key": "message_id",
+      "value": ""
+    }
+  ]
+}

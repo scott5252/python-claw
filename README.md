@@ -27,7 +27,7 @@ In simpler terms, this project is the backend skeleton for an AI assistant syste
 
 ### What it does today
 
-The current implementation focuses on thirteen delivered capability areas:
+The current implementation focuses on fourteen delivered capability areas:
 
 1. Gateway sessions and deterministic routing
 2. Runtime tools and typed tool execution
@@ -42,6 +42,7 @@ The current implementation focuses on thirteen delivered capability areas:
 11. Retrieval, durable memory, and attachment-content understanding as additive context
 12. Production channel ingress and delivery contracts for Slack, Telegram, and polling-based webchat
 13. Streaming-safe real-time delivery for webchat with durable SSE replay and append-only stream events
+14. Durable agent profiles, session ownership metadata, and per-run execution profile binding
 
 ### What it does not do yet
 
@@ -76,12 +77,13 @@ That means the project keeps routing, session identity, policy decisions, persis
 - Media processor: normalizes accepted attachments before they enter turn context
 - Attachment extraction service: derives usable attachment text or metadata after normalization
 - Memory and retrieval services: build additive durable context from transcript, summaries, memories, and extracted attachments
+- Agent profile service: resolves durable session ownership plus model, policy, and tool profile bindings
 - Tool registry and policy layer: controls which tools are visible and executable
 - Typed tool schema layer: validates tool arguments, exports provider-facing schemas, and canonicalizes approval identity
 - Outbound dispatcher: parses directives, chunks text, applies channel capability rules, records delivery attempts, and owns streaming delivery state
 - Channel adapters: transport-specific send and ingress translation interfaces for `webchat`, `slack`, and `telegram`, including capability-based streaming support
 - Observability layer: emits structured events, redacts sensitive fields, classifies failures, and supports diagnostics queries
-- Database: stores sessions, messages, approvals, artifacts, runs, and audits
+- Database: stores sessions, agent profiles, model profiles, messages, approvals, artifacts, runs, and audits
 - Node runner: isolated internal execution boundary for remote command execution
 - Sandbox service: resolves sandbox profile and workspace rules per agent/run
 
@@ -93,11 +95,13 @@ flowchart LR
     B --> C[Routing Service]
     C --> D[(Sessions and Messages)]
     B --> E[Session Service]
+    E --> U[(Agent and Model Profiles)]
     E --> F[(Execution Runs)]
     F --> G[Worker]
     G --> H[Media Processor]
     H --> D
     G --> I[Assistant Graph Runtime]
+    I --> U
     I --> J[Policy Service]
     I --> K[Tool Registry]
     I --> L[Context Service]
@@ -125,9 +129,10 @@ sequenceDiagram
 
     Client->>Gateway: POST /inbound/message
     Gateway->>DB: validate payload, dedupe, resolve/create session
+    Gateway->>DB: resolve durable session owner and execution profile binding
     Gateway->>DB: append user message
     Gateway->>DB: append canonical attachment inputs if present
-    Gateway->>DB: create or reuse execution_run
+    Gateway->>DB: create or reuse execution_run with persisted profile keys
     Gateway-->>Client: 202 Accepted + session_id + run_id + trace_id
     Worker->>DB: claim queued run
     Worker->>DB: normalize attachments to terminal states
@@ -160,6 +165,11 @@ The gateway is the main API service. It currently exposes:
 - `GET /sessions/{session_id}/governance/pending`
 - `GET /runs/{run_id}`
 - `GET /sessions/{session_id}/runs`
+- `GET /agents`
+- `GET /agents/{agent_id}`
+- `GET /agents/{agent_id}/sessions`
+- `GET /model-profiles`
+- `GET /model-profiles/{profile_key}`
 - `GET /diagnostics/runs`
 - `GET /diagnostics/runs/{run_id}`
 - `GET /diagnostics/sessions/{session_id}/continuity`
@@ -172,13 +182,16 @@ Its responsibilities are:
 
 - validate inbound payloads
 - enforce routing rules
+- resolve durable session ownership from the current session or the bootstrap default agent
 - claim idempotency records
 - persist inbound transcript messages
 - persist canonical inbound attachment references
-- create durable execution runs with stable per-run correlation
+- create durable execution runs with stable per-run correlation and persisted execution profile keys
 - return quickly with `202 Accepted`
 
 The gateway now also owns the default operator-facing read boundary for service health and diagnostics. In practical terms, `GET /health/live` is the cheap process check, `GET /health/ready` is the deployment-readiness check, and `/diagnostics/*` routes are authenticated inspection surfaces for operators or internal services.
+
+With Spec 014, the gateway also stops treating `default_agent_id` as the runtime source of truth for existing sessions. New sessions bootstrap from the configured default agent, but once a session exists its durable `owner_agent_id` becomes authoritative for later turns and scheduler-targeted work.
 
 #### Worker and async runs
 
@@ -187,6 +200,7 @@ After the gateway accepts work, the worker becomes responsible for execution. Th
 - claims queued runs
 - applies lane and global concurrency rules
 - performs first-pass attachment normalization for inbound-triggered runs
+- reloads the persisted execution binding and validates the owning agent plus linked profiles
 - invokes the assistant runtime
 - dispatches outbound text and media after the assistant turn reaches a dispatchable answer phase
 - persists results, errors, and diagnostics
@@ -208,6 +222,8 @@ The runtime now supports two execution modes behind the same model adapter seam:
 - an explicit provider-backed mode that uses backend-authored prompt payloads, bounded provider retries, and translation back into the existing `ModelTurnResult` and `ToolRequest` contracts
 
 Even in provider-backed mode, tool execution, approval creation, artifact persistence, context-manifest ownership, and outbound dispatch all remain backend-owned. The model may suggest tools, but it does not execute them directly.
+
+Spec 014 adds another important runtime rule: model selection, tool visibility, and policy behavior are now resolved from a typed per-run execution binding rather than from one process-wide default. In practice, that means two enabled agents can share the same graph topology while still using different model profiles, policy envelopes, or tool allowlists.
 
 With Spec 010, tool use is also schema-driven rather than guidance-only. In practical terms, the backend now owns one typed schema contract for each exposed tool in this phase, uses that same contract for prompt-visible guidance, provider-native tool definitions, runtime validation, and canonical argument serialization, and fails safely when provider or deterministic tool arguments do not match the schema. High-risk administrative intents such as `approve <proposal_id>` and `revoke <proposal_id>` still bypass model interpretation entirely.
 
@@ -281,6 +297,8 @@ This separation is important because it prevents the main application path from 
 
 Spec 008 builds on that separation by making node execution easier to trace. Node execution audits now participate in the same broader run-correlation model, so operators can connect a privileged execution attempt back to the parent assistant run more directly.
 
+Spec 014 keeps sandbox identity exact to `agent_id`. The difference is that the `agent_id` now comes from durable session ownership and persisted run bindings rather than from a mutable global default at execution time.
+
 ### Internal service diagram
 
 ```mermaid
@@ -346,6 +364,8 @@ The database currently stores the system's durable state in tables such as:
 - `outbound_deliveries`
 - `outbound_delivery_attempts`
 - `outbound_delivery_stream_events`
+- `agent_profiles`
+- `model_profiles`
 - `agent_sandbox_profiles`
 - `node_execution_audits`
 - `summary_snapshots`
@@ -377,6 +397,11 @@ Implemented now:
 - durable streaming event persistence and SSE replay for eligible `webchat` responses
 - signed internal node-runner requests
 - audit persistence for remote execution
+- durable session ownership through `owner_agent_id`, `session_kind`, and `parent_session_id`
+- durable `agent_profiles` and `model_profiles`
+- settings-backed policy and tool profile registries resolved per agent
+- persisted run-level execution profile identity for deterministic worker replay
+- operator read surfaces for agents, model profiles, and agent-owned sessions
 - stable run correlation with `trace_id`
 - authenticated diagnostics for runs, continuity, outbox jobs, node executions, deliveries, and attachments
 - structured health and readiness surfaces
@@ -426,6 +451,10 @@ The application loads configuration from a project-root `.env` file using enviro
 Key variables include:
 
 - `PYTHON_CLAW_DATABASE_URL`
+- `PYTHON_CLAW_DEFAULT_AGENT_ID`
+- `PYTHON_CLAW_POLICY_PROFILES`
+- `PYTHON_CLAW_TOOL_PROFILES`
+- `PYTHON_CLAW_HISTORICAL_AGENT_PROFILE_OVERRIDES`
 - `PYTHON_CLAW_DEDUPE_RETENTION_DAYS`
 - `PYTHON_CLAW_DEDUPE_STALE_AFTER_SECONDS`
 - `PYTHON_CLAW_RUNTIME_TRANSCRIPT_CONTEXT_LIMIT`
@@ -532,6 +561,22 @@ In practical terms:
 
 For local scaffold mode, leave `PYTHON_CLAW_RUNTIME_MODE=rule_based`.
 
+For local Spec 014 agent-profile behavior, the most important optional settings are:
+
+```text
+PYTHON_CLAW_DEFAULT_AGENT_ID=default-agent
+PYTHON_CLAW_POLICY_PROFILES=[{"key":"default","remote_execution_enabled":false,"denied_capability_names":[],"delegation_enabled":false}]
+PYTHON_CLAW_TOOL_PROFILES=[{"key":"default","allowed_capability_names":["echo_text","remote_exec","send_message"]}]
+PYTHON_CLAW_HISTORICAL_AGENT_PROFILE_OVERRIDES=[]
+```
+
+These control whether the system:
+
+- bootstraps a new canonical session with a specific default agent id
+- resolves per-agent policy flags from a stable settings-backed profile registry
+- resolves per-agent tool allowlists from a stable settings-backed profile registry
+- maps historical `agent_id` values to explicit profile bindings during bootstrap or migration-oriented seeding
+
 For local Spec 013 streaming demos, the most important optional settings are:
 
 ```text
@@ -612,6 +657,13 @@ uv run alembic upgrade head
 ```
 
 This creates the currently migrated database tables needed by the gateway, queueing, governance, media normalization, outbound delivery auditing, node-runner flows, and observability metadata used by diagnostics.
+
+Spec 014 adds the durable profile and ownership records needed for future specialist assistants without adding delegation orchestration yet:
+
+- `agent_profiles`
+- `model_profiles`
+- durable owner and session-kind fields on `sessions`
+- persisted execution profile keys on `execution_runs`
 
 Spec 012 also adds additive transport-facing persistence for:
 
@@ -756,6 +808,11 @@ The main read/inspection entrypoints are:
 - `GET /sessions/{session_id}/governance/pending`
 - `GET /runs/{run_id}`
 - `GET /sessions/{session_id}/runs`
+- `GET /agents`
+- `GET /agents/{agent_id}`
+- `GET /agents/{agent_id}/sessions`
+- `GET /model-profiles`
+- `GET /model-profiles/{profile_key}`
 - `GET /diagnostics/runs`
 - `GET /diagnostics/runs/{run_id}`
 - `GET /diagnostics/sessions/{session_id}/continuity`
@@ -778,6 +835,7 @@ The practical distinction between these surfaces is:
 - webchat SSE reads already-persisted stream-event state and does not depend on worker-local memory
 - webchat polling reads already-persisted delivery state and remains the completed-message replay and fallback surface
 - session and run routes are narrower product-facing read APIs
+- agent and model-profile routes are operator-facing read APIs for ownership and runtime-profile inspection
 - health routes are service-supervision endpoints
 - diagnostics routes are operator-facing inspection endpoints with explicit authorization
 

@@ -146,6 +146,12 @@ class DiagnosticsService:
             },
             recent_failures=failures[:5],
             correlated_artifacts=artifacts,
+            execution_binding={
+                "agent_id": run.agent_id,
+                "model_profile_key": run.model_profile_key,
+                "policy_profile_key": run.policy_profile_key,
+                "tool_profile_key": run.tool_profile_key,
+            },
         )
 
     def get_session_continuity(self, db: Session, *, session_id: str) -> SessionContinuityDiagnosticsResponse:

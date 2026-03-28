@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from src.agents.service import AgentExecutionBinding
 from src.context.service import ContextService
 from src.graphs.prompts import build_prompt_payload
 from src.graphs.state import (
@@ -45,8 +46,9 @@ def assemble_state(
     channel_kind: str,
     sender_id: str,
     user_text: str,
+    execution_binding: AgentExecutionBinding,
 ) -> AssistantState:
-    return dependencies.context_service.assemble(
+    state = dependencies.context_service.assemble(
         db=db,
         repository=dependencies.repository,
         session_id=session_id,
@@ -56,6 +58,11 @@ def assemble_state(
         sender_id=sender_id,
         user_text=user_text,
     )
+    state.session_kind = execution_binding.session_kind
+    state.model_profile_key = execution_binding.model_profile_key
+    state.policy_profile_key = execution_binding.policy_profile_key
+    state.tool_profile_key = execution_binding.tool_profile_key
+    return state
 
 
 def _build_context(*, state: AssistantState, dependencies: GraphDependencies, db: Session) -> ToolRuntimeContext:
@@ -81,6 +88,8 @@ def _build_context(*, state: AssistantState, dependencies: GraphDependencies, db
             remote_execution_runtime=dependencies.remote_execution_runtime,
             policy_service=dependencies.policy_service,
         ),
+        policy_profile_key=state.policy_profile_key,
+        tool_profile_key=state.tool_profile_key,
     )
 
 
@@ -260,6 +269,13 @@ def _persist_provider_metadata(*, state: AssistantState, model_result: Any) -> N
             "provider_attempt_count",
             "semantic_fallback_kind",
         )
+    }
+    state.context_manifest["execution_binding"] = {
+        "agent_id": state.agent_id,
+        "session_kind": state.session_kind,
+        "model_profile_key": state.model_profile_key,
+        "policy_profile_key": state.policy_profile_key,
+        "tool_profile_key": state.tool_profile_key,
     }
 
 

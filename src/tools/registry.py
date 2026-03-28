@@ -96,6 +96,9 @@ class ToolRegistry:
     ) -> dict[str, ToolDefinition]:
         bound: dict[str, ToolDefinition] = {}
         for capability_name, factory in self.factories.items():
+            allowed_capabilities = getattr(policy_service, "allowed_capabilities", None)
+            if allowed_capabilities is not None and capability_name not in allowed_capabilities:
+                continue
             if not policy_service.is_tool_visible(context=context, capability_name=capability_name):
                 continue
             bound[capability_name] = factory(context)

@@ -1,6 +1,6 @@
 # Environment Settings Guide
 
-This document explains every setting in [.env.example](/Users/scottcornell/src/my-projects/python-claw/.env.example) and how it relates to the behavior described in the README and Specs 001 through 013.
+This document explains every setting in [.env.example](/Users/scottcornell/src/my-projects/python-claw/.env.example) and how it relates to the behavior described in the README and Specs 001 through 014.
 
 ## How configuration is loaded
 
@@ -35,12 +35,162 @@ PYTHON_CLAW_APP_NAME=python-claw-gateway
 
 - Default: `default-agent`
 - Type: string
-- What it does: Supplies the fallback agent identifier used by the runtime when upstream routing has not yet resolved a multi-agent target. This lines up with Spec 002's requirement for an explicit configured agent id.
-- How to configure it: Use a stable identifier that matches your default assistant persona or policy profile.
+- What it does: Supplies the bootstrap agent identifier used when the system needs to create a brand-new canonical `primary` session and there is no persisted owner yet. After Spec 014, existing sessions do not re-read this value on every turn; they keep their durable `owner_agent_id`.
+- How to configure it: Use a stable identifier that names your default assistant. The bootstrap process creates or validates an `agent_profiles` row for this id and links it to the default model, policy, and tool profiles unless you override that behavior elsewhere.
 - Example:
 
 ```env
 PYTHON_CLAW_DEFAULT_AGENT_ID=default-agent
+```
+
+### `PYTHON_CLAW_POLICY_PROFILES`
+
+- Default: `[{"key":"default","remote_execution_enabled":false,"denied_capability_names":[],"delegation_enabled":false}]`
+- Type: JSON array of policy-profile objects
+- What it does: Defines the settings-backed policy profile registry introduced by Spec 014. Each agent profile stores a `policy_profile_key`, and the runtime resolves that key at execution time to determine policy flags such as whether remote execution is enabled and which capabilities are explicitly denied.
+- How to configure it: Set it as a valid JSON array. Every object must have a unique non-empty `key`. The current implementation expects the referenced keys to exist and fails closed if an agent points at a missing profile.
+- Important formatting note: this value must be valid JSON, not a comma-separated string. In `.env`, keep it on one line unless your loader supports multiline JSON reliably.
+- Supported object fields:
+  - `key`
+    - Required string.
+    - Stable identifier referenced by `agent_profiles.policy_profile_key`.
+    - Example values: `default`, `safe-web`, `ops-enabled`
+  - `remote_execution_enabled`
+    - Optional boolean.
+    - Enables or disables the `remote_exec` capability for agents using this policy profile.
+    - Allowed values: `true`, `false`
+  - `denied_capability_names`
+    - Optional array of strings.
+    - Explicit denylist applied on top of normal tool registration and tool-profile allowlists.
+    - Use capability names such as `send_message`, `remote_exec`, or `echo_text`.
+  - `delegation_enabled`
+    - Optional boolean.
+    - Reserved future-facing flag for later delegation specs.
+    - In Spec 014 it is stored and validated, but there is no delegation orchestration yet.
+    - Allowed values: `true`, `false`
+- Validation behavior:
+  - duplicate `key` values fail startup
+  - blank `key` values fail startup
+  - any agent profile or override that references a missing policy profile key fails closed
+- How the system uses it:
+  - session/bootstrap validation checks that the referenced policy profile exists
+  - worker execution uses the resolved profile to build `PolicyService`
+  - tool visibility is intersected with tool-profile allowlists and policy denials
+- Example conservative configuration:
+
+```env
+PYTHON_CLAW_POLICY_PROFILES=[
+  {
+    "key":"default",
+    "remote_execution_enabled":false,
+    "denied_capability_names":["remote_exec"],
+    "delegation_enabled":false
+  }
+]
+```
+
+- Example with multiple policy envelopes:
+
+```env
+PYTHON_CLAW_POLICY_PROFILES=[
+  {
+    "key":"default",
+    "remote_execution_enabled":false,
+    "denied_capability_names":[],
+    "delegation_enabled":false
+  },
+  {
+    "key":"ops-enabled",
+    "remote_execution_enabled":true,
+    "denied_capability_names":[],
+    "delegation_enabled":false
+  }
+]
+```
+
+### `PYTHON_CLAW_TOOL_PROFILES`
+
+- Default: `[{"key":"default","allowed_capability_names":["echo_text","remote_exec","send_message"]}]`
+- Type: JSON array of tool-profile objects
+- What it does: Defines the settings-backed tool profile registry introduced by Spec 014. Each agent profile stores a `tool_profile_key`, and that profile supplies the explicit capability allowlist used during runtime tool binding.
+- How to configure it: Set it as a valid JSON array. Every object must have a unique non-empty `key` and a non-empty `allowed_capability_names` array.
+- Supported object fields:
+  - `key`
+    - Required string.
+    - Stable identifier referenced by `agent_profiles.tool_profile_key`.
+    - Example values: `default`, `no-messaging`, `ops-tools`
+  - `allowed_capability_names`
+    - Required array of capability-name strings.
+    - This is the explicit allowlist for the profile.
+    - Current built-in capability names include:
+      - `echo_text`
+      - `send_message`
+      - `remote_exec`
+- Validation behavior:
+  - duplicate `key` values fail startup
+  - blank `key` values fail startup
+  - empty `allowed_capability_names` arrays fail startup
+  - any agent profile or override that references a missing tool profile key fails closed
+- How the system uses it:
+  - the runtime binds only tools present in the registry and allowed by this profile
+  - policy-profile denials can still remove a capability even if it appears in this allowlist
+  - earlier channel/runtime checks still apply after the allowlist match
+- Example minimal safe profile set:
+
+```env
+PYTHON_CLAW_TOOL_PROFILES=[
+  {
+    "key":"default",
+    "allowed_capability_names":["echo_text","send_message"]
+  },
+  {
+    "key":"ops-tools",
+    "allowed_capability_names":["echo_text","send_message","remote_exec"]
+  }
+]
+```
+
+### `PYTHON_CLAW_HISTORICAL_AGENT_PROFILE_OVERRIDES`
+
+- Default: `[]`
+- Type: JSON array of historical-agent override objects
+- What it does: Provides deterministic override mappings for legacy or pre-existing `agent_id` values during bootstrap and migration-oriented profile seeding. This lets you map a known historical agent id to a specific model profile, policy profile, and tool profile instead of inheriting the default linkage.
+- How to configure it: Use this only when you already have older `agent_id` values in durable data or you want bootstrap-created agent rows for specific ids to bind to non-default profiles. If you do not need special treatment for historical ids, leave it empty.
+- Supported object fields:
+  - `agent_id`
+    - Required string.
+    - Historical or pre-existing durable agent identifier to match.
+  - `model_profile_key`
+    - Required string.
+    - Profile key from the database-backed model-profile registry.
+    - In the current implementation the seeded default key is `default`.
+  - `policy_profile_key`
+    - Required string.
+    - Must match one of the keys declared in `PYTHON_CLAW_POLICY_PROFILES`.
+  - `tool_profile_key`
+    - Required string.
+    - Must match one of the keys declared in `PYTHON_CLAW_TOOL_PROFILES`.
+- Validation behavior:
+  - duplicate `agent_id` entries fail startup
+  - blank `agent_id` or blank profile keys fail startup
+  - missing referenced `policy_profile_key` or `tool_profile_key` fail startup
+  - missing referenced `model_profile_key` fails when bootstrap tries to seed that agent profile
+- How the system uses it:
+  - bootstrap scans durable agent references such as historical runs or sessions
+  - for each discovered agent id, the bootstrap service seeds an `agent_profiles` row if one does not already exist
+  - if an override exists for that agent id, the seeded row uses the override’s model, policy, and tool profile linkage
+  - if no override exists, the seeded row uses the default profile linkage
+- Example:
+
+```env
+PYTHON_CLAW_HISTORICAL_AGENT_PROFILE_OVERRIDES=[
+  {
+    "agent_id":"legacy-ops-agent",
+    "model_profile_key":"default",
+    "policy_profile_key":"ops-enabled",
+    "tool_profile_key":"ops-tools"
+  }
+]
 ```
 
 ## Channel Transport Configuration

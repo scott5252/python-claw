@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 from apps.gateway.main import create_app
+from src.agents.repository import AgentRepository
+from src.agents.service import AgentProfileService
 from src.capabilities.activation import ActivationController
 from src.config.settings import Settings
 from src.context.service import ContextService
@@ -85,8 +87,11 @@ def build_session_service(
     return SessionService(
         repository=repository,
         jobs_repository=JobsRepository(),
+        agent_profile_service=AgentProfileService(
+            repository=AgentRepository(),
+            settings=Settings(database_url="sqlite://", runtime_mode="rule_based", default_agent_id="default-agent"),
+        ),
         idempotency_service=IdempotencyService(),
-        default_agent_id="agent-1",
         dedupe_retention_days=30,
         dedupe_stale_after_seconds=1,
         messages_page_default_limit=2,
@@ -137,6 +142,10 @@ def build_run_execution_service(
         failure_classifier=FailureClassifier(),
         base_backoff_seconds=1,
         max_backoff_seconds=5,
+        agent_profile_service=AgentProfileService(
+            repository=AgentRepository(),
+            settings=Settings(database_url="sqlite://", runtime_mode="rule_based", default_agent_id="default-agent"),
+        ),
     )
 
 
@@ -787,7 +796,7 @@ def test_scheduler_replay_reuses_fire_run_and_transcript_trigger(tmp_path) -> No
     with manager.session() as db:
         job = ScheduledJobRecord(
             job_key="job-1",
-            agent_id="agent-1",
+            agent_id="default-agent",
             target_kind="session",
             session_id=session_id,
             cron_expr="0 * * * *",
@@ -994,7 +1003,7 @@ def test_scheduler_routing_tuple_target_creates_session_via_routing_rules(tmp_pa
     with manager.session() as db:
         job = ScheduledJobRecord(
             job_key="job-routing",
-            agent_id="agent-1",
+            agent_id="default-agent",
             target_kind="routing_tuple",
             channel_kind="slack",
             channel_account_id="acct",

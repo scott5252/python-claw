@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from apps.gateway.deps import create_run_execution_service
 from apps.gateway.main import create_app
+from src.agents.bootstrap import bootstrap_agent_profiles
 from src.config.settings import Settings
 from src.db.base import Base
 from src.db.session import DatabaseSessionManager
@@ -21,6 +22,9 @@ def database_url(tmp_path: Path) -> str:
 def session_manager(database_url: str) -> DatabaseSessionManager:
     manager = DatabaseSessionManager(database_url)
     Base.metadata.create_all(manager.engine)
+    with manager.session() as db:
+        bootstrap_agent_profiles(db, settings=Settings(database_url=database_url, runtime_mode="rule_based"))
+        db.commit()
     return manager
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from src.agents.service import ResolvedModelProfile
 from src.capabilities.activation import ActivationController
 from src.context.service import ContextService
 from src.graphs.assistant_graph import GraphFactory
@@ -33,8 +34,9 @@ class StubModel(ModelAdapter):
 class CapturingProviderClient(ProviderClient):
     captured_tools: list[dict[str, object]] | None = None
 
-    def create_response(self, *, prompt: dict[str, object], tools: list[dict[str, object]], settings) -> dict[str, object]:
+    def create_response(self, *, prompt: dict[str, object], tools: list[dict[str, object]], runtime_model, settings) -> dict[str, object]:
         _ = prompt
+        _ = runtime_model
         _ = settings
         self.captured_tools = tools
         return {"output": [{"type": "function_call", "name": "send_message", "arguments": {"extra": "x"}}]}
@@ -152,6 +154,18 @@ def test_provider_tool_export_uses_bound_tool_schema_and_graph_keeps_validation_
                     "llm_max_retries": 0,
                 },
         )(),
+        model_profile=ResolvedModelProfile(
+            profile_key="default",
+            runtime_mode="provider",
+            provider="openai",
+            model_name="gpt-4o-mini",
+            temperature=0.2,
+            max_output_tokens=512,
+            timeout_seconds=30,
+            tool_call_mode="auto",
+            streaming_enabled=True,
+            base_url=None,
+        ),
         client=client,
     )
 
