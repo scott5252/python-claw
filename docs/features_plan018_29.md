@@ -1,245 +1,326 @@
-Missing Features for a Complete OpenClaw Replacement
-After reviewing all 14 implemented specs, the 3 pending specs, and docs/features_plan.md, docs/future_features/future_features.md, and docs/supporting_docs/openclaw_spec_kit_program.md, the following capabilities are absent from the entire spec roadmap (001–017) and would prevent this from being a production-ready OpenClaw replacement:
+# Features Plan 018 Through 029
 
-Spec 018: Authentication, Authorization, and Role-Based Access Control
-What is missing:
-The platform has no identity layer for the humans who operate it. Spec 017 mentions "strengthen auth around diagnostics and admin routes" — that means hardening tokens that already exist, not building a proper auth system. There is no concept of an operator account, admin account, JWT issuance, OAuth integration, or role hierarchy. Any team deploying this in production would have no way to grant an engineer read-only access to diagnostics while giving a team lead approval authority.
+This document proposes the next implementation specs needed to move `python-claw` from the current roadmap in `docs/features_plan.md` into a production-ready OpenClaw replacement. These specs focus on the capabilities that are still absent after Specs 001 through 017:
 
-Detailed scope:
+- operator identity, authorization, and workspace isolation
+- persistent contact management and richer channel-native interaction
+- proactive messaging and external event integrations
+- usage metering, management tooling, and response-quality feedback loops
+- privacy, compliance, safety evaluation, and operator repair controls
 
-Operator and admin account model: identity records, credential storage, password hashing, account states (active, suspended, pending)
-JWT issuance and validation for gateway, diagnostics, admin, and node-runner APIs
-OAuth/SSO integration surface for enterprise identity providers (OIDC-compatible)
-API key management: generate, rotate, revoke API keys for programmatic integrations
-Role definitions: viewer (read diagnostics), operator (manage sessions, process approvals), admin (configure agents, manage channels), super-admin (full platform control)
-Permission boundary enforcement on all existing diagnostic, admin, and approval endpoints
-Session-level access controls so an operator can only act on sessions they are assigned to or own
-Approval authority scoping: only operators with specific roles can approve capability requests
-Audit trail for authentication events: logins, key issuance, permission changes, failed auth attempts
-Tests for unauthorized access, role boundary enforcement, expired tokens, and revoked keys
-Why it comes here:
-Nothing in specs 015–017 adds this. Without operator identity, any hardened auth in spec 017 is still shared-secret or bearer-token-only, which is not viable for multi-team production deployments.
+The sequence below is intentionally dependency-aware. It preserves the existing gateway, worker, database, policy, and channel boundaries while filling the product and operational gaps that remain between a capable assistant runtime and a complete production platform.
 
-Spec 019: Multi-Tenancy and Workspace Isolation
-What is missing:
-The platform is designed as a single-organization deployment. Every session, agent, channel, and policy configuration lives in one shared namespace. There is no concept of a tenant or workspace. Deploying this for multiple clients or business units on shared infrastructure would require separate deployments — a major operational burden and a commercial product blocker.
+## Spec 018: Authentication, Authorization, And Role-Based Access Control
 
-Detailed scope:
+### What this spec should accomplish
 
-Tenant model: durable tenant records with display name, status, configuration, and lifecycle
-Tenant-scoped data partitioning: sessions, messages, runs, approvals, agents, channels, and deliveries all belong to a tenant
-Tenant-specific agent and channel configuration: each tenant configures its own agent profiles, model profiles, channel credentials, and policy profiles
-Tenant resolution from inbound requests: channel adapter requests, API keys, and JWT claims must resolve to a tenant context before routing
-Tenant-aware diagnostics and admin APIs: operators only see data for their authorized tenants
-Tenant quota enforcement: per-tenant limits on active sessions, runs per hour, LLM token budgets, and storage
-Tenant isolation for the node runner: sandbox profiles and execution allowlists are tenant-scoped
-Tenant onboarding and offboarding flows: create, provision, suspend, and delete tenant workspaces
-Cross-tenant isolation tests: prove one tenant cannot read or modify another tenant's data
-Migrations that preserve existing single-tenant data under a bootstrapped default tenant
-Why it comes here:
-The future_features.md section 6.3 explicitly identifies this gap. Without it, the platform cannot be deployed as a SaaS product or shared infrastructure. Every real OpenClaw replacement in a commercial context is multi-tenant by default.
+Add a real operator identity and authorization layer so the platform can support multiple human operators safely, with explicit account models, session-bound permissions, and role-based approval authority.
 
-Spec 020: Contact and End-User Profile Management
-What is missing:
-The platform tracks conversations through sessions, but it has no persistent model of the humans having those conversations. Sessions are keyed by channel/peer identifiers but there is no contact record that unifies a person's identity across channels, accumulates metadata about them, or tracks their history over time. A customer service assistant platform without a contact layer is missing one of its most fundamental features.
+### Detailed scope
 
-Detailed scope:
+- Add operator and admin account models with identity records, credential storage, password hashing, and account states such as active, suspended, and pending.
+- Add JWT issuance and validation for gateway, diagnostics, admin, and node-runner APIs.
+- Add OAuth or SSO integration surfaces for OIDC-compatible enterprise identity providers.
+- Add API key management for programmatic integrations, including key generation, rotation, and revocation.
+- Define role tiers such as viewer, operator, admin, and super-admin.
+- Enforce permission boundaries across existing diagnostics, admin, and approval endpoints.
+- Add session-level access controls so operators can only act on sessions they own or are assigned to.
+- Scope approval authority so only appropriately privileged operators can approve capability requests.
+- Record authentication audit events such as logins, failed attempts, key issuance, and permission changes.
+- Add tests for unauthorized access, role boundary enforcement, expired tokens, and revoked credentials.
 
-Contact model: durable contact records with canonical identity, display name, channel identifiers, metadata, tags, and status
-Cross-channel identity resolution: link a Slack user, Telegram user, and webchat user to the same contact record when identifiable
-Contact-to-session linkage: sessions reference the contact they belong to, enabling cross-session history
-User-level metadata and preferences: store structured contact attributes (language preference, timezone, opt-in/opt-out states, custom fields)
-Contact enrichment from inbound messages: extract and persist contact-identifying signals from channel headers and message metadata
-Contact history API: retrieve all sessions, messages, and events associated with a contact
-Contact search and listing for operators: find contacts by identifier, name, tag, or channel account
-Contact merge: when two contact records are discovered to be the same person, merge their session history
-Privacy controls on contacts: soft delete, hard delete, anonymize for compliance with spec 027
-Diagnostics surfaces for contact-session relationships and contact lifetime
-Why it comes here:
-Without contact records, the platform cannot answer "what has this customer asked before?" or "which agent is responsible for this user?" — questions that are central to any support or operations use case.
+### Why it comes first
 
-Spec 021: Richer Outbound Content and Interactive Messages
-What is missing:
-Specs 007 and 012 add production channel integrations with text delivery and reply threading. But real Slack and Telegram integrations need native interactive content: Slack Block Kit messages with buttons and selects, Telegram inline keyboards, action menus, approval cards with accept/reject controls. Without these, the platform produces plain text in channels that support rich interactive layouts, making it feel significantly inferior to native integrations.
+Specs 015 through 017 improve platform capabilities and hardening, but they do not introduce real human identity. Without operator auth and RBAC, the platform cannot be deployed safely for multi-person operational use.
 
-Detailed scope:
+## Spec 019: Multi-Tenancy And Workspace Isolation
 
-Structured outbound content model: define a channel-agnostic rich content contract (cards, buttons, selects, confirmation dialogs) that maps to provider-native formats
-Slack Block Kit adapter: translate rich content directives into Slack Block Kit JSON for outbound delivery; parse block action payloads from Slack webhook callbacks into inbound message events
-Telegram inline keyboard and reply keyboard adapter: translate rich content into Telegram InlineKeyboardMarkup; parse callback_query payloads as inbound events
-Webchat rich content: translate structured content into webchat-renderable JSON for the frontend
-Approval UX integration: approval-required actions in spec 003 can produce rich approval cards in supported channels, with approve/reject buttons that drive inbound callback events
-Action routing: button clicks, menu selections, and callback events from channel providers route back through the gateway as typed inbound events linked to the originating message and run
-Reply thread management: send rich content as replies within existing threads on Slack/Telegram
-Failure and fallback: degrade gracefully to text when a channel does not support the requested rich content type
-Tests for block/keyboard serialization, callback routing, approval card rendering, and fallback behavior
-Why it comes here:
-Interactive messages are the UX layer that makes channel integrations feel native rather than limited. Without them, the approval workflow (spec 003) and human handoff (spec 016) cannot be driven from channel surfaces — operators must always fall back to raw text commands.
+### What this spec should accomplish
 
-Spec 022: Proactive Messaging, Event Triggers, and Campaign Orchestration
-What is missing:
-Spec 005 adds a durable scheduler that fires system-level jobs back through the gateway. That is infrastructure. What is missing is the product-level proactive messaging layer: operators and the assistant itself should be able to schedule messages to users, set up reminder sequences, trigger outbound messages based on events (a run completing, a user going silent for N hours, an external webhook arriving), and broadcast to a set of contacts. This is a core capability for assistant platforms used in operations or support contexts.
+Introduce tenant-aware isolation so the platform can support multiple customers or business units on shared infrastructure without mixing state, credentials, policies, or execution boundaries.
 
-Detailed scope:
+### Detailed scope
 
-Operator-authored message schedules: an API for operators to schedule one-time or recurring outbound messages to a session or contact
-Reminder and follow-up sequences: define multi-step sequences with conditional branching based on whether a user replied
-Event-triggered proactive messages: configure rules that fire an outbound message when a platform event occurs (e.g., approval granted, delegation completed, no user activity for N hours)
-Audience targeting for broadcasts: send a message to all sessions matching a filter (channel, agent, tag, contact attribute)
-Campaign lifecycle: draft, preview, schedule, send, pause, cancel, and archive campaigns
-Rate limiting and pacing for broadcasts: avoid overwhelming a channel's send rate limits
-Delivery tracking for campaign messages: tie campaign-originated deliveries back to the campaign record
-Opt-out and suppression: respect contact-level opt-out states when delivering campaign messages
-Diagnostics for campaign delivery status, bounce rates, and send timing
-Integration with the existing scheduler infrastructure (spec 005) and outbound dispatcher (spec 007/012)
-Why it comes here:
-Without proactive messaging, the platform is purely reactive — it only responds to inbound messages. Any real support or operations platform needs to reach out to users, remind them of pending items, and broadcast important updates.
+- Add a durable tenant model with display name, status, lifecycle state, and configuration.
+- Partition sessions, messages, runs, approvals, agents, channels, deliveries, and related state by tenant.
+- Add tenant-specific agent, model, channel, and policy configuration.
+- Resolve tenant context from inbound requests using channel mappings, API keys, or JWT claims before routing.
+- Make diagnostics and admin APIs tenant-aware so operators only see authorized workspaces.
+- Add per-tenant quota enforcement for sessions, runs, tokens, storage, and related resource usage.
+- Scope node-runner sandbox profiles and execution allowlists by tenant.
+- Add tenant onboarding, suspension, offboarding, and deletion flows.
+- Add cross-tenant isolation tests proving one tenant cannot read or modify another tenant's data.
+- Add migrations that preserve existing single-tenant deployments under a bootstrapped default tenant.
 
-Spec 023: Outbound Webhooks and External Event Subscription API
-What is missing:
-The platform has no way to notify external systems when things happen. There is no webhook delivery layer, no event subscription registry, and no way for a third-party CRM, ticketing system, or workflow engine to react to platform events in real time. This prevents the platform from being the central orchestration hub for enterprise workflows, which is one of the defining capabilities of an OpenClaw-class assistant platform.
+### Why it comes second
 
-Detailed scope:
+Once operator identity exists, the next missing boundary is workspace isolation. Without this spec, the platform remains effectively single-organization and cannot serve as a shared commercial deployment.
 
-Event catalog: define the set of subscribable platform events (session created, message received, run completed, approval required, approval granted, delegation completed, delivery failed, etc.)
-Webhook endpoint registration: operators register HTTPS endpoints to receive specific event types, scoped to tenant and optionally to agent or channel
-Outbound webhook delivery: when a subscribed event fires, deliver a signed JSON payload to the registered endpoint
-HMAC signature on outbound payloads: receivers can verify payload authenticity
-Retry with exponential backoff: retry failed webhook deliveries up to a configurable limit; record delivery attempts and outcomes
-Dead-letter state: after max retries, mark the delivery as failed and surface it in diagnostics
-Webhook activation and deactivation: operators can pause and resume subscriptions
-Event subscription management API: CRUD for subscriptions, test delivery (send a sample event), delivery history
-Inbound webhook normalization: extend existing channel adapter patterns so that generic third-party webhooks can be registered and routed through the gateway as inbound events (not just Slack/Telegram)
-Tests for event fanout, delivery retry, HMAC verification, and dead-letter behavior
-Why it comes here:
-Enterprise integrations depend on event-driven notification. Without outbound webhooks, every downstream system must poll the platform's APIs, which is inefficient and creates tight coupling.
+## Spec 020: Contact And End-User Profile Management
 
-Spec 024: Usage Metering, Cost Attribution, and Quota Enforcement
-What is missing:
-Spec 017 mentions "quota controls" at the gateway rate-limiting level (requests per second, burst limits). That is traffic management, not usage metering. There is no tracking of LLM token consumption per session, per agent, or per tenant. There is no cost attribution to provider calls. There is no enforcement of budget limits. For any commercial deployment, billing and cost visibility are non-negotiable.
+### What this spec should accomplish
 
-Detailed scope:
+Add a durable contact layer so the platform can model the humans behind sessions, unify identity across channels, and provide cross-session history and metadata for support and operations workflows.
 
-Token usage tracking: capture input and output token counts from every LLM provider call and persist them against the execution run, session, agent, and tenant
-Provider cost attribution: map token usage to estimated cost using configurable per-model pricing rates; store cost estimates with each run
-Usage aggregation: daily, weekly, and monthly rollup tables for usage and cost per tenant, per agent, and per model
-Quota definitions: operators define maximum token budgets, run counts, or cost limits per time period, scoped to tenant or agent
-Quota enforcement: before dispatching an LLM call, check whether the relevant quota would be exceeded; fail closed with a user-visible error if so
-Quota alerts: emit warnings when usage reaches configurable thresholds (e.g., 80% of monthly budget)
-Usage dashboards via diagnostic API: expose current usage, historical rollups, and remaining quota
-Per-session delivery cost tracking: record per-delivery costs for channel providers that charge per message (e.g., SMS, WhatsApp)
-Usage export: provide a usage report export endpoint for billing reconciliation
-Tests for token capture accuracy, quota enforcement at limits, and cost aggregation correctness
-Why it comes here:
-Without metering, the platform has no visibility into how much it costs to run. This is a prerequisite for any commercial deployment, multi-tenant pricing, or abuse prevention.
+### Detailed scope
 
-Spec 025: Admin and Operator Management Console
-What is missing:
-Every operator interaction with the platform today requires direct API calls or database inspection. The diagnostic APIs from spec 008 are read-only and JSON-based. There is no web-based management interface for the humans who operate the platform. The future_features.md section 6.1 explicitly identifies this as a major operational gap.
+- Add durable contact records with canonical identity, display name, channel identifiers, metadata, tags, and status.
+- Add cross-channel identity resolution so users on Slack, Telegram, and webchat can map to the same contact when appropriate.
+- Link sessions to contacts so cross-session history is queryable.
+- Store structured contact metadata such as timezone, language preference, opt-in state, and custom fields.
+- Extract contact signals from inbound message metadata and persist them as enrichment data.
+- Add contact history APIs for retrieving all sessions, messages, and events for a contact.
+- Add operator-facing contact search and listing by name, identifier, tag, or channel account.
+- Add contact merge workflows when duplicate records are discovered.
+- Add privacy actions such as soft delete, hard delete, and anonymization, integrating with later compliance work.
+- Add diagnostics surfaces for contact-to-session relationships and contact lifetime state.
 
-Detailed scope:
+### Why it comes third
 
-Session management UI: search, filter, and inspect sessions; view transcript, run history, attachment list, and delivery records for a session; manually close or reassign a session
-Approval queue UI: view pending approval requests across all sessions; approve or reject from the interface; see approval history and governance events
-Run inspection UI: view execution run state, associated messages, tool calls, tool results, and diagnostics; cancel a stuck run
-Agent configuration UI: view and edit agent profiles, model profiles, policy profiles, and tool profiles without database access
-Channel configuration UI: manage channel credentials, inbound webhook registrations, and delivery settings per channel
-Contact management UI: search contacts, view cross-session history, manage tags, and trigger compliance actions (from spec 027)
-Campaign and proactive message UI: compose, schedule, preview, and monitor campaigns (from spec 022)
-Usage and cost dashboard: visualize token usage, cost trends, and quota status (from spec 024)
-System health and diagnostics dashboard: surfacing key observability signals, stuck run counts, delivery failure rates, and provider health
-RBAC-aware rendering: UI surfaces respect the operator's role (viewer, operator, admin); unauthorized actions are hidden or disabled
-Authentication integration with spec 018 auth system
-Why it comes here:
-The platform cannot realistically be adopted by non-developer operators without a management UI. Every serious OpenClaw-class deployment expects an operator console.
+After tenant and operator boundaries are in place, the next major product gap is the lack of an end-user identity model. Sessions alone are not enough for real customer-service or operations use cases.
 
-Spec 026: Feedback Collection and Response Quality Signals
-What is missing:
-There is no mechanism for users or operators to signal whether a response was good or bad. There is no thumbs-up/down at the message level, no CSAT collection, no escalation flagging, and no review queue for low-quality responses. Without quality signals, there is no feedback loop for improving the assistant, no way to measure whether it is actually helping users, and no way to detect regressions after a model change.
+## Spec 021: Richer Outbound Content And Interactive Messages
 
-Detailed scope:
+### What this spec should accomplish
 
-User-facing feedback primitives: thumbs-up/down at the assistant message level, delivered through channel-appropriate mechanisms (webchat UI buttons, Slack reactions, Telegram inline buttons)
-CSAT collection: after a session closes or a task is completed, optionally solicit a satisfaction rating from the user
-Operator annotation: operators can annotate any session or message with internal quality notes, severity tags, and follow-up flags
-Low-quality response detection: configurable rules for flagging responses that received negative feedback or triggered escalation
-Review queue: an operator-accessible queue of flagged sessions and messages requiring human review
-Quality metrics API: aggregate feedback statistics per agent, per model, per time period — positive rate, negative rate, CSAT average, escalation rate
-Feedback event in the transcript: persist user feedback actions as first-class transcript events so they are auditable and replayable
-Feedback-to-run linkage: associate feedback with the specific execution run and model call that produced the response
-Export and reporting: feedback data exportable for offline analysis or fine-tuning dataset construction
-Tests for feedback submission through each channel type, review queue population, and metric aggregation accuracy
-Why it comes here:
-Quality measurement is the operational foundation for improving an AI assistant. Without it, operators have no objective signal about whether the system is performing well after changes to models, prompts, or policies.
+Expand channel delivery from plain text into native interactive experiences so approvals, guided actions, and structured responses can be handled directly from supported channel surfaces.
 
-Spec 027: Data Retention, Privacy, and Compliance
-What is missing:
-The platform has no configurable data retention policies, no right-to-erasure capability, no data portability export, and no PII-aware anonymization layer. Spec 008 introduced log redaction for structured logs, and spec 017 mentions "audit retention queries" — but those are narrow operational concerns. Complying with GDPR, CCPA, or sector-specific regulations requires a dedicated privacy control layer. Without it, the platform cannot be legally deployed in the EU or regulated industries.
+### Detailed scope
 
-Detailed scope:
+- Define a channel-agnostic structured outbound content model for cards, buttons, selects, and confirmation dialogs.
+- Add a Slack Block Kit adapter for outbound rich content and inbound block action callbacks.
+- Add Telegram inline keyboard and reply keyboard support for outbound content and callback handling.
+- Add webchat rich-content rendering contracts for the frontend.
+- Integrate rich interactive approvals so approval-required actions can render approve and reject controls directly in supported channels.
+- Route button clicks, callback payloads, and menu selections back through the gateway as typed inbound events linked to the originating message and run.
+- Preserve reply-thread behavior for rich content on channels that support it.
+- Add graceful fallback to plain text when a channel does not support the requested interaction type.
+- Add tests for content serialization, callback routing, approval card behavior, and fallback handling.
 
-Retention policy definitions: operators configure how long different data categories are retained (messages, attachments, execution runs, tool audit events, deliveries, context manifests) at the tenant level
-Automated retention enforcement: background jobs that soft-delete or hard-delete records past their retention period according to configured policy
-Right-to-erasure workflow: a formal erasure request process that identifies all data belonging to a contact, purges or anonymizes it across all tables (sessions, messages, attachments, memory rows, retrieval indexes, outbound deliveries, contact records), and produces a completion receipt
-Data portability export: export all data belonging to a contact or session in a structured format (JSON or CSV) for portability requests
-PII detection layer: scan inbound message content and attachment-extracted text for common PII patterns; flag, redact, or quarantine based on configured policy
-Anonymization mode: replace identifying values with pseudonymous identifiers in transcript records for analysis purposes while preserving behavioral data
-Compliance audit log: durable record of all erasure requests, export requests, retention enforcement actions, and PII detection events
-Retention override for legal hold: mark specific sessions or contacts as under legal hold, exempting them from retention enforcement until the hold is lifted
-Tests for erasure completeness, retention enforcement accuracy, PII detection coverage, and legal hold behavior
-Why it comes here:
-Data privacy is a legal prerequisite for deployment in many markets. This cannot be bolted on after the platform is in production — it requires schema-level hooks and enforcement across every data store.
+### Why it comes fourth
 
-Spec 028: Safety Evaluations and Adversarial Testing Framework
-What is missing:
-With a real LLM (spec 009), sub-agents (spec 015), and external channel integrations (spec 012), the attack surface for prompt injection, policy bypass, approval circumvention, and tool misuse grows substantially. The platform has unit tests for functional paths but no systematic adversarial test harness, no dataset-driven eval framework, and no automated regression suite for safety properties. The future_features.md section 5.3 explicitly identifies this as a critical gap for post-LLM deployment.
+Production channel integrations are much more useful when they feel native. This spec builds directly on Spec 012 and makes approval and operator workflows usable from actual channel surfaces instead of only through text commands.
 
-Detailed scope:
+## Spec 022: Proactive Messaging, Event Triggers, And Campaign Orchestration
 
-Adversarial test dataset: curated test cases covering prompt injection attempts, jailbreak patterns, approval circumvention attempts, tool misuse attempts, and malformed tool-call payloads
-Policy bypass regression suite: tests that prove policy enforcement cannot be bypassed through LLM-generated tool calls, regardless of prompt content
-Approval circumvention tests: tests that prove the system cannot be convinced to execute an approval-gated action without a valid matching approval record
-Sub-agent isolation tests (post-spec 015): tests that prove a child agent cannot escalate its own privileges or inherit parent approvals it was not explicitly granted
-Prompt injection detection layer: a configurable pre-processing step that classifies inbound messages for injection patterns before they are passed to the LLM; block or flag suspicious content
-Eval harness: a framework for running a batch of test scenarios against the live system and scoring results, with configurable pass/fail thresholds per safety category
-Regression CI integration: the safety eval suite runs in CI on every model configuration change or system prompt change
-Red-team facilitation tooling: an API surface that allows authorized security testers to submit adversarial scenarios and inspect the system's full response path
-Coverage reporting: track which safety categories are covered by tests and surface gaps
-Tests for the test framework itself: prove the injection detection layer catches known patterns without blocking legitimate messages
-Why it comes here:
-The more capable the platform becomes, the easier it is to exploit if safety properties are not systematically verified. An eval framework is the difference between "we believe it's safe" and "we can prove it is."
+### What this spec should accomplish
 
-Spec 029: Operator Replay, Repair, and State Recovery Tooling
-What is missing:
-The platform maintains durable records of everything — execution runs, outbox jobs, deliveries, context manifests, summary snapshots, delegation records. But when something goes wrong in production, an operator has no friendly tools to intervene. Spec 017 includes "stale-run recovery refinements" at the worker level (automated timeouts), but that is background cleanup, not operator-driven repair. The future_features.md section 6.2 explicitly calls this out as a gap.
+Add product-level proactive messaging so operators and system workflows can schedule, trigger, and broadcast outbound messages instead of remaining purely reactive to inbound conversation.
 
-Detailed scope:
+### Detailed scope
 
-Rerun a failed execution run: an operator API that clones a completed or failed run and re-queues it for execution, with the ability to override run parameters
-Retry a failed outbound delivery: re-enqueue a failed delivery attempt for a specific message and channel, skipping already-completed attempts
-Reprocess a failed outbox job: for failed summary generation, retrieval indexing, or memory extraction jobs, allow an operator to trigger reprocessing for a specific session or message range
-Rebuild continuity for a session: reconstruct summary snapshots, context manifests, and retrieval indexes from the canonical transcript for a session that has corrupted or missing derived state
-Replay transcript from a session: re-feed a session's transcript through the context assembly pipeline to verify or repair derived artifacts
-Force-release a stuck session lane: break a stuck concurrency lane lock for a session where the owning run has already failed or been terminated
-Drain and inspect a specific run: force a running or stuck execution run into a terminal state with an operator-provided reason, persisted in the run record
-Operator audit for repair actions: all repair operations produce an audit entry identifying the operator, the target resource, the action, and the outcome
-Safety guards on repair operations: destructive repairs require confirmation and are blocked for sessions currently under human handoff or active delegation
-Tests for each repair path, idempotency of reprocessing operations, and audit record accuracy
-Why it comes here:
-Production systems break in unpredictable ways. Without operator-friendly repair tooling, every incident requires a developer with database access, which is slow, risky, and unscalable.
+- Add APIs for one-time and recurring scheduled outbound messages to a session or contact.
+- Add reminder and follow-up sequences with branching based on whether a user replied.
+- Add event-triggered outbound messaging for platform events such as approval completion, delegation completion, or prolonged user inactivity.
+- Add audience targeting for broadcast or campaign messaging based on channel, agent, tag, or contact attributes.
+- Add campaign lifecycle states such as draft, preview, schedule, send, pause, cancel, and archive.
+- Add rate limiting and pacing controls for large sends.
+- Tie campaign-originated deliveries back to campaign records for diagnostics.
+- Respect contact-level suppression and opt-out states during delivery.
+- Add diagnostics for campaign status, send timing, bounce behavior, and delivery outcomes.
+- Integrate with the existing scheduler and outbound dispatcher infrastructure.
 
-Summary Table
-Spec	Feature Area	Severity
-018	Authentication, Authorization, and RBAC	Critical — no safe multi-operator deployment without it
-019	Multi-Tenancy and Workspace Isolation	Critical — single-org only without it
-020	Contact and End-User Profile Management	High — no persistent user identity model
-021	Richer Outbound Content and Interactive Messages	High — channels feel limited without native interactive elements
-022	Proactive Messaging, Event Triggers, and Campaigns	High — platform is purely reactive without it
-023	Outbound Webhooks and External Event Subscription API	High — no enterprise integration surface
-024	Usage Metering, Cost Attribution, and Quota Enforcement	High — no cost visibility or abuse prevention
-025	Admin and Operator Management Console	High — developer-only tooling without it
-026	Feedback Collection and Response Quality Signals	Medium-High — no quality measurement loop
-027	Data Retention, Privacy, and Compliance	Critical for regulated markets
-028	Safety Evaluations and Adversarial Testing Framework	High — safety regressions undetectable without it
-029	Operator Replay, Repair, and State Recovery Tooling	Medium-High — production incidents require database access without it
-The most critical blockers — specs 018 (auth/RBAC), 019 (multi-tenancy), and 027 (data privacy/compliance) — would prevent production deployment entirely in most enterprise contexts. The remaining specs represent the gap between a capable developer tool and a complete product.
+### Why it comes fifth
+
+The scheduler foundation already exists, but the platform still lacks proactive product behavior. This spec turns backend scheduling into a user-facing messaging capability.
+
+## Spec 023: Outbound Webhooks And External Event Subscription API
+
+### What this spec should accomplish
+
+Add an event subscription and webhook delivery system so external products can react to platform activity in real time without polling the APIs.
+
+### Detailed scope
+
+- Define a catalog of subscribable platform events such as session created, message received, run completed, approval required, approval granted, delegation completed, and delivery failed.
+- Add webhook endpoint registration scoped by tenant and optionally by agent or channel.
+- Deliver signed JSON payloads to subscribed endpoints when matching events occur.
+- Add HMAC signatures for receiver-side authenticity verification.
+- Add retry with exponential backoff and durable delivery-attempt history.
+- Add dead-letter handling after retry exhaustion and surface failures in diagnostics.
+- Add activation and deactivation controls for subscriptions.
+- Add CRUD and test-delivery APIs for event subscriptions.
+- Extend inbound webhook normalization so generic third-party webhooks can also route through the gateway as inbound events where appropriate.
+- Add tests for event fanout, HMAC verification, retries, and dead-letter behavior.
+
+### Why it comes sixth
+
+Once the platform can proactively message users, the next missing integration surface is proactive messaging to other systems. Webhooks are the standard boundary for enterprise workflow integration.
+
+## Spec 024: Usage Metering, Cost Attribution, And Quota Enforcement
+
+### What this spec should accomplish
+
+Add accurate usage and cost accounting so the platform can measure LLM and channel spend, attribute consumption across tenants and agents, and enforce configurable budgets.
+
+### Detailed scope
+
+- Capture input and output token counts for every LLM provider call and persist them against runs, sessions, agents, and tenants.
+- Map usage to estimated cost with configurable per-model pricing.
+- Add daily, weekly, and monthly rollups for usage and spend by tenant, agent, and model.
+- Add configurable quota definitions for token budgets, run counts, or spend limits.
+- Enforce quotas before LLM execution and fail closed with user-visible errors when limits would be exceeded.
+- Add quota warning thresholds such as 80 percent of monthly budget.
+- Expose usage dashboards and remaining-budget views through diagnostic APIs.
+- Track per-delivery costs for channels that charge by message.
+- Add usage-export endpoints for reconciliation and billing workflows.
+- Add tests for token capture accuracy, quota enforcement, and cost rollup correctness.
+
+### Why it comes seventh
+
+Multi-tenant and proactive systems need visibility into cost and consumption. Without metering and quotas, the platform cannot support commercial governance or reliable abuse prevention.
+
+## Spec 025: Admin And Operator Management Console
+
+### What this spec should accomplish
+
+Add a web-based management console so operators can manage sessions, approvals, agents, channels, contacts, campaigns, and system health without relying on direct API calls or database inspection.
+
+### Detailed scope
+
+- Add a session management UI for searching, filtering, inspecting, closing, and reassigning sessions.
+- Add an approval queue UI for reviewing and actioning pending approvals.
+- Add run inspection views for execution state, tool calls, results, diagnostics, and stuck-run cancellation.
+- Add configuration UIs for agents, model profiles, policy profiles, and tool profiles.
+- Add channel configuration UIs for credentials, webhook registrations, and delivery settings.
+- Add contact management UIs for search, history inspection, tags, and compliance actions.
+- Add campaign composition, scheduling, preview, and monitoring UIs.
+- Add usage and cost dashboards that visualize quota status and spend trends.
+- Add system-health dashboards for observability signals, stuck-run counts, delivery failures, and provider health.
+- Make the console RBAC-aware and integrate it with the auth system from Spec 018.
+
+### Why it comes eighth
+
+Once the platform has tenanting, contact data, campaigns, and quotas, operators need a first-class interface to use them. Otherwise the system remains effectively developer-only.
+
+## Spec 026: Feedback Collection And Response Quality Signals
+
+### What this spec should accomplish
+
+Add structured quality feedback so users and operators can signal response quality, sessions can be flagged for review, and the platform can measure whether changes are improving outcomes.
+
+### Detailed scope
+
+- Add user-facing feedback primitives such as thumbs-up and thumbs-down at the assistant-message level.
+- Add optional CSAT collection after session closure or task completion.
+- Add operator annotations with quality notes, severity labels, and follow-up flags.
+- Add rules for automatically flagging responses that received negative feedback or caused escalation.
+- Add a review queue for flagged sessions and messages.
+- Add quality metrics APIs that aggregate positive rate, negative rate, CSAT, and escalation rate by agent, model, and time period.
+- Persist feedback actions as first-class transcript events for auditability.
+- Link feedback to the run and model output that produced the relevant response.
+- Add export surfaces for reporting, offline analysis, or dataset curation.
+- Add tests for feedback submission, review queue population, and metrics aggregation.
+
+### Why it comes ninth
+
+Once there is an operator console, the next missing loop is quality measurement. Without explicit feedback signals, operators cannot tell whether model, prompt, or policy changes are helping.
+
+## Spec 027: Data Retention, Privacy, And Compliance
+
+### What this spec should accomplish
+
+Add formal data-retention and privacy controls so the platform can satisfy deletion, export, retention, and PII-handling requirements needed for legal and regulated deployment.
+
+### Detailed scope
+
+- Add tenant-level retention policy definitions for messages, attachments, runs, audit events, deliveries, and context artifacts.
+- Add automated enforcement jobs for soft-delete and hard-delete based on configured retention windows.
+- Add right-to-erasure workflows that find and purge or anonymize all contact-linked data across the platform.
+- Add data-portability export flows for contacts or sessions in structured formats.
+- Add PII detection for inbound content and attachment-derived text, with policy-driven flagging, redaction, or quarantine behavior.
+- Add anonymization modes that preserve behavioral data while replacing direct identifiers.
+- Add compliance audit logs for erasure requests, export requests, retention actions, and PII detections.
+- Add legal-hold controls that exempt selected sessions or contacts from retention enforcement.
+- Add tests for erasure completeness, retention accuracy, PII detection coverage, and legal-hold handling.
+
+### Why it comes tenth
+
+By this point the platform holds operator data, tenant data, contact data, campaigns, and feedback. Privacy and compliance controls become a hard deployment requirement rather than an optional hardening pass.
+
+## Spec 028: Safety Evaluations And Adversarial Testing Framework
+
+### What this spec should accomplish
+
+Add a systematic safety-evaluation harness so the platform can prove that policy enforcement, approval gating, and agent boundaries hold up against prompt injection, jailbreaks, and adversarial misuse.
+
+### Detailed scope
+
+- Build an adversarial test dataset covering prompt injection, jailbreak attempts, approval circumvention, tool misuse, and malformed tool-call payloads.
+- Add regression suites that prove backend policy enforcement cannot be bypassed by prompt content.
+- Add approval circumvention tests proving approval-gated actions cannot execute without valid matching approval records.
+- Add sub-agent isolation tests ensuring child agents cannot escalate privileges or inherit approvals they were not given.
+- Add a configurable prompt-injection detection layer ahead of the LLM path, with block-or-flag behavior for suspicious content.
+- Add an eval harness that runs scenario batches and scores results against safety thresholds.
+- Integrate safety evals into CI for model-configuration and system-prompt changes.
+- Add red-team facilitation tooling so authorized testers can submit adversarial scenarios and inspect response paths.
+- Add coverage reporting for evaluated safety categories.
+- Add tests for the safety framework itself so detection logic catches known attacks without overblocking legitimate traffic.
+
+### Why it comes eleventh
+
+The more product surfaces and automation the platform gains, the more important it becomes to verify safety properties continuously rather than relying only on ordinary feature tests.
+
+## Spec 029: Operator Replay, Repair, And State Recovery Tooling
+
+### What this spec should accomplish
+
+Add operator-friendly recovery tools so failed runs, deliveries, summaries, retrieval jobs, and lane state can be replayed or repaired without direct database intervention.
+
+### Detailed scope
+
+- Add an operator API to rerun failed or completed execution runs with optional parameter overrides.
+- Add targeted retry flows for failed outbound deliveries without disturbing already successful attempts.
+- Add reprocessing flows for failed summary generation, retrieval indexing, and memory extraction jobs.
+- Add continuity rebuild operations that reconstruct summary snapshots, context manifests, and retrieval indexes from the canonical transcript.
+- Add transcript replay flows that re-run context assembly against a session to verify or repair derived state.
+- Add forced release of stuck session-lane locks when the owning run is no longer valid.
+- Add drain and termination controls for running or stuck execution runs, with operator-supplied reasons persisted in run records.
+- Add durable audit records for all repair actions, including operator identity, target resource, action, and outcome.
+- Add safety guards so destructive repairs require confirmation and are blocked during incompatible states such as active human handoff or active delegation.
+- Add tests for repair-path behavior, idempotency, and audit accuracy.
+
+### Why it comes last
+
+This spec closes the operational loop. Once the platform is feature-complete and safety-evaluated, operators still need trustworthy repair controls for the production incidents that inevitably happen.
+
+## Recommended Implementation Order
+
+1. Spec 018: Authentication, Authorization, And Role-Based Access Control
+2. Spec 019: Multi-Tenancy And Workspace Isolation
+3. Spec 020: Contact And End-User Profile Management
+4. Spec 021: Richer Outbound Content And Interactive Messages
+5. Spec 022: Proactive Messaging, Event Triggers, And Campaign Orchestration
+6. Spec 023: Outbound Webhooks And External Event Subscription API
+7. Spec 024: Usage Metering, Cost Attribution, And Quota Enforcement
+8. Spec 025: Admin And Operator Management Console
+9. Spec 026: Feedback Collection And Response Quality Signals
+10. Spec 027: Data Retention, Privacy, And Compliance
+11. Spec 028: Safety Evaluations And Adversarial Testing Framework
+12. Spec 029: Operator Replay, Repair, And State Recovery Tooling
+
+## Critical Deployment Gaps
+
+The most serious blockers to a production-ready OpenClaw replacement are:
+
+- Spec 018, because multi-operator deployment is not safe without real identity, auth, and RBAC.
+- Spec 019, because the platform remains single-organization without tenant isolation.
+- Spec 027, because privacy, retention, erasure, and compliance requirements block deployment in many enterprise and regulated environments.
+
+## End-State Goal
+
+If implemented in this order, the application should finish with these properties:
+
+- secure multi-operator access with explicit identity, roles, and approval authority
+- tenant-aware isolation for data, configuration, quotas, and execution boundaries
+- durable contact records and cross-session user history
+- rich native channel interactions instead of plain-text-only delivery
+- proactive outbound messaging, campaigns, and external event integrations
+- measurable usage, cost attribution, and quota enforcement
+- a full operator console for day-to-day platform management
+- durable quality signals for monitoring and improving assistant behavior
+- privacy and compliance controls suitable for regulated deployment
+- repeatable safety evaluation against adversarial misuse
+- operator repair and replay tooling for production incident recovery
+
+That end state extends the current architecture instead of replacing it: the gateway remains the front door, the worker remains the executor, the database remains the durable source of truth, and policy plus approvals remain the enforcement layer while the product surface becomes complete enough for real operational deployment.
