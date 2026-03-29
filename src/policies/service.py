@@ -93,6 +93,11 @@ class PolicyService:
     allowed_capabilities: set[str] | None = None
     policy_profile_key: str = ""
     tool_profile_key: str = ""
+    delegation_enabled: bool = False
+    max_delegation_depth: int = 0
+    allowed_child_agent_ids: set[str] = field(default_factory=set)
+    max_active_delegations_per_run: int | None = None
+    max_active_delegations_per_session: int | None = None
 
     def classify_turn(self, *, user_text: str) -> TurnClassification:
         lowered = user_text.strip().lower()
@@ -213,6 +218,34 @@ class PolicyService:
 
     def is_tool_allowed(self, *, context: ToolRuntimeContext, capability_name: str) -> bool:
         return self.is_tool_visible(context=context, capability_name=capability_name)
+
+    def assert_delegation_allowed(
+        self,
+        *,
+        context: ToolRuntimeContext,
+        child_agent_id: str,
+        depth: int,
+        active_delegations_for_run: int,
+        active_delegations_for_session: int,
+    ) -> None:
+        if not self.is_tool_visible(context=context, capability_name="delegate_to_agent"):
+            raise PermissionError("delegation tool not available in runtime context")
+        if not self.delegation_enabled:
+            raise PermissionError("delegation is disabled for this policy profile")
+        if child_agent_id not in self.allowed_child_agent_ids:
+            raise PermissionError("requested child agent is not allowlisted")
+        if depth > self.max_delegation_depth:
+            raise PermissionError("delegation depth exceeds configured maximum")
+        if (
+            self.max_active_delegations_per_run is not None
+            and active_delegations_for_run >= self.max_active_delegations_per_run
+        ):
+            raise PermissionError("active delegation limit reached for run")
+        if (
+            self.max_active_delegations_per_session is not None
+            and active_delegations_for_session >= self.max_active_delegations_per_session
+        ):
+            raise PermissionError("active delegation limit reached for session")
 
     def has_exact_approval(
         self,

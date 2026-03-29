@@ -38,6 +38,43 @@ from src.tools.typed_actions import get_typed_action
 
 
 class SessionRepository:
+    def create_child_session(
+        self,
+        db: Session,
+        *,
+        parent_session: SessionRecord,
+        delegation_id: str,
+        child_agent_id: str,
+    ) -> SessionRecord:
+        session_key = f"child:{parent_session.id}:{delegation_id}"
+        existing = self.get_session_by_key(db, session_key=session_key)
+        if existing is not None:
+            return existing
+        session = SessionRecord(
+            session_key=session_key,
+            channel_kind=parent_session.channel_kind,
+            channel_account_id=parent_session.channel_account_id,
+            scope_kind=parent_session.scope_kind,
+            peer_id=parent_session.peer_id,
+            group_id=parent_session.group_id,
+            scope_name=parent_session.scope_name,
+            owner_agent_id=child_agent_id,
+            session_kind=SessionKind.CHILD.value,
+            parent_session_id=parent_session.id,
+            transport_address_key=parent_session.transport_address_key,
+            transport_address_json=parent_session.transport_address_json,
+        )
+        db.add(session)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            existing = self.get_session_by_key(db, session_key=session_key)
+            if existing is None:
+                raise
+            return existing
+        return session
+
     def get_or_create_session(
         self,
         db: Session,
@@ -47,6 +84,8 @@ class SessionRepository:
         session_kind: str = SessionKind.PRIMARY.value,
         parent_session_id: str | None = None,
     ) -> SessionRecord:
+        if session_kind == SessionKind.CHILD.value:
+            raise ValueError("child sessions must be created through create_child_session")
         session = db.scalar(select(SessionRecord).where(SessionRecord.session_key == routing.session_key))
         if session is not None:
             return session

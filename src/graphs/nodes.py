@@ -34,6 +34,7 @@ class GraphDependencies:
     activation_controller: Any
     context_service: ContextService
     remote_execution_runtime: Any | None = None
+    delegation_service: Any | None = None
 
 
 def assemble_state(
@@ -87,6 +88,7 @@ def _build_context(*, state: AssistantState, dependencies: GraphDependencies, db
             execution_run_id=state.context_manifest.get("execution_run_id"),
             remote_execution_runtime=dependencies.remote_execution_runtime,
             policy_service=dependencies.policy_service,
+            delegation_service=getattr(dependencies, "delegation_service", None),
         ),
         policy_profile_key=state.policy_profile_key,
         tool_profile_key=state.tool_profile_key,
@@ -612,6 +614,7 @@ def execute_turn_with_options(
                     call=call,
                 )
                 context.policy_context["validated_call"] = call
+                context.policy_context["current_tool_correlation_id"] = call.correlation_id
                 result = tool.invoke(call.validated_request)
                 outcome: dict[str, Any] = {
                     "content": result.content,
@@ -677,6 +680,8 @@ def execute_turn_with_options(
                     error=str(exc),
                     metadata=_build_tool_metadata(call=call),
                 )
+            finally:
+                context.policy_context.pop("current_tool_correlation_id", None)
 
             state.tool_events.append(event)
             dependencies.repository.append_tool_event(db, session_id=state.session_id, event=event)

@@ -44,6 +44,10 @@ class PolicyProfileConfig(BaseModel):
     remote_execution_enabled: bool = False
     denied_capability_names: list[str] = Field(default_factory=list)
     delegation_enabled: bool = False
+    max_delegation_depth: int = 0
+    allowed_child_agent_ids: list[str] = Field(default_factory=list)
+    max_active_delegations_per_run: int | None = None
+    max_active_delegations_per_session: int | None = None
 
     @model_validator(mode="after")
     def validate_policy_profile(self) -> "PolicyProfileConfig":
@@ -51,6 +55,13 @@ class PolicyProfileConfig(BaseModel):
         if not self.key:
             raise ValueError("policy profile key must not be empty")
         self.denied_capability_names = sorted({item.strip() for item in self.denied_capability_names if item.strip()})
+        self.allowed_child_agent_ids = sorted({item.strip() for item in self.allowed_child_agent_ids if item.strip()})
+        if self.max_delegation_depth < 0:
+            raise ValueError("max_delegation_depth must be greater than or equal to 0")
+        if self.max_active_delegations_per_run is not None and self.max_active_delegations_per_run <= 0:
+            raise ValueError("max_active_delegations_per_run must be greater than 0 when set")
+        if self.max_active_delegations_per_session is not None and self.max_active_delegations_per_session <= 0:
+            raise ValueError("max_active_delegations_per_session must be greater than 0 when set")
         return self
 
 
@@ -171,6 +182,10 @@ class Settings(BaseSettings):
     attachment_same_run_max_bytes: int = 262144
     attachment_same_run_pdf_page_limit: int = 5
     attachment_same_run_timeout_seconds: int = 2
+    delegation_package_transcript_turns: int = 6
+    delegation_package_retrieval_items: int = 4
+    delegation_package_attachment_items: int = 2
+    delegation_package_max_chars: int = 4000
     remote_execution_enabled: bool = False
     node_runner_signing_key_id: str = "local-dev"
     node_runner_signing_secret: str = "local-dev-secret"
@@ -253,6 +268,14 @@ class Settings(BaseSettings):
             raise ValueError("attachment_same_run_timeout_seconds must be greater than 0")
         if self.attachment_same_run_fast_path_enabled and not self.attachment_extraction_enabled:
             raise ValueError("attachment extraction must be enabled when same-run fast path is enabled")
+        if self.delegation_package_transcript_turns <= 0:
+            raise ValueError("delegation_package_transcript_turns must be greater than 0")
+        if self.delegation_package_retrieval_items <= 0:
+            raise ValueError("delegation_package_retrieval_items must be greater than 0")
+        if self.delegation_package_attachment_items <= 0:
+            raise ValueError("delegation_package_attachment_items must be greater than 0")
+        if self.delegation_package_max_chars <= 0:
+            raise ValueError("delegation_package_max_chars must be greater than 0")
         lookup: dict[tuple[str, str], ChannelAccountConfig] = {}
         for account in self.channel_accounts:
             key = (account.channel_kind, account.channel_account_id)

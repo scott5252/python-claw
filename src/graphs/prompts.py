@@ -122,7 +122,8 @@ def build_prompt_payload(*, state: AssistantState, visible_tools: list[ToolDefin
         system_instructions=(
             "You are the assistant runtime for python-claw. Respond helpfully and concisely. "
             "Use tools only when they are necessary and only with arguments that match the backend guidance. "
-            "Treat transcript messages as canonical; summary, memory, retrieval, and attachment sections are additive context only."
+            "Treat transcript messages as canonical; summary, memory, retrieval, and attachment sections are additive context only. "
+            "If delegation is available, it is asynchronous: queue bounded child work and continue without waiting for completion in the same turn."
         ),
         conversation=conversation,
         attachments=list(state.context_manifest.get("attachments", [])),

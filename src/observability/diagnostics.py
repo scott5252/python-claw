@@ -46,6 +46,7 @@ def decode_cursor(cursor: str) -> tuple[datetime, str]:
 @dataclass
 class DiagnosticsService:
     settings: Settings
+    delegation_service: Any | None = None
 
     def _resolve_limit(self, limit: int | None) -> int:
         return min(limit or self.settings.diagnostics_page_default_limit, self.settings.diagnostics_page_max_limit)
@@ -130,6 +131,25 @@ class DiagnosticsService:
             ),
         }
         failures = [item for item in [run.last_error, run.degraded_reason] if item]
+        delegation_payload = None
+        if self.delegation_service is not None:
+            if run.trigger_kind == "delegation_child":
+                delegation = self.delegation_service.repository.get_by_child_run(db, child_run_id=run.id)
+            elif run.trigger_kind == "delegation_result":
+                delegation = self.delegation_service.repository.get_delegation(db, delegation_id=run.trigger_ref)
+            else:
+                delegation = None
+            if delegation is not None:
+                delegation_payload = {
+                    "delegation_id": delegation.id,
+                    "parent_session_id": delegation.parent_session_id,
+                    "child_session_id": delegation.child_session_id,
+                    "parent_run_id": delegation.parent_run_id,
+                    "child_run_id": delegation.child_run_id,
+                    "status": delegation.status,
+                    "depth": delegation.depth,
+                    "parent_result_run_id": delegation.parent_result_run_id,
+                }
         return RunDiagnosticsResponse(
             run=ExecutionRunResponse.model_validate(run, from_attributes=True),
             lane_lease=None
@@ -145,13 +165,13 @@ class DiagnosticsService:
                 "lease_expires_at": global_lease.lease_expires_at,
             },
             recent_failures=failures[:5],
-            correlated_artifacts=artifacts,
             execution_binding={
                 "agent_id": run.agent_id,
                 "model_profile_key": run.model_profile_key,
                 "policy_profile_key": run.policy_profile_key,
                 "tool_profile_key": run.tool_profile_key,
             },
+            correlated_artifacts={**artifacts, **({} if delegation_payload is None else {"delegation": delegation_payload})},
         )
 
     def get_session_continuity(self, db: Session, *, session_id: str) -> SessionContinuityDiagnosticsResponse:

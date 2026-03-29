@@ -14,6 +14,8 @@ from src.channels.dispatch_registry import build_dispatcher
 from src.capabilities.activation import ActivationController
 from src.context.service import ContextService
 from src.db.session import DatabaseSessionManager
+from src.delegations.repository import DelegationRepository
+from src.delegations.service import DelegationService
 from src.gateway.idempotency import IdempotencyService
 from src.graphs.assistant_graph import GraphFactory
 from src.graphs.nodes import GraphDependencies
@@ -37,6 +39,7 @@ from src.sessions.concurrency import SessionConcurrencyService
 from src.sessions.repository import SessionRepository
 from src.sessions.service import SessionService
 from src.tools.local_safe import create_echo_text_tool
+from src.tools.delegation import create_delegate_to_agent_tool
 from src.tools.messaging import create_send_message_tool
 from src.tools.remote_exec import create_remote_exec_tool
 from src.tools.registry import ToolRegistry
@@ -67,7 +70,28 @@ def get_db(
         yield db
 
 
-def build_assistant_graph(settings: Settings, repository: SessionRepository, *, binding: AgentExecutionBinding):
+def create_delegation_service(settings: Settings) -> DelegationService:
+    session_repository = SessionRepository()
+    jobs_repository = JobsRepository()
+    return DelegationService(
+        repository=DelegationRepository(
+            session_repository=session_repository,
+            jobs_repository=jobs_repository,
+        ),
+        session_repository=session_repository,
+        jobs_repository=jobs_repository,
+        agent_profile_service=AgentProfileService(repository=AgentRepository(), settings=settings),
+        settings=settings,
+    )
+
+
+def build_assistant_graph(
+    settings: Settings,
+    repository: SessionRepository,
+    *,
+    binding: AgentExecutionBinding,
+    delegation_service: DelegationService | None = None,
+):
     capability_repository = CapabilitiesRepository()
     signing_service = SigningService({settings.node_runner_signing_key_id: settings.node_runner_signing_secret})
     audit_repository = ExecutionAuditRepository()
@@ -112,6 +136,11 @@ def build_assistant_graph(settings: Settings, repository: SessionRepository, *, 
         allowed_capabilities=set(binding.tool_profile.allowed_capability_names),
         policy_profile_key=binding.policy_profile_key,
         tool_profile_key=binding.tool_profile_key,
+        delegation_enabled=binding.policy_profile.delegation_enabled,
+        max_delegation_depth=binding.policy_profile.max_delegation_depth,
+        allowed_child_agent_ids=set(binding.policy_profile.allowed_child_agent_ids),
+        max_active_delegations_per_run=binding.policy_profile.max_active_delegations_per_run,
+        max_active_delegations_per_session=binding.policy_profile.max_active_delegations_per_session,
     )
     retrieval_service = RetrievalService(
         strategy_id=settings.retrieval_strategy_id,
@@ -128,6 +157,7 @@ def build_assistant_graph(settings: Settings, repository: SessionRepository, *, 
                     "echo_text": create_echo_text_tool,
                     "send_message": create_send_message_tool,
                     "remote_exec": create_remote_exec_tool,
+                    "delegate_to_agent": create_delegate_to_agent_tool,
                 }
             ),
             audit_sink=ToolAuditSink(),
@@ -138,6 +168,7 @@ def build_assistant_graph(settings: Settings, repository: SessionRepository, *, 
                 retrieval_service=retrieval_service,
             ),
             remote_execution_runtime=remote_runtime,
+            delegation_service=delegation_service,
         )
     ).build()
 
@@ -160,10 +191,15 @@ def create_session_service(settings: Settings) -> SessionService:
     )
 
 
-def create_run_execution_service(settings: Settings) -> RunExecutionService:
+def create_run_execution_service(
+    settings: Settings,
+    *,
+    delegation_service: DelegationService | None = None,
+) -> RunExecutionService:
     repository = SessionRepository()
     jobs_repository = JobsRepository()
     agent_profile_service = AgentProfileService(repository=AgentRepository(), settings=settings)
+    resolved_delegation_service = delegation_service or create_delegation_service(settings)
     dispatcher = build_dispatcher(settings)
     attachment_extraction_service = MediaExtractionService(
         storage_root=Path(settings.media_storage_root),
@@ -182,7 +218,12 @@ def create_run_execution_service(settings: Settings) -> RunExecutionService:
             global_concurrency_limit=settings.execution_run_global_concurrency,
         ),
         agent_profile_service=agent_profile_service,
-        assistant_graph_factory=lambda binding: build_assistant_graph(settings, repository, binding=binding),
+        assistant_graph_factory=lambda binding: build_assistant_graph(
+            settings,
+            repository,
+            binding=binding,
+            delegation_service=resolved_delegation_service,
+        ),
         failure_classifier=FailureClassifier(),
         base_backoff_seconds=settings.execution_run_backoff_seconds,
         max_backoff_seconds=settings.execution_run_backoff_max_seconds,
@@ -198,6 +239,7 @@ def create_run_execution_service(settings: Settings) -> RunExecutionService:
         ),
         attachment_extraction_service=attachment_extraction_service,
         outbound_dispatcher=dispatcher,
+        delegation_service=resolved_delegation_service,
     )
 
 
@@ -235,7 +277,8 @@ def get_run_execution_service(
     service = getattr(request.app.state, "run_execution_service", None)
     if service is not None:
         return service
-    return create_run_execution_service(settings)
+    delegation_service = getattr(request.app.state, "delegation_service", None)
+    return create_run_execution_service(settings, delegation_service=delegation_service)
 
 
 def get_scheduler_service(
@@ -255,9 +298,23 @@ def get_health_service(
 
 
 def get_diagnostics_service(
+    request: Request,
     settings: Settings = Depends(get_settings),
 ) -> DiagnosticsService:
-    return DiagnosticsService(settings=settings)
+    delegation_service = getattr(request.app.state, "delegation_service", None)
+    if delegation_service is None:
+        delegation_service = create_delegation_service(settings)
+    return DiagnosticsService(settings=settings, delegation_service=delegation_service)
+
+
+def get_delegation_service(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> DelegationService:
+    service = getattr(request.app.state, "delegation_service", None)
+    if service is not None:
+        return service
+    return create_delegation_service(settings)
 
 
 def verify_operator_access(

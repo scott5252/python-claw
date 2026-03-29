@@ -177,6 +177,7 @@ class ToolRuntimeServices:
     execution_run_id: str | None = None
     remote_execution_runtime: Any | None = None
     policy_service: Any | None = None
+    delegation_service: Any | None = None
 
 
 @dataclass(frozen=True)

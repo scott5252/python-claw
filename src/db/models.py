@@ -22,6 +22,7 @@ class ScopeKind(str, Enum):
 class MessageRole(str, Enum):
     USER = "user"
     ASSISTANT = "assistant"
+    SYSTEM = "system"
 
 
 class DedupeStatus(str, Enum):
@@ -58,6 +59,14 @@ class SessionKind(str, Enum):
 class ModelRuntimeMode(str, Enum):
     RULE_BASED = "rule_based"
     PROVIDER = "provider"
+
+
+class DelegationStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class ModelProfileRecord(Base):
@@ -167,6 +176,66 @@ class MessageRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     session: Mapped["SessionRecord"] = relationship(back_populates="messages")
+
+
+class DelegationRecord(Base):
+    __tablename__ = "delegations"
+    __table_args__ = (
+        UniqueConstraint(
+            "parent_run_id",
+            "parent_tool_call_correlation_id",
+            name="uq_delegations_parent_run_correlation",
+        ),
+        Index("ix_delegations_parent_session_created", "parent_session_id", "created_at"),
+        Index("ix_delegations_parent_run_created", "parent_run_id", "created_at"),
+        Index("ix_delegations_child_session_created", "child_session_id", "created_at"),
+        Index("ix_delegations_child_run", "child_run_id"),
+        Index("ix_delegations_status_updated", "status", "updated_at"),
+        Index("ix_delegations_parent_result_run", "parent_result_run_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    parent_session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    parent_message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), nullable=False)
+    parent_run_id: Mapped[str] = mapped_column(ForeignKey("execution_runs.id"), nullable=False)
+    parent_tool_call_correlation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    parent_agent_id: Mapped[str] = mapped_column(ForeignKey("agent_profiles.agent_id"), nullable=False)
+    child_session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    child_message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), nullable=False)
+    child_run_id: Mapped[str] = mapped_column(ForeignKey("execution_runs.id"), nullable=False)
+    child_agent_id: Mapped[str] = mapped_column(ForeignKey("agent_profiles.agent_id"), nullable=False)
+    parent_result_message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id"), nullable=True)
+    parent_result_run_id: Mapped[str | None] = mapped_column(ForeignKey("execution_runs.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default=DelegationStatus.QUEUED.value)
+    depth: Mapped[int] = mapped_column(Integer, nullable=False)
+    delegation_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    task_text: Mapped[str] = mapped_column(Text, nullable=False)
+    context_payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    result_payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class DelegationEventRecord(Base):
+    __tablename__ = "delegation_events"
+    __table_args__ = (
+        Index("ix_delegation_events_delegation_id_id", "delegation_id", "id"),
+        Index("ix_delegation_events_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    delegation_id: Mapped[str] = mapped_column(ForeignKey("delegations.id"), nullable=False)
+    event_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
 class InboundMessageAttachmentRecord(Base):

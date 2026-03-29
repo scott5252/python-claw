@@ -32,6 +32,12 @@ TYPED_ACTIONS: dict[str, TypedAction] = {
         requires_approval=True,
         resource_kind="node_command_template",
     ),
+    "delegate_to_agent": TypedAction(
+        typed_action_id="tool.delegate_to_agent",
+        capability_name="delegate_to_agent",
+        description="Queue asynchronous work for an allowed child agent.",
+        requires_approval=False,
+    ),
 }
 
 

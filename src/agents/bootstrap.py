@@ -35,6 +35,7 @@ def bootstrap_agent_profiles(db: Session, *, settings: Settings) -> None:
     historical_agent_ids = {item for item in db.scalars(select(ExecutionRunRecord.agent_id).distinct()) if item}
     historical_agent_ids.update({item for item in db.scalars(select(SessionRecord.owner_agent_id).distinct()) if item})
     historical_agent_ids.add(settings.default_agent_id)
+    historical_agent_ids.update(override.agent_id for override in settings.historical_agent_profile_overrides)
 
     for agent_id in sorted(historical_agent_ids):
         existing = repository.get_agent_profile(db, agent_id=agent_id)

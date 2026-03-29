@@ -1,6 +1,6 @@
 # Environment Settings Guide
 
-This document explains every setting in [.env.example](/Users/scottcornell/src/my-projects/python-claw/.env.example) and how it relates to the behavior described in the README and Specs 001 through 014.
+This document explains every setting in [.env.example](/Users/scottcornell/src/my-projects/python-claw/.env.example) and how it relates to the behavior described in the README and Specs 001 through 015.
 
 ## How configuration is loaded
 
@@ -65,9 +65,29 @@ PYTHON_CLAW_DEFAULT_AGENT_ID=default-agent
     - Use capability names such as `send_message`, `remote_exec`, or `echo_text`.
   - `delegation_enabled`
     - Optional boolean.
-    - Reserved future-facing flag for later delegation specs.
-    - In Spec 014 it is stored and validated, but there is no delegation orchestration yet.
+    - Enables or disables the `delegate_to_agent` capability for agents using this policy profile.
+    - Delegation still remains fail-closed unless the agent's tool profile also explicitly allowlists `delegate_to_agent`.
     - Allowed values: `true`, `false`
+  - `max_delegation_depth`
+    - Optional integer.
+    - Sets the maximum parent-to-child nesting depth allowed for this policy profile.
+    - `0` means delegation is effectively disabled even if `delegation_enabled=true`, because no child depth is allowed.
+    - Example values: `0`, `1`, `2`
+  - `allowed_child_agent_ids`
+    - Optional array of strings.
+    - Explicit allowlist of child agent ids this policy profile may delegate to.
+    - Child agent ids must also exist as enabled agent profiles with valid linked model, policy, and tool profiles.
+    - Example values: `["research-agent"]`, `["research-agent","coding-agent"]`
+  - `max_active_delegations_per_run`
+    - Optional integer or `null`.
+    - Caps how many `queued` or `running` delegations one parent run can own at the same time.
+    - Use `null` to leave this bound unset.
+    - Example values: `1`, `2`, `null`
+  - `max_active_delegations_per_session`
+    - Optional integer or `null`.
+    - Caps how many `queued` or `running` delegations one parent session can own at the same time across runs.
+    - Use `null` to leave this bound unset.
+    - Example values: `2`, `5`, `null`
 - Validation behavior:
   - duplicate `key` values fail startup
   - blank `key` values fail startup
@@ -84,12 +104,16 @@ PYTHON_CLAW_POLICY_PROFILES=[
     "key":"default",
     "remote_execution_enabled":false,
     "denied_capability_names":["remote_exec"],
-    "delegation_enabled":false
+    "delegation_enabled":false,
+    "max_delegation_depth":0,
+    "allowed_child_agent_ids":[],
+    "max_active_delegations_per_run":null,
+    "max_active_delegations_per_session":null
   }
 ]
 ```
 
-- Example with multiple policy envelopes:
+- Example with delegation enabled for a bounded specialist pair:
 
 ```env
 PYTHON_CLAW_POLICY_PROFILES=[
@@ -97,13 +121,21 @@ PYTHON_CLAW_POLICY_PROFILES=[
     "key":"default",
     "remote_execution_enabled":false,
     "denied_capability_names":[],
-    "delegation_enabled":false
+    "delegation_enabled":false,
+    "max_delegation_depth":0,
+    "allowed_child_agent_ids":[],
+    "max_active_delegations_per_run":null,
+    "max_active_delegations_per_session":null
   },
   {
-    "key":"ops-enabled",
-    "remote_execution_enabled":true,
+    "key":"delegation-enabled",
+    "remote_execution_enabled":false,
     "denied_capability_names":[],
-    "delegation_enabled":false
+    "delegation_enabled":true,
+    "max_delegation_depth":1,
+    "allowed_child_agent_ids":["research-agent","coding-agent"],
+    "max_active_delegations_per_run":1,
+    "max_active_delegations_per_session":2
   }
 ]
 ```
@@ -126,6 +158,7 @@ PYTHON_CLAW_POLICY_PROFILES=[
       - `echo_text`
       - `send_message`
       - `remote_exec`
+      - `delegate_to_agent`
 - Validation behavior:
   - duplicate `key` values fail startup
   - blank `key` values fail startup
@@ -1056,6 +1089,69 @@ PYTHON_CLAW_ATTACHMENT_SAME_RUN_PDF_PAGE_LIMIT=5
 
 ```env
 PYTHON_CLAW_ATTACHMENT_SAME_RUN_TIMEOUT_SECONDS=2
+```
+
+## Delegation Packaging
+
+### `PYTHON_CLAW_DELEGATION_PACKAGE_TRANSCRIPT_TURNS`
+
+- Default: `6`
+- Type: integer
+- Validation: must be greater than `0`
+- What it does: Caps how many recent parent-session transcript messages are packaged into the bounded child delegation context payload.
+- How to configure it: Keep this modest so child tasks get enough recent context without leaking full parent transcripts or blowing up package size. Raise it if delegated work routinely needs a little more recent conversation history.
+- Example:
+
+```env
+PYTHON_CLAW_DELEGATION_PACKAGE_TRANSCRIPT_TURNS=6
+```
+
+### `PYTHON_CLAW_DELEGATION_PACKAGE_RETRIEVAL_ITEMS`
+
+- Default: `4`
+- Type: integer
+- Validation: must be greater than `0`
+- What it does: Caps how many retrieval or memory items may be packaged alongside the delegated child task.
+- How to configure it: Use a lower value if you want very tight child context packages, or a slightly higher value if delegated research tasks need more durable memory and retrieval evidence.
+- Example:
+
+```env
+PYTHON_CLAW_DELEGATION_PACKAGE_RETRIEVAL_ITEMS=4
+```
+
+### `PYTHON_CLAW_DELEGATION_PACKAGE_ATTACHMENT_ITEMS`
+
+- Default: `2`
+- Type: integer
+- Validation: must be greater than `0`
+- What it does: Caps how many attachment-derived excerpts may be included in one child delegation package.
+- How to configure it: Keep this low unless delegated child agents frequently need to reason over multiple uploaded files from the parent turn.
+- Example:
+
+```env
+PYTHON_CLAW_DELEGATION_PACKAGE_ATTACHMENT_ITEMS=2
+```
+
+### `PYTHON_CLAW_DELEGATION_PACKAGE_MAX_CHARS`
+
+- Default: `4000`
+- Type: integer
+- Validation: must be greater than `0`
+- What it does: Sets the maximum serialized character budget for the stored and auditable parent-to-child delegation package.
+- How to configure it: This is the main safety bound for delegation payload size. Increase it if your child tasks need richer summaries or more transcript detail, and lower it if you want stricter containment and cheaper child prompts.
+- Example:
+
+```env
+PYTHON_CLAW_DELEGATION_PACKAGE_MAX_CHARS=4000
+```
+
+- Example bounded specialist configuration:
+
+```env
+PYTHON_CLAW_DELEGATION_PACKAGE_TRANSCRIPT_TURNS=8
+PYTHON_CLAW_DELEGATION_PACKAGE_RETRIEVAL_ITEMS=4
+PYTHON_CLAW_DELEGATION_PACKAGE_ATTACHMENT_ITEMS=1
+PYTHON_CLAW_DELEGATION_PACKAGE_MAX_CHARS=5000
 ```
 
 ## Remote Execution And Node Runner

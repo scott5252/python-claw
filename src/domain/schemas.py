@@ -109,6 +109,57 @@ class ExecutionRunResponse(BaseModel):
     updated_at: datetime
 
 
+class DelegationResultPayload(BaseModel):
+    delegation_id: str
+    child_session_id: str
+    child_run_id: str
+    child_agent_id: str
+    status: str
+    summary_text: str
+    tool_event_count: int = 0
+    outbound_intent_count: int = 0
+    error: str | None = None
+
+
+class DelegationResponse(BaseModel):
+    id: str
+    parent_session_id: str
+    parent_message_id: int
+    parent_run_id: str
+    parent_tool_call_correlation_id: str
+    parent_agent_id: str
+    child_session_id: str
+    child_message_id: int
+    child_run_id: str
+    child_agent_id: str
+    parent_result_message_id: int | None = None
+    parent_result_run_id: str | None = None
+    status: str
+    depth: int
+    delegation_kind: str
+    task_text: str
+    context_payload_json: str
+    result_payload_json: str | None = None
+    failure_detail: str | None = None
+    cancel_reason: str | None = None
+    created_at: datetime
+    queued_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    updated_at: datetime
+
+
+class DelegationEventResponse(BaseModel):
+    id: int
+    delegation_id: str
+    event_kind: str
+    status: str
+    actor_kind: str
+    actor_ref: str | None = None
+    payload_json: str
+    created_at: datetime
+
+
 class SessionRunPageResponse(BaseModel):
     items: list[ExecutionRunResponse]
 

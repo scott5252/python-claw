@@ -55,6 +55,7 @@ class RunExecutionService:
     attachment_extraction_service: object | None = None
     outbound_dispatcher: object | None = None
     settings: Settings | None = None
+    delegation_service: object | None = None
 
     def process_next_run(self, db: Session, *, worker_id: str | None = None) -> str | None:
         resolved_worker_id = worker_id or f"{socket.gethostname()}-worker"
@@ -89,6 +90,8 @@ class RunExecutionService:
                 ),
             )
             self.jobs_repository.mark_running(db, run_id=run.id, worker_id=resolved_worker_id)
+            if self.delegation_service is not None and run.trigger_kind == "delegation_child":
+                self.delegation_service.mark_child_run_running(db, child_run_id=run.id)
             self.concurrency_service.refresh_lane(
                 db,
                 lane_key=run.lane_key,
@@ -135,7 +138,7 @@ class RunExecutionService:
                 execution_run_id=run.id,
                 persist_final_message=False,
             )
-            if self.outbound_dispatcher is not None:
+            if self.outbound_dispatcher is not None and session.session_kind != "child":
                 self.outbound_dispatcher.dispatch_run(
                     db=db,
                     repository=self.session_repository,
@@ -144,6 +147,8 @@ class RunExecutionService:
                     assistant_text=state.response_text,
                 )
             graph.persist_final_state(db=db, state=state)
+            if self.delegation_service is not None and run.trigger_kind == "delegation_child":
+                self.delegation_service.handle_child_run_completed(db, child_run_id=run.id)
             self._enqueue_after_turn_jobs(
                 db,
                 session_id=run.session_id,
@@ -189,6 +194,13 @@ class RunExecutionService:
                         status="failed",
                         error=decision.reason,
                     )
+                if self.delegation_service is not None and run.trigger_kind == "delegation_child":
+                    self.delegation_service.handle_child_run_retry(
+                        db,
+                        child_run_id=run.id,
+                        error=decision.reason,
+                        terminal=updated_run.status == "dead_letter",
+                    )
             else:
                 failed_run = self.jobs_repository.fail_run(
                     db,
@@ -203,6 +215,13 @@ class RunExecutionService:
                         fire_key=run.trigger_ref,
                         status="failed",
                         error=decision.reason,
+                    )
+                if self.delegation_service is not None and run.trigger_kind == "delegation_child":
+                    self.delegation_service.handle_child_run_retry(
+                        db,
+                        child_run_id=run.id,
+                        error=decision.reason,
+                        terminal=True,
                     )
             emit_event(
                 logger,

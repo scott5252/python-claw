@@ -1,9 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from apps.gateway.deps import get_db, get_diagnostics_service, get_session_service, require_operator_access
+from apps.gateway.deps import (
+    get_db,
+    get_delegation_service,
+    get_diagnostics_service,
+    get_session_service,
+    require_operator_access,
+)
+from src.delegations.service import DelegationService
 from src.domain.schemas import (
     AgentProfileResponse,
+    DelegationEventResponse,
+    DelegationResponse,
     DiagnosticsPageResponse,
     ExecutionRunResponse,
     MessagePageResponse,
@@ -63,6 +72,19 @@ def get_agent_sessions(
     service: SessionService = Depends(get_session_service),
 ) -> list[SessionResponse]:
     return service.list_agent_sessions(db, agent_id=agent_id)
+
+
+@router.get(
+    "/agents/{agent_id}/delegations",
+    response_model=list[DelegationResponse],
+    dependencies=[Depends(require_operator_access)],
+)
+def get_agent_delegations(
+    agent_id: str,
+    db: Session = Depends(get_db),
+    service: DelegationService = Depends(get_delegation_service),
+) -> list[DelegationResponse]:
+    return [DelegationResponse.model_validate(item, from_attributes=True) for item in service.repository.list_by_child_agent(db, agent_id=agent_id)]
 
 
 @router.get("/model-profiles", response_model=list[ModelProfileResponse], dependencies=[Depends(require_operator_access)])
@@ -143,6 +165,51 @@ def get_session_runs(
     if page is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
     return page
+
+
+@router.get(
+    "/sessions/{session_id}/delegations",
+    response_model=list[DelegationResponse],
+    dependencies=[Depends(require_operator_access)],
+)
+def get_session_delegations(
+    session_id: str,
+    db: Session = Depends(get_db),
+    service: DelegationService = Depends(get_delegation_service),
+) -> list[DelegationResponse]:
+    return [DelegationResponse.model_validate(item, from_attributes=True) for item in service.repository.list_by_parent_session(db, session_id=session_id)]
+
+
+@router.get(
+    "/delegations/{delegation_id}",
+    response_model=DelegationResponse,
+    dependencies=[Depends(require_operator_access)],
+)
+def get_delegation(
+    delegation_id: str,
+    db: Session = Depends(get_db),
+    service: DelegationService = Depends(get_delegation_service),
+) -> DelegationResponse:
+    delegation = service.repository.get_delegation(db, delegation_id=delegation_id)
+    if delegation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="delegation not found")
+    return DelegationResponse.model_validate(delegation, from_attributes=True)
+
+
+@router.get(
+    "/delegations/{delegation_id}/events",
+    response_model=list[DelegationEventResponse],
+    dependencies=[Depends(require_operator_access)],
+)
+def get_delegation_events(
+    delegation_id: str,
+    db: Session = Depends(get_db),
+    service: DelegationService = Depends(get_delegation_service),
+) -> list[DelegationEventResponse]:
+    return [
+        DelegationEventResponse.model_validate(item, from_attributes=True)
+        for item in service.repository.list_events(db, delegation_id=delegation_id)
+    ]
 
 
 @router.get(
