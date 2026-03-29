@@ -126,13 +126,106 @@ Decision:
 - The required implementation suite for this slice uses local or fake adapters for CI reliability and repeatability.
 - Optional environment-gated live-provider or live-channel checks may be added, but they are additive and must not replace the deterministic smoke suite.
 
+### Gap 6: Distinct Operator vs Internal-Service Caller Identity
+The spec requires stronger auth on admin and diagnostics surfaces, but the current code still treats one bearer token check plus optional headers as enough for both human operators and trusted automation.
+
+Options considered:
+- Option A: keep one shared token path and let callers optionally provide an operator header
+- Option B: rely on deployment-layer routing to separate machine and human callers without changing the backend contract
+- Option C: define one explicit dual-caller auth contract where operator callers and internal-service callers authenticate differently, carry different principals, and have different authorization ceilings
+- Option D: require full JWT- or SSO-based role mapping in this slice
+
+Selected option:
+- Option C
+
+Decision:
+- This slice defines two authenticated caller kinds:
+  - operator callers
+  - internal-service callers
+- Operator-authored mutation routes must require both:
+  - valid operator authentication
+  - a durable non-empty operator principal identifier
+- Internal-service callers may satisfy authorization only for machine-safe surfaces such as readiness, diagnostics reads, and other explicitly internal automation paths.
+- Internal-service authentication must not satisfy operator-authored mutation requirements, and implementations must not persist a placeholder principal such as `internal-service` into operator audit fields.
+- Existing diagnostics-specific tokens may remain as rollout aliases, but the production implementation must converge on one shared auth dependency that applies the same caller-kind rules across admin, diagnostics, and readiness surfaces.
+
+### Gap 7: Node-Runner Transport Mode vs Existing In-Process Execution Path
+The spec requires transport-level auth for the node-runner API, but the current gateway/runtime wiring still supports direct in-process execution via an injected runner client.
+
+Options considered:
+- Option A: require all node execution to move to authenticated HTTP immediately
+- Option B: leave local in-process and remote HTTP behavior implicit and let implementations decide case by case
+- Option C: explicitly support `in_process` and `http` node-runner modes, with signed requests always required and transport auth required only when an HTTP boundary exists
+- Option D: remove in-process execution support from the repository entirely
+
+Selected option:
+- Option C
+
+Decision:
+- This slice supports exactly two node-runner modes:
+  - `in_process`
+  - `http`
+- Signed request verification remains mandatory in both modes.
+- In `in_process` mode, there is no network transport boundary, so the runtime may call the policy/executor seam directly inside the trusted process.
+- In `http` mode, gateway-to-runner requests must include both:
+  - transport-level internal authentication
+  - the existing signed request payload
+- `http` mode must be the required production path for remote or separately deployed node runners, while `in_process` remains valid for local development, deterministic tests, and single-process deployments.
+
+### Gap 8: Exact Stale-State Thresholds and Repair Actions
+The spec assigns recovery ownership, but implementation would still be inconsistent unless stale detection thresholds and allowed repair actions are concretely defined per durable workflow family.
+
+Options considered:
+- Option A: let each repository or service choose its own stale heuristics
+- Option B: use one global stale timeout for every workflow family
+- Option C: define one typed stale-state matrix with per-family thresholds and per-family allowed repair actions
+- Option D: keep stale detection diagnostic-only and require manual repair
+
+Selected option:
+- Option C
+
+Decision:
+- This slice defines one authoritative stale-state matrix covering:
+  - `execution_runs`
+  - `outbox_jobs`
+  - `outbound_deliveries`
+  - `node_execution_audits`
+- Each workflow family must have:
+  - one explicit stale threshold source from settings
+  - one bounded eligible-state set
+  - one bounded repair action set
+- Recovery implementations must use that matrix rather than ad hoc service-local heuristics.
+- Diagnostics, alerts, and recovery scans must all derive stale classification from the same threshold and state rules.
+
+### Gap 9: Retry Ownership Between Outbox Jobs and Durable Deliveries
+The repository already has both `outbox_jobs` and `outbound_deliveries`, but the draft does not yet say which durable artifact owns redrive once a delivery row has been created.
+
+Options considered:
+- Option A: let recovery recreate missing or failed deliveries by replaying outbox work every time
+- Option B: allow both outbox scans and delivery scans to retry the same logical send independently
+- Option C: keep `outbox_jobs` as the owner of pre-dispatch orchestration, but once an `outbound_delivery` exists, all transport retry and redrive must hang off that durable delivery identity and its attempts
+- Option D: collapse delivery retry back into outbox-only orchestration
+
+Selected option:
+- Option C
+
+Decision:
+- `outbox_jobs` remain the owner of after-turn orchestration before transport delivery is materialized.
+- Once a logical `outbound_delivery` row exists for an outbound intent or chunk, later transport retries and recovery-safe redrive must use that `outbound_delivery` identity and append-only attempts rather than minting fresh outbox work.
+- Recovery may materialize a missing delivery row from an existing outbound intent only when no logical delivery row exists yet for that identity.
+- Recovery and retry code must never create a second logical delivery row for the same existing `(outbound_intent_id, chunk_index)` identity.
+
 ## Current-State Baseline
 - `apps/gateway/deps.py` already centralizes service construction and currently exposes operator auth through `verify_operator_access(...)`, but only some admin and health surfaces require it.
 - `apps/gateway/api/admin.py` already exposes sensitive session, governance, run, delegation, and diagnostics reads, but several read routes remain unauthenticated.
 - `apps/node_runner/api/internal.py` validates signed execution payloads, but the route itself does not currently require a second transport-level internal auth guard.
+- `apps/gateway/deps.py` currently allows the internal-service token path to satisfy operator access and to collapse principal derivation to a placeholder `internal-service`, which is not sufficient for durable operator-authored audit semantics.
+- `src/execution/runtime.py` and `apps/gateway/deps.py` currently support an injected in-process node-runner client path, so the spec must distinguish local trusted execution from remote HTTP transport hardening explicitly.
 - `src/config/settings.py` already holds provider, channel, diagnostics, sandbox, retention, and observability configuration, but production-safe defaults and startup validation are still minimal.
+- `src/config/settings.py` already includes stale-threshold settings for runs, outbox jobs, deliveries, and node execution, but today those thresholds primarily support diagnostics rather than one authoritative repair matrix.
 - `src/observability/metrics.py` and `src/observability/tracing.py` are still stub facades and do not yet emit exporter-backed telemetry.
 - `src/jobs/service.py`, `src/channels/dispatch.py`, `src/observability/diagnostics.py`, and the existing lease tables already provide the persistence seams needed for retry, recovery, and alertable stale-work detection.
+- `src/channels/dispatch.py` already creates durable delivery rows and append-only attempts, but retry ownership between those rows and the higher-level outbox workflow is not yet codified as one production-safe contract.
 - `src/sandbox/service.py`, `src/execution/runtime.py`, `apps/node_runner/policy.py`, and `src/db/models.py` already contain the remote execution and sandbox boundaries that this spec must harden rather than replace.
 
 ## Data Model Changes
@@ -195,9 +288,16 @@ Decision:
 - Add explicit production auth settings in `src/config/settings.py`:
   - `admin_reads_require_auth` boolean default `true`
   - `diagnostics_require_auth` boolean default `true`
+  - `operator_auth_bearer_token`
+  - `internal_service_auth_token`
   - `operator_principal_header_name`
+  - `internal_service_principal_header_name`
   - `node_runner_internal_bearer_token` nullable but required when remote execution is enabled outside local test mode
   - `auth_fail_closed_in_production` boolean default `true`
+- Support rollout-safe aliases from existing diagnostics auth settings where needed, but the application contract after this slice is one shared operator/internal auth configuration rather than diagnostics-only tokens.
+- Add node-runner transport settings:
+  - `node_runner_mode` with allowed values `in_process` or `http`
+  - `node_runner_base_url` required when `node_runner_mode=http`
 - Add quota and rate-limit settings:
   - `rate_limits_enabled`
   - `inbound_requests_per_minute_per_channel_account`
@@ -217,6 +317,10 @@ Decision:
   - `recovery_scan_interval_seconds`
   - `recovery_batch_size`
   - `recovery_max_attempts_per_record`
+  - `execution_run_recovery_grace_seconds`
+  - `outbox_job_recovery_grace_seconds`
+  - `outbound_delivery_recovery_grace_seconds`
+  - `node_execution_recovery_grace_seconds`
 - Add observability and diagnostics settings:
   - `audit_retention_days`
   - `diagnostics_default_lookback_hours`
@@ -241,10 +345,16 @@ Decision:
   - internal-service calls may satisfy authorization for trusted automation
   - internal-service callers must not implicitly become arbitrary operators
   - operator-authored writes still require a durable principal identifier
+- Internal-service callers must carry a durable service principal separate from human operator identity, using a bounded header or equivalent internal caller contract.
+- Routes that mutate collaboration state, assignments, operator notes, or operator approval decisions must reject internal-service-only caller identity even when the internal-service token is otherwise valid.
+- Health readiness and diagnostics read routes may accept internal-service authentication, but operator-facing admin mutations may not.
 - `apps/node_runner/api/internal.py` must require both:
   - valid transport-level internal authentication such as `Authorization: Bearer ...` or equivalent header contract
   - valid signed request verification through the existing signing policy
 - A request that fails either node-runner check must fail closed before execution.
+- Supported node-runner transport modes are:
+  - `in_process`, where no HTTP transport auth applies because the execution path stays inside the trusted process boundary
+  - `http`, where both internal bearer auth and signed request verification are mandatory on every POST and status GET
 - Channel-provider callback surfaces must continue verifying provider signatures or secrets through their adapters before acceptance, and failures must return bounded auth errors without leaking configured credentials.
 - Health and readiness surfaces may stay public only for `live` probes. Any surface that reveals dependency readiness, configuration posture, or diagnostics detail must require auth when the corresponding hardening setting is enabled.
 
@@ -294,6 +404,9 @@ Decision:
 - Non-retryable delivery failures must transition to a terminal failed state and must not be retried automatically.
 - Delivery redrive must operate from already-persisted outbound intent artifacts and delivery rows only.
 - Delivery redrive must not append a second assistant transcript message and must not re-execute tools.
+- `outbox_jobs` may own the pre-delivery orchestration step, but once a logical `outbound_delivery` row exists for an intent identity, transport retry ownership transfers to the delivery row plus its append-only attempts.
+- Recovery may create a missing delivery row from an existing outbound intent only when no prior logical delivery row exists for that durable identity.
+- Recovery and retry must never create a second logical delivery row for an already-materialized `(outbound_intent_id, chunk_index)` pair.
 
 ### Recovery and Reaper Contract
 - One `RecoveryService` or equivalent is the sole owner of stale background-work detection and repair for:
@@ -303,6 +416,19 @@ Decision:
   - `node_execution_audits`
 - Recovery scans must be bounded by configurable batch size and lookback windows.
 - Recovery decisions must be idempotent and auditable.
+- The stale-state matrix for this slice is:
+  - `execution_runs`
+    - stale when status is `claimed` or `running` and either the active lease is expired or the row age exceeds the configured run recovery grace threshold
+    - repair actions may only requeue, classify failed, or dead-letter the existing row
+  - `outbox_jobs`
+    - stale when status is `running` and `updated_at` is older than the configured outbox recovery grace threshold
+    - repair actions may only return the existing job to `pending` with a bounded future `available_at`, or mark it terminally failed
+  - `outbound_deliveries`
+    - stale when the latest attempt is non-terminal beyond the configured delivery recovery grace threshold, or when a retryable failed delivery is due for redrive at `available_at`
+    - repair actions may only create a new attempt under the existing logical delivery row, or mark the existing delivery terminally failed
+  - `node_execution_audits`
+    - stale when status is `received` or `running` beyond the configured node-execution recovery grace threshold
+    - repair actions may only reconcile the existing `request_id` to a bounded terminal state, or release the owning run to retry through a later execution attempt
 - Minimum recovery actions in this slice are:
   - reclaim stale claimed or running `execution_runs` whose leases are expired and whose terminal state was not persisted
   - redrive stale `outbox_jobs` that are safe to retry from existing durable inputs
@@ -407,7 +533,9 @@ Decision:
 
 ## Acceptance Criteria
 - Every route in `apps/gateway/api/admin.py` is protected by the production operator-auth contract when production auth is enabled.
+- Internal-service auth is accepted only on explicitly machine-safe routes and cannot be used to satisfy operator-authored mutation routes.
 - `apps/node_runner/api/internal.py` rejects requests that lack valid internal auth even if the signed payload is otherwise well formed.
+- Remote node-runner deployments use `node_runner_mode=http` with both bearer auth and signed requests, while local deterministic environments may still use `node_runner_mode=in_process`.
 - Gateway inbound and callback surfaces return bounded `429` responses under configured rate limits without creating duplicate transcript or run records.
 - Provider-backed runtime retries retryable provider failures with bounded backoff and preserves one canonical `execution_run`.
 - Retryable outbound delivery failures can be redriven from persisted delivery state without re-running the graph or duplicating assistant transcript rows.
@@ -420,15 +548,18 @@ Decision:
 
 ## Test Expectations
 - Unit tests for operator-auth gating, operator principal derivation, and fail-closed route behavior
+- Unit tests for distinct operator vs internal-service caller handling, including rejection of internal-service identity on operator-authored write routes
 - Unit tests for node-runner dual-auth enforcement and signing-key rotation overlap
+- Unit tests for `node_runner_mode=in_process` versus `node_runner_mode=http` contract behavior
 - Unit tests for quota counter decisions, bounded scope keys, counter retention, and concurrent increment correctness
 - Unit tests for provider backoff classification and delivery retry scheduling
-- Unit tests for recovery-service decision logic and idempotent redrive behavior
+- Unit tests for recovery-service stale-matrix decision logic and idempotent redrive behavior
 - Unit tests for metrics/tracing adapters proving enabled vs disabled behavior through the existing facades
 - Unit tests for secret redaction and masked diagnostics payloads
 - Integration tests for inbound rate limiting with no duplicate transcript writes
 - Integration tests for retryable provider failure followed by successful completion on the same logical run
 - Integration tests for retryable delivery failure followed by redrive from persisted outbound artifacts only
+- Integration tests proving a previously materialized delivery retries under the existing `outbound_delivery` identity rather than through duplicate outbox replay
 - Integration tests for stale claimed or running work reconciliation using lease expiry and recovery scans
 - Integration tests for node-runner auth rejection and accepted signed execution
 - Integration tests for media purge and bounded metadata preservation after deletion
