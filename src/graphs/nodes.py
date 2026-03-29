@@ -35,6 +35,7 @@ class GraphDependencies:
     context_service: ContextService
     remote_execution_runtime: Any | None = None
     delegation_service: Any | None = None
+    approval_decision_service: Any | None = None
 
 
 def assemble_state(
@@ -132,6 +133,38 @@ def _handle_approval_decision(
         state.response_text = f"No pending proposal found for `{proposal_id}`."
         return state
 
+    if dependencies.approval_decision_service is not None:
+        result = dependencies.approval_decision_service.decide(
+            db,
+            session_id=state.session_id,
+            message_id=state.message_id,
+            actor_id=state.sender_id,
+            decision="approve",
+            proposal_id=proposal_id,
+            token=None,
+            decided_via="text_command",
+        )
+        packet = dependencies.repository.get_proposal_packet(db, proposal_id=proposal_id)
+        _record_governance_audit(
+            db=db,
+            dependencies=dependencies,
+            session_id=state.session_id,
+            correlation_id=proposal_id,
+            capability_name=packet["capability_name"],
+            event_kind="approval_decision",
+            status="approved",
+            payload={
+                "proposal_id": proposal_id,
+                "approval_id": result.approval_id,
+                "approver_id": state.sender_id,
+            },
+        )
+        state.response_text = (
+            f"Approved proposal `{proposal_id}` for `{packet['capability_name']}`. "
+            "Retry the original request to use the newly active capability."
+        )
+        return state
+
     approval = dependencies.repository.approve_proposal(
         db,
         session_id=state.session_id,
@@ -171,6 +204,53 @@ def _handle_approval_decision(
         f"Approved proposal `{proposal_id}` for `{packet['capability_name']}`. "
         "Retry the original request to use the newly active capability."
     )
+    return state
+
+
+def _handle_approval_denial(
+    *,
+    db: Session,
+    state: AssistantState,
+    dependencies: GraphDependencies,
+    classification: TurnClassification,
+) -> AssistantState:
+    proposal_id = classification.proposal_id or ""
+    pending = dependencies.repository.get_pending_proposal(db, proposal_id=proposal_id)
+    if pending is None:
+        state.response_text = f"No pending proposal found for `{proposal_id}`."
+        return state
+    if dependencies.approval_decision_service is not None:
+        dependencies.approval_decision_service.decide(
+            db,
+            session_id=state.session_id,
+            message_id=state.message_id,
+            actor_id=state.sender_id,
+            decision="deny",
+            proposal_id=proposal_id,
+            token=None,
+            decided_via="text_command",
+        )
+        packet = dependencies.repository.get_proposal_packet(db, proposal_id=proposal_id)
+        if packet is not None:
+            _record_governance_audit(
+                db=db,
+                dependencies=dependencies,
+                session_id=state.session_id,
+                correlation_id=proposal_id,
+                capability_name=packet["capability_name"],
+                event_kind="approval_decision",
+                status="denied",
+                payload={"proposal_id": proposal_id, "approver_id": state.sender_id},
+            )
+    else:
+        dependencies.repository.deny_proposal(
+            db,
+            session_id=state.session_id,
+            message_id=state.message_id,
+            proposal_id=proposal_id,
+            approver_id=state.sender_id,
+        )
+    state.response_text = f"Denied proposal `{proposal_id}`."
     return state
 
 
@@ -248,6 +328,15 @@ def _handle_awaiting_approval(
             "canonical_params_hash": packet["canonical_params_hash"],
         },
     )
+    _append_approval_prompt_artifact(
+        db=db,
+        state=state,
+        dependencies=dependencies,
+        proposal_id=proposal.id,
+        capability_name=capability_name,
+        typed_action_id=packet["typed_action_id"],
+        canonical_params_json=packet["canonical_params_json"],
+    )
     state.awaiting_approval = True
     state.response_text = (
         f"Approval required for `{capability_name}`. "
@@ -302,6 +391,41 @@ def _validation_guidance(*, capability_name: str, error: ToolSchemaValidationErr
         return f"Invalid arguments for `{capability_name}`."
     issue_text = "; ".join(f"{issue.field_path}: {issue.message}" for issue in error.issues[:3])
     return f"Invalid arguments for `{capability_name}`. {issue_text}"
+
+
+def _append_approval_prompt_artifact(
+    *,
+    db: Session,
+    state: AssistantState,
+    dependencies: GraphDependencies,
+    proposal_id: str,
+    capability_name: str,
+    typed_action_id: str,
+    canonical_params_json: str,
+) -> None:
+    if state.channel_kind != "webchat":
+        return
+    dependencies.repository.append_artifact(
+        db,
+        session_id=state.session_id,
+        artifact_kind="approval_prompt",
+        correlation_id=proposal_id,
+        capability_name=capability_name,
+        status="pending",
+        payload={
+            "proposal_id": proposal_id,
+            "capability_name": capability_name,
+            "typed_action_id": typed_action_id,
+            "canonical_params_json": canonical_params_json,
+            "execution_run_id": state.context_manifest.get("execution_run_id"),
+            "supported_decisions": ["approve", "deny"],
+            "fallback_instructions": {
+                "approve": f"approve {proposal_id}",
+                "deny": f"deny {proposal_id}",
+            },
+            "explanation": f"Approval is required before `{capability_name}` can execute.",
+        },
+    )
 
 
 def _validate_tool_request(
@@ -368,6 +492,15 @@ def _handle_governed_tool_request(
             "canonical_params_hash": packet["canonical_params_hash"],
             "llm_originated": True,
         },
+    )
+    _append_approval_prompt_artifact(
+        db=db,
+        state=state,
+        dependencies=dependencies,
+        proposal_id=proposal.id,
+        capability_name=call.capability_name,
+        typed_action_id=packet["typed_action_id"],
+        canonical_params_json=packet["canonical_params_json"],
     )
     state.awaiting_approval = True
     state.response_text = (
@@ -456,6 +589,13 @@ def execute_turn_with_options(
 
     if classification.request_class == "approval_decision":
         state = _handle_approval_decision(
+            db=db,
+            state=state,
+            dependencies=dependencies,
+            classification=classification,
+        )
+    elif classification.request_class == "approval_denial":
+        state = _handle_approval_denial(
             db=db,
             state=state,
             dependencies=dependencies,

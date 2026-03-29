@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from src.config.settings import Settings
 from src.db.models import (
+    ApprovalActionPromptRecord,
     ContextManifestRecord,
     ExecutionRunRecord,
     GlobalRunLeaseRecord,
@@ -18,6 +19,7 @@ from src.db.models import (
     OutboundDeliveryAttemptRecord,
     OutboundDeliveryRecord,
     OutboxJobRecord,
+    SessionCollaborationEventRecord,
     SessionRunLeaseRecord,
     SummarySnapshotRecord,
 )
@@ -129,6 +131,16 @@ class DiagnosticsService:
                     select(NodeExecutionAuditRecord.request_id).where(NodeExecutionAuditRecord.execution_run_id == run.id).limit(10)
                 )
             ),
+            "approval_prompt_ids": list(
+                db.scalars(
+                    select(ApprovalActionPromptRecord.id).where(ApprovalActionPromptRecord.message_id == run.message_id).limit(10)
+                )
+            ),
+            "collaboration_event_ids": list(
+                db.scalars(
+                    select(SessionCollaborationEventRecord.id).where(SessionCollaborationEventRecord.related_run_id == run.id).limit(10)
+                )
+            ),
         }
         failures = [item for item in [run.last_error, run.degraded_reason] if item]
         delegation_payload = None
@@ -211,6 +223,14 @@ class DiagnosticsService:
                 .limit(5)
             )
         )
+        collaboration_events = list(
+            db.scalars(
+                select(SessionCollaborationEventRecord.event_kind)
+                .where(SessionCollaborationEventRecord.session_id == session_id)
+                .order_by(SessionCollaborationEventRecord.created_at.desc(), SessionCollaborationEventRecord.id.desc())
+                .limit(5)
+            )
+        )
         return SessionContinuityDiagnosticsResponse(
             session_id=session_id,
             capability_status="enabled",
@@ -221,6 +241,7 @@ class DiagnosticsService:
             pending_outbox_jobs=pending_count,
             failed_outbox_jobs=failed_count,
             recent_run_statuses=recent_run_statuses,
+            recent_collaboration_events=collaboration_events,
         )
 
     def _page_model_rows(self, db: Session, *, stmt: Select[Any], model, limit: int | None, cursor: str | None, serializer):

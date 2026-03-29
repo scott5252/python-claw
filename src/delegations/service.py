@@ -14,6 +14,7 @@ from src.domain.schemas import DelegationResultPayload
 from src.jobs.repository import JobsRepository
 from src.policies.service import PolicyService
 from src.sessions.repository import SessionRepository
+from src.sessions.collaboration import SessionCollaborationService
 
 
 @dataclass
@@ -32,6 +33,7 @@ class DelegationService:
     jobs_repository: JobsRepository
     agent_profile_service: AgentProfileService
     settings: Settings
+    collaboration_service: SessionCollaborationService | None = None
 
     def create_delegation(
         self,
@@ -255,6 +257,17 @@ class DelegationService:
             policy_profile_key=parent_binding.policy_profile_key,
             tool_profile_key=parent_binding.tool_profile_key,
             max_attempts=self.settings.execution_run_max_attempts,
+            status=(
+                "blocked"
+                if self.collaboration_service is not None
+                and self.collaboration_service.should_block_new_automation(session=parent_session)
+                else "queued"
+            ),
+            blocked_reason=(
+                None
+                if self.collaboration_service is None
+                else self.collaboration_service.blocked_reason_for_session(session=parent_session)
+            ),
         )
         self.repository.mark_completed(
             db,

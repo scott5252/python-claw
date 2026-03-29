@@ -100,6 +100,8 @@ class ExecutionRunResponse(BaseModel):
     started_at: datetime | None
     finished_at: datetime | None
     worker_id: str | None
+    blocked_reason: str | None = None
+    blocked_at: datetime | None = None
     last_error: str | None
     trace_id: str | None
     correlation_id: str | None = None
@@ -177,6 +179,13 @@ class SessionResponse(BaseModel):
     session_kind: str
     parent_session_id: str | None
     transport_address_key: str | None = None
+    automation_state: str
+    assigned_operator_id: str | None = None
+    assigned_queue_key: str | None = None
+    automation_state_reason: str | None = None
+    automation_state_changed_at: datetime
+    assignment_updated_at: datetime | None = None
+    collaboration_version: int
     created_at: datetime
     last_activity_at: datetime
 
@@ -213,6 +222,99 @@ class PendingApprovalResponse(BaseModel):
     next_action: str
     proposed_at: datetime
     pending_approval_at: datetime | None
+
+
+class CollaborationSnapshotResponse(BaseModel):
+    session_id: str
+    automation_state: str
+    assigned_operator_id: str | None = None
+    assigned_queue_key: str | None = None
+    automation_state_reason: str | None = None
+    automation_state_changed_at: datetime
+    assignment_updated_at: datetime | None = None
+    collaboration_version: int
+    blocked_run_count: int = 0
+
+
+class CollaborationMutationRequest(BaseModel):
+    expected_collaboration_version: int = Field(ge=1)
+    reason: str | None = None
+    note: str | None = None
+
+
+class CollaborationAssignRequest(BaseModel):
+    expected_collaboration_version: int = Field(ge=1)
+    assigned_operator_id: str | None = None
+    assigned_queue_key: str | None = None
+    reason: str | None = None
+    note: str | None = None
+
+
+class OperatorNoteCreateRequest(BaseModel):
+    note_kind: str = "internal"
+    body: str
+
+
+class OperatorNoteResponse(BaseModel):
+    id: int
+    session_id: str
+    author_kind: str
+    author_id: str | None = None
+    note_kind: str
+    body: str
+    created_at: datetime
+
+
+class CollaborationEventResponse(BaseModel):
+    id: int
+    session_id: str
+    event_kind: str
+    actor_kind: str
+    actor_id: str | None = None
+    automation_state_before: str | None = None
+    automation_state_after: str | None = None
+    assigned_operator_before: str | None = None
+    assigned_operator_after: str | None = None
+    assigned_queue_before: str | None = None
+    assigned_queue_after: str | None = None
+    related_run_id: str | None = None
+    related_note_id: int | None = None
+    related_proposal_id: str | None = None
+    payload_json: str
+    created_at: datetime
+
+
+class ApprovalActionPromptResponse(BaseModel):
+    id: int
+    proposal_id: str
+    session_id: str
+    agent_id: str
+    message_id: int
+    channel_kind: str
+    channel_account_id: str
+    transport_address_key: str | None = None
+    status: str
+    expires_at: datetime
+    decided_at: datetime | None = None
+    decided_via: str | None = None
+    decider_actor_id: str | None = None
+    presentation_payload_json: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ApprovalDecisionRequest(BaseModel):
+    decision: Literal["approve", "deny"]
+    proposal_id: str | None = None
+    token: str | None = None
+
+
+class ApprovalDecisionResponse(BaseModel):
+    proposal_id: str
+    decision: str
+    outcome: str
+    prompt_id: int | None = None
+    approval_id: str | None = None
 
 
 class DependencyStatusResponse(BaseModel):
@@ -285,6 +387,7 @@ class SessionContinuityDiagnosticsResponse(BaseModel):
     pending_outbox_jobs: int = 0
     failed_outbox_jobs: int = 0
     recent_run_statuses: list[str] = Field(default_factory=list)
+    recent_collaboration_events: list[str] = Field(default_factory=list)
 
 
 class ProviderControlResponse(BaseModel):

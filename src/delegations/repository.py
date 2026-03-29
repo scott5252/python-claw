@@ -288,6 +288,8 @@ class DelegationRepository:
         policy_profile_key: str,
         tool_profile_key: str,
         max_attempts: int,
+        status: str = "queued",
+        blocked_reason: str | None = None,
     ):
         run = self.jobs_repository.create_or_get_execution_run(
             db,
@@ -301,6 +303,8 @@ class DelegationRepository:
             trigger_ref=delegation.id,
             lane_key=delegation.parent_session_id,
             max_attempts=max_attempts,
+            status=status,
+            blocked_reason=blocked_reason,
         )
         delegation.parent_result_run_id = run.id
         db.flush()

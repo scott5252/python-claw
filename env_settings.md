@@ -801,6 +801,104 @@ PYTHON_CLAW_EXECUTION_RUN_BACKOFF_MAX_SECONDS=300
 PYTHON_CLAW_EXECUTION_RUN_GLOBAL_CONCURRENCY=4
 ```
 
+### `PYTHON_CLAW_DEFAULT_ASSIGNMENT_QUEUE_KEY`
+
+- Default: `default`
+- Type: string
+- What it does: Supplies the fallback queue or workbucket name recorded on a session when an operator assignment is created without an explicit queue key. Spec 016 uses this as durable assignment metadata for handoff and collaboration flows.
+- How to configure it: Use a stable label that matches how your operators think about ownership, such as one shared queue for all manual work or a team-specific queue name.
+- Example values:
+  `default`, `support`, `vip-escalations`
+- Example:
+
+```env
+PYTHON_CLAW_DEFAULT_ASSIGNMENT_QUEUE_KEY=support
+```
+
+### `PYTHON_CLAW_APPROVAL_ACTION_TOKEN_TTL_SECONDS`
+
+- Default: `3600`
+- Type: integer
+- What it does: Defines how long one-time approval action tokens remain valid after a structured approval prompt is rendered. Spec 016 uses these tokens for admin and channel-facing approval actions so callbacks cannot be replayed forever.
+- How to configure it: Shorter values reduce token exposure; longer values are more forgiving for slow-moving human review workflows.
+- Example values:
+  `900` for a 15-minute approval window, `3600` for a 1-hour default window, `28800` for an 8-hour operator shift.
+- Example:
+
+```env
+PYTHON_CLAW_APPROVAL_ACTION_TOKEN_TTL_SECONDS=3600
+```
+
+### `PYTHON_CLAW_SLACK_INTERACTIVE_APPROVALS_ENABLED`
+
+- Default: `false`
+- Type: boolean
+- What it does: Enables structured interactive approval actions for Slack delivery surfaces instead of relying only on text fallback commands such as `approve <proposal_id>`.
+- How to configure it: Leave this `false` until Slack interactive callbacks, signing, and operator workflow expectations are fully set up for your environment.
+- Example values:
+  `false` for text-only fallback, `true` when Slack interactive approvals are intentionally enabled.
+- Example:
+
+```env
+PYTHON_CLAW_SLACK_INTERACTIVE_APPROVALS_ENABLED=false
+```
+
+### `PYTHON_CLAW_TELEGRAM_INTERACTIVE_APPROVALS_ENABLED`
+
+- Default: `false`
+- Type: boolean
+- What it does: Enables structured interactive approval actions for Telegram surfaces, allowing approval decisions to arrive through authenticated action callbacks instead of text-only fallback.
+- How to configure it: Turn this on only when your Telegram webhook and callback verification path is ready for production use.
+- Example values:
+  `false` for conservative rollout, `true` when Telegram interactive approvals are supported in your deployment.
+- Example:
+
+```env
+PYTHON_CLAW_TELEGRAM_INTERACTIVE_APPROVALS_ENABLED=false
+```
+
+### `PYTHON_CLAW_WEBCHAT_INTERACTIVE_APPROVALS_ENABLED`
+
+- Default: `false`
+- Type: boolean
+- What it does: Enables structured approval actions for the authenticated webchat client surfaces, allowing approval prompts to be presented as backend-owned action payloads rather than text instructions alone.
+- How to configure it: Enable this when your webchat client is prepared to render approval actions and submit decisions back to the backend.
+- Example values:
+  `false` during rollout or for simpler chat UX, `true` when webchat should expose first-class approval buttons or actions.
+- Example:
+
+```env
+PYTHON_CLAW_WEBCHAT_INTERACTIVE_APPROVALS_ENABLED=true
+```
+
+### `PYTHON_CLAW_TAKEOVER_SUPPRESSES_INFLIGHT_DISPATCH`
+
+- Default: `true`
+- Type: boolean
+- What it does: Controls whether Spec 016 human takeover or pause state suppresses user-visible outbound delivery for work that was already claimed and executed but has not yet dispatched. When enabled, the reply remains audit-visible but is not delivered as a normal assistant transcript message.
+- How to configure it: Keep this `true` if human takeover must immediately stop automated outward replies. Set it `false` only if your operators prefer queue-time blocking while allowing already-running replies to finish.
+- Example values:
+  `true` for strict human handoff, `false` for softer takeover semantics.
+- Example:
+
+```env
+PYTHON_CLAW_TAKEOVER_SUPPRESSES_INFLIGHT_DISPATCH=true
+```
+
+### `PYTHON_CLAW_OPERATOR_NOTE_MAX_CHARS`
+
+- Default: `2000`
+- Type: integer
+- What it does: Limits the size of one internal operator note stored in the collaboration audit trail. This prevents oversized handoff notes from bloating durable records or accidentally becoming an unbounded scratchpad.
+- How to configure it: Pick a value large enough for concise handoff summaries and approval context, but small enough to keep notes structured and readable.
+- Example values:
+  `500` for terse operational notes, `2000` for richer handoff summaries, `4000` if your operators need longer case context.
+- Example:
+
+```env
+PYTHON_CLAW_OPERATOR_NOTE_MAX_CHARS=2000
+```
+
 ## Attachment Intake And Media Normalization
 
 ### `PYTHON_CLAW_INBOUND_ATTACHMENT_MAX_METADATA_CHARS`

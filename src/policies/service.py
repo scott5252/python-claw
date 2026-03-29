@@ -113,6 +113,11 @@ class PolicyService:
                 request_class="approval_decision",
                 proposal_id=user_text.strip()[8:].strip(),
             )
+        if lowered.startswith("deny "):
+            return TurnClassification(
+                request_class="approval_denial",
+                proposal_id=user_text.strip()[5:].strip(),
+            )
         if lowered.startswith("revoke "):
             return TurnClassification(
                 request_class="revocation",

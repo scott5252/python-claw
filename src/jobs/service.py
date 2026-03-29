@@ -17,8 +17,10 @@ from src.observability.failures import classify_failure
 from src.observability.logging import build_event, emit_event
 from src.providers.models import ProviderError
 from src.sessions.concurrency import SessionConcurrencyService
+from src.sessions.collaboration import SessionCollaborationService
 from src.sessions.repository import SessionRepository
 from src.config.settings import Settings
+from src.policies.approval_actions import ApprovalDecisionService
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,8 @@ class RunExecutionService:
     outbound_dispatcher: object | None = None
     settings: Settings | None = None
     delegation_service: object | None = None
+    collaboration_service: SessionCollaborationService | None = None
+    approval_decision_service: ApprovalDecisionService | None = None
 
     def process_next_run(self, db: Session, *, worker_id: str | None = None) -> str | None:
         resolved_worker_id = worker_id or f"{socket.gethostname()}-worker"
@@ -138,15 +142,47 @@ class RunExecutionService:
                 execution_run_id=run.id,
                 persist_final_message=False,
             )
-            if self.outbound_dispatcher is not None and session.session_kind != "child":
-                self.outbound_dispatcher.dispatch_run(
+            current_session = self.session_repository.get_session(db, run.session_id)
+            if current_session is None:
+                raise RuntimeError("session not found for execution run")
+            suppress_dispatch = bool(
+                self.collaboration_service is not None
+                and self.settings is not None
+                and self.settings.takeover_suppresses_inflight_dispatch
+                and current_session.session_kind == "primary"
+                and self.collaboration_service.should_block_new_automation(session=current_session)
+            )
+            if suppress_dispatch:
+                self._record_suppressed_delivery(
                     db=db,
-                    repository=self.session_repository,
-                    session=session,
+                    session=current_session,
                     execution_run_id=run.id,
                     assistant_text=state.response_text,
                 )
-            graph.persist_final_state(db=db, state=state)
+                if self.collaboration_service is not None:
+                    self.collaboration_service.record_suppressed_run(
+                        db,
+                        session_id=current_session.id,
+                        run_id=run.id,
+                        reason=current_session.automation_state,
+                        payload={"assistant_text": state.response_text},
+                    )
+            else:
+                if self.outbound_dispatcher is not None and current_session.session_kind != "child":
+                    self.outbound_dispatcher.dispatch_run(
+                        db=db,
+                        repository=self.session_repository,
+                        session=current_session,
+                        execution_run_id=run.id,
+                        assistant_text=state.response_text,
+                    )
+                graph.persist_final_state(db=db, state=state)
+                self._materialize_approval_prompts(
+                    db=db,
+                    session=current_session,
+                    run=run,
+                    assistant_message_id=state.assistant_message_id,
+                )
             if self.delegation_service is not None and run.trigger_kind == "delegation_child":
                 self.delegation_service.handle_child_run_completed(db, child_run_id=run.id)
             self._enqueue_after_turn_jobs(
@@ -252,6 +288,79 @@ class RunExecutionService:
                 db,
                 execution_run_id=run.id,
                 worker_id=resolved_worker_id,
+            )
+
+    def _record_suppressed_delivery(
+        self,
+        *,
+        db: Session,
+        session,
+        execution_run_id: str,
+        assistant_text: str,
+    ) -> None:
+        artifact = self.session_repository.append_outbound_intent(
+            db,
+            session_id=session.id,
+            correlation_id=f"suppressed:{execution_run_id}",
+            payload={
+                "text": assistant_text,
+                "execution_run_id": execution_run_id,
+                "suppressed": True,
+            },
+        )
+        delivery = self.session_repository.create_or_get_outbound_delivery(
+            db,
+            session_id=session.id,
+            execution_run_id=execution_run_id,
+            trace_id=None,
+            outbound_intent_id=artifact.id,
+            channel_kind=session.channel_kind,
+            channel_account_id=session.channel_account_id,
+            delivery_kind="suppressed_text",
+            chunk_index=0,
+            chunk_count=1,
+            reply_to_external_id=None,
+            attachment_id=None,
+            delivery_payload={"text": assistant_text, "suppressed": True},
+        )
+        delivery.status = "suppressed"
+        delivery.completion_status = f"suppressed:{session.automation_state}"
+        db.flush()
+
+    def _materialize_approval_prompts(
+        self,
+        *,
+        db: Session,
+        session,
+        run,
+        assistant_message_id: int | None,
+    ) -> None:
+        if self.approval_decision_service is None or assistant_message_id is None:
+            return
+        artifacts = self.session_repository.list_artifacts(db, session_id=session.id)
+        for artifact in artifacts:
+            if artifact.artifact_kind != "approval_prompt":
+                continue
+            payload = json.loads(artifact.payload_json or "{}")
+            if payload.get("execution_run_id") != run.id:
+                continue
+            existing = [
+                prompt
+                for prompt in self.session_repository.list_approval_action_prompts(db, session_id=session.id)
+                if prompt.proposal_id == payload.get("proposal_id") and prompt.message_id == assistant_message_id
+            ]
+            if existing:
+                continue
+            self.approval_decision_service.materialize_prompt_for_session(
+                db,
+                proposal_id=payload["proposal_id"],
+                session_id=session.id,
+                agent_id=run.agent_id,
+                message_id=assistant_message_id,
+                channel_kind=session.channel_kind,
+                channel_account_id=session.channel_account_id,
+                transport_address_key=session.transport_address_key,
+                canonical_prompt=payload,
             )
 
     def _run_same_turn_attachment_fast_path(self, db: Session, *, message_id: int) -> None:

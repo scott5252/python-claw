@@ -32,6 +32,7 @@ class DedupeStatus(str, Enum):
 
 class ExecutionRunStatus(str, Enum):
     QUEUED = "queued"
+    BLOCKED = "blocked"
     CLAIMED = "claimed"
     RUNNING = "running"
     RETRY_WAIT = "retry_wait"
@@ -54,6 +55,21 @@ class SessionKind(str, Enum):
     PRIMARY = "primary"
     CHILD = "child"
     SYSTEM = "system"
+
+
+class SessionAutomationState(str, Enum):
+    ASSISTANT_ACTIVE = "assistant_active"
+    HUMAN_TAKEOVER = "human_takeover"
+    PAUSED = "paused"
+
+
+class ApprovalActionPromptStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    DENIED = "denied"
+    EXPIRED = "expired"
+    REVOKED = "revoked"
+    SUPERSEDED = "superseded"
 
 
 class ModelRuntimeMode(str, Enum):
@@ -136,6 +152,9 @@ class SessionRecord(Base):
         Index("ix_sessions_owner_agent_created", "owner_agent_id", "created_at"),
         Index("ix_sessions_parent_created", "parent_session_id", "created_at"),
         Index("ix_sessions_session_kind_created", "session_kind", "created_at"),
+        Index("ix_sessions_automation_state_activity", "automation_state", "last_activity_at"),
+        Index("ix_sessions_assigned_operator_activity", "assigned_operator_id", "last_activity_at"),
+        Index("ix_sessions_assigned_queue_activity", "assigned_queue_key", "last_activity_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
@@ -155,6 +174,17 @@ class SessionRecord(Base):
     parent_session_id: Mapped[str | None] = mapped_column(ForeignKey("sessions.id"), nullable=True)
     transport_address_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     transport_address_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    automation_state: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=SessionAutomationState.ASSISTANT_ACTIVE.value,
+    )
+    assigned_operator_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    assigned_queue_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    automation_state_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    automation_state_changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    assignment_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    collaboration_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
@@ -355,6 +385,7 @@ class ExecutionRunRecord(Base):
         Index("ix_execution_runs_status_updated", "status", "updated_at"),
         Index("ix_execution_runs_agent_created", "agent_id", "created_at"),
         Index("ix_execution_runs_model_profile_created", "model_profile_key", "created_at"),
+        Index("ix_execution_runs_status_blocked_created", "status", "blocked_at", "created_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
@@ -375,6 +406,8 @@ class ExecutionRunRecord(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     worker_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    blocked_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    blocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     trace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     correlation_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -438,6 +471,48 @@ class ScheduledJobRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
 
+class SessionOperatorNoteRecord(Base):
+    __tablename__ = "session_operator_notes"
+    __table_args__ = (
+        Index("ix_session_operator_notes_session_id_id", "session_id", "id"),
+        Index("ix_session_operator_notes_author_created", "author_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    author_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    author_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    note_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class SessionCollaborationEventRecord(Base):
+    __tablename__ = "session_collaboration_events"
+    __table_args__ = (
+        Index("ix_session_collaboration_events_session_id_id", "session_id", "id"),
+        Index("ix_session_collaboration_events_event_created", "event_kind", "created_at"),
+        Index("ix_session_collaboration_events_actor_created", "actor_kind", "actor_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    event_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    automation_state_before: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    automation_state_after: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    assigned_operator_before: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    assigned_operator_after: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    assigned_queue_before: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    assigned_queue_after: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    related_run_id: Mapped[str | None] = mapped_column(ForeignKey("execution_runs.id"), nullable=True)
+    related_note_id: Mapped[int | None] = mapped_column(ForeignKey("session_operator_notes.id"), nullable=True)
+    related_proposal_id: Mapped[str | None] = mapped_column(ForeignKey("resource_proposals.id"), nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
 class ScheduledJobFireRecord(Base):
     __tablename__ = "scheduled_job_fires"
     __table_args__ = (
@@ -470,6 +545,7 @@ class GovernanceTranscriptEventRecord(Base):
     proposal_id: Mapped[str | None] = mapped_column(ForeignKey("resource_proposals.id"), nullable=True)
     resource_version_id: Mapped[str | None] = mapped_column(ForeignKey("resource_versions.id"), nullable=True)
     approval_id: Mapped[str | None] = mapped_column(ForeignKey("resource_approvals.id"), nullable=True)
+    approval_prompt_id: Mapped[int | None] = mapped_column(ForeignKey("approval_action_prompts.id"), nullable=True)
     active_resource_id: Mapped[str | None] = mapped_column(ForeignKey("active_resources.id"), nullable=True)
     event_payload: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
@@ -739,6 +815,36 @@ class OutboundDeliveryRecord(Base):
     trace_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     failure_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class ApprovalActionPromptRecord(Base):
+    __tablename__ = "approval_action_prompts"
+    __table_args__ = (
+        UniqueConstraint("approve_token_hash", name="uq_approval_action_prompts_approve_hash"),
+        UniqueConstraint("deny_token_hash", name="uq_approval_action_prompts_deny_hash"),
+        Index("ix_approval_action_prompts_proposal_created", "proposal_id", "created_at"),
+        Index("ix_approval_action_prompts_session_status_created", "session_id", "status", "created_at"),
+        Index("ix_approval_action_prompts_status_expires", "status", "expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    proposal_id: Mapped[str] = mapped_column(ForeignKey("resource_proposals.id"), nullable=False)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    agent_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    message_id: Mapped[int] = mapped_column(ForeignKey("messages.id"), nullable=False)
+    channel_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    channel_account_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    transport_address_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    approve_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    deny_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default=ApprovalActionPromptStatus.PENDING.value)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_via: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    decider_actor_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    presentation_payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
 
 class OutboundDeliveryAttemptRecord(Base):

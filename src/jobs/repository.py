@@ -49,6 +49,8 @@ class JobsRepository:
         trigger_ref: str,
         lane_key: str,
         max_attempts: int,
+        status: str = ExecutionRunStatus.QUEUED.value,
+        blocked_reason: str | None = None,
         now: datetime | None = None,
     ) -> ExecutionRunRecord:
         current_time = now or utc_now()
@@ -75,10 +77,12 @@ class JobsRepository:
             trigger_kind=trigger_kind,
             trigger_ref=trigger_ref,
             lane_key=lane_key,
-            status=ExecutionRunStatus.QUEUED.value,
+            status=status,
             attempt_count=0,
             max_attempts=max_attempts,
             available_at=current_time,
+            blocked_reason=blocked_reason,
+            blocked_at=current_time if status == ExecutionRunStatus.BLOCKED.value else None,
             trace_id=uuid4().hex,
         )
         run.correlation_id = run.trace_id
@@ -254,6 +258,35 @@ class JobsRepository:
         run.updated_at = current_time
         db.flush()
         return run
+
+    def release_blocked_runs(
+        self,
+        db: Session,
+        *,
+        session_id: str,
+        limit: int | None = None,
+        now: datetime | None = None,
+    ) -> list[ExecutionRunRecord]:
+        current_time = now or utc_now()
+        stmt = (
+            select(ExecutionRunRecord)
+            .where(
+                ExecutionRunRecord.session_id == session_id,
+                ExecutionRunRecord.status == ExecutionRunStatus.BLOCKED.value,
+            )
+            .order_by(ExecutionRunRecord.created_at.asc(), ExecutionRunRecord.id.asc())
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        rows = list(db.scalars(stmt))
+        for run in rows:
+            run.status = ExecutionRunStatus.QUEUED.value
+            run.blocked_reason = None
+            run.blocked_at = None
+            run.available_at = current_time
+            run.updated_at = current_time
+        db.flush()
+        return rows
 
     def complete_run(
         self,

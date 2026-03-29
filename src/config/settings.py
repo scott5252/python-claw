@@ -203,6 +203,13 @@ class Settings(BaseSettings):
     diagnostics_page_max_limit: int = 50
     diagnostics_admin_bearer_token: str | None = None
     diagnostics_internal_service_token: str | None = None
+    default_assignment_queue_key: str = "default"
+    approval_action_token_ttl_seconds: int = 3600
+    slack_interactive_approvals_enabled: bool = False
+    telegram_interactive_approvals_enabled: bool = False
+    webchat_interactive_approvals_enabled: bool = False
+    takeover_suppresses_inflight_dispatch: bool = True
+    operator_note_max_chars: int = 2000
     health_ready_requires_auth: bool = True
     observability_metrics_enabled: bool = False
     observability_metrics_path: str = "/metrics"
@@ -239,6 +246,10 @@ class Settings(BaseSettings):
             raise ValueError("runtime_streaming_chunk_chars must be greater than 0")
         if self.webchat_sse_replay_limit <= 0:
             raise ValueError("webchat_sse_replay_limit must be greater than 0")
+        if self.approval_action_token_ttl_seconds <= 0:
+            raise ValueError("approval_action_token_ttl_seconds must be greater than 0")
+        if self.operator_note_max_chars <= 0:
+            raise ValueError("operator_note_max_chars must be greater than 0")
         if self.llm_max_output_tokens is not None and self.llm_max_output_tokens <= 0:
             raise ValueError("llm_max_output_tokens must be greater than 0 when set")
         if self.runtime_mode == "provider" and not self.llm_api_key:
@@ -249,6 +260,8 @@ class Settings(BaseSettings):
             raise ValueError("memory_strategy_id must not be empty")
         if not self.attachment_extraction_strategy_id.strip():
             raise ValueError("attachment_extraction_strategy_id must not be empty")
+        if not self.default_assignment_queue_key.strip():
+            raise ValueError("default_assignment_queue_key must not be empty")
         if self.retrieval_total_items < 0:
             raise ValueError("retrieval_total_items must be greater than or equal to 0")
         if self.retrieval_memory_items < 0 or self.retrieval_attachment_items < 0 or self.retrieval_other_items < 0:
@@ -329,6 +342,15 @@ class Settings(BaseSettings):
         if profile is None:
             raise ValueError(f"tool profile not configured for {key.strip()}")
         return profile
+
+    def channel_supports_interactive_approvals(self, *, channel_kind: str) -> bool:
+        if channel_kind == "slack":
+            return self.slack_interactive_approvals_enabled
+        if channel_kind == "telegram":
+            return self.telegram_interactive_approvals_enabled
+        if channel_kind == "webchat":
+            return self.webchat_interactive_approvals_enabled
+        return False
 
     def get_historical_agent_override(self, agent_id: str) -> HistoricalAgentProfileOverrideConfig | None:
         return self._historical_agent_override_lookup.get(agent_id.strip())

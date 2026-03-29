@@ -6,7 +6,8 @@ import json
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
-from apps.gateway.deps import get_db, get_session_manager, get_session_service, get_settings
+from apps.gateway.deps import get_approval_decision_service, get_db, get_session_manager, get_session_service, get_settings
+from src.policies.approval_actions import ApprovalDecisionService
 from src.config.settings import Settings
 from src.db.session import DatabaseSessionManager
 from src.domain.schemas import (
@@ -15,6 +16,9 @@ from src.domain.schemas import (
     WebchatInboundRequest,
     WebchatInboundResponse,
     WebchatStreamEventPayload,
+    ApprovalActionPromptResponse,
+    ApprovalDecisionRequest,
+    ApprovalDecisionResponse,
 )
 from src.sessions.repository import SessionRepository
 from src.sessions.service import SessionService
@@ -147,3 +151,58 @@ def stream_webchat_deliveries(
             yield f"data: {payload.model_dump_json()}\n\n"
 
     return StreamingResponse(event_iter(), media_type="text/event-stream")
+
+
+@router.get("/accounts/{channel_account_id}/approval-prompts", response_model=list[ApprovalActionPromptResponse])
+def list_webchat_approval_prompts(
+    channel_account_id: str,
+    stream_id: str = Query(...),
+    x_webchat_client_token: str | None = Header(default=None),
+    db=Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> list[ApprovalActionPromptResponse]:
+    account = settings.get_channel_account(channel_kind="webchat", channel_account_id=channel_account_id)
+    _verify_webchat_access(account=account, token=x_webchat_client_token)
+    repository = SessionRepository()
+    items = [
+        ApprovalActionPromptResponse.model_validate(item, from_attributes=True)
+        for item in repository.list_approval_action_prompts_for_surface(
+            db,
+            channel_kind="webchat",
+            channel_account_id=channel_account_id,
+            transport_address_key=stream_id,
+        )
+    ]
+    return items
+
+
+@router.post("/accounts/{channel_account_id}/approval-actions", response_model=ApprovalDecisionResponse)
+def submit_webchat_approval_decision(
+    channel_account_id: str,
+    payload: ApprovalDecisionRequest,
+    x_webchat_client_token: str | None = Header(default=None),
+    db=Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    approvals: ApprovalDecisionService = Depends(get_approval_decision_service),
+) -> ApprovalDecisionResponse:
+    account = settings.get_channel_account(channel_kind="webchat", channel_account_id=channel_account_id)
+    _verify_webchat_access(account=account, token=x_webchat_client_token)
+    if not payload.proposal_id and not payload.token:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="proposal_id or token required")
+    try:
+        result = approvals.decide(
+            db,
+            session_id="",
+            message_id=None,
+            actor_id="webchat-user",
+            decision=payload.decision,
+            proposal_id=payload.proposal_id,
+            token=payload.token,
+            decided_via="channel_action",
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    db.commit()
+    return ApprovalDecisionResponse.model_validate(result, from_attributes=True)

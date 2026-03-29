@@ -3,11 +3,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from apps.gateway.deps import get_session_manager, get_session_service, get_settings
+from apps.gateway.deps import get_approval_decision_service, get_session_manager, get_session_service, get_settings
 from src.channels.adapters.slack import SlackAdapter
 from src.config.settings import Settings
 from src.db.session import DatabaseSessionManager
-from src.domain.schemas import InboundMessageResponse
+from src.domain.schemas import ApprovalDecisionRequest, ApprovalDecisionResponse, InboundMessageResponse
+from src.policies.approval_actions import ApprovalDecisionService
 from src.sessions.service import SessionService
 
 router = APIRouter(prefix="/providers/slack", tags=["providers"])
@@ -50,3 +51,45 @@ async def slack_events(
         dedupe_status=result.dedupe_status,  # type: ignore[arg-type]
         trace_id=result.trace_id,
     )
+
+
+@router.post("/actions/{channel_account_id}", response_model=ApprovalDecisionResponse)
+async def slack_approval_action(
+    channel_account_id: str,
+    request: Request,
+    x_slack_request_timestamp: str | None = Header(default=None),
+    x_slack_signature: str | None = Header(default=None),
+    approvals: ApprovalDecisionService = Depends(get_approval_decision_service),
+    settings: Settings = Depends(get_settings),
+    session_manager: DatabaseSessionManager = Depends(get_session_manager),
+) -> ApprovalDecisionResponse:
+    body = await request.body()
+    payload = await request.json()
+    account = settings.get_channel_account(channel_kind="slack", channel_account_id=channel_account_id)
+    adapter = SlackAdapter()
+    if not adapter.verify_request(
+        body=body,
+        timestamp=x_slack_request_timestamp,
+        signature=x_slack_signature,
+        signing_secret=account.signing_secret if account.mode == "real" else "fake-slack-secret",
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid slack signature")
+    decision = ApprovalDecisionRequest.model_validate(payload)
+    with session_manager.session() as db:
+        try:
+            result = approvals.decide(
+                db,
+                session_id="",
+                message_id=None,
+                actor_id="slack-user",
+                decision=decision.decision,
+                proposal_id=decision.proposal_id,
+                token=decision.token,
+                decided_via="channel_action",
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        db.commit()
+    return ApprovalDecisionResponse.model_validate(result, from_attributes=True)

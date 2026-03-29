@@ -10,13 +10,19 @@ from sqlalchemy.orm import Session
 from src.agents.service import AgentProfileService
 from src.domain.schemas import (
     AgentProfileResponse,
+    ApprovalActionPromptResponse,
+    ApprovalDecisionResponse,
+    CollaborationEventResponse,
+    CollaborationSnapshotResponse,
     ExecutionRunResponse,
     MessagePageResponse,
+    OperatorNoteResponse,
     ModelProfileResponse,
     PendingApprovalResponse,
     SessionResponse,
     SessionRunPageResponse,
 )
+from src.policies.approval_actions import ApprovalDecisionService
 from src.jobs.repository import JobsRepository
 from src.gateway.idempotency import (
     ClaimAccepted,
@@ -26,6 +32,7 @@ from src.gateway.idempotency import (
     IdempotencyService,
 )
 from src.routing.service import RoutingInput, normalize_routing_input
+from src.sessions.collaboration import SessionCollaborationService
 from src.sessions.repository import SessionRepository
 
 
@@ -54,6 +61,8 @@ class SessionService:
         session_runs_page_default_limit: int,
         session_runs_page_max_limit: int,
         execution_run_max_attempts: int,
+        collaboration_service: SessionCollaborationService | None = None,
+        approval_decision_service: ApprovalDecisionService | None = None,
     ):
         self.repository = repository
         self.jobs_repository = jobs_repository
@@ -66,6 +75,16 @@ class SessionService:
         self.session_runs_page_default_limit = session_runs_page_default_limit
         self.session_runs_page_max_limit = session_runs_page_max_limit
         self.execution_run_max_attempts = execution_run_max_attempts
+        self.collaboration_service = collaboration_service
+        self.approval_decision_service = approval_decision_service
+
+    def _run_creation_kwargs(self, *, session) -> dict[str, str | None]:
+        if self.collaboration_service is None or not self.collaboration_service.should_block_new_automation(session=session):
+            return {"status": "queued", "blocked_reason": None}
+        return {
+            "status": "blocked",
+            "blocked_reason": self.collaboration_service.blocked_reason_for_session(session=session),
+        }
 
     def process_inbound(
         self,
@@ -171,6 +190,7 @@ class SessionService:
             lane_key=session.id,
             max_attempts=self.execution_run_max_attempts,
             now=now,
+            **self._run_creation_kwargs(session=session),
         )
         self.idempotency_service.finalize(
             db,
@@ -229,6 +249,7 @@ class SessionService:
             trigger_ref=fire.fire_key,
             lane_key=session.id,
             max_attempts=self.execution_run_max_attempts,
+            **self._run_creation_kwargs(session=session),
         )
         return run.id, run.status
 
@@ -308,6 +329,57 @@ class SessionService:
         return [
             PendingApprovalResponse.model_validate(item)
             for item in self.repository.list_pending_approvals(db, session_id=session_id)
+        ]
+
+    def get_collaboration_snapshot(self, db: Session, *, session_id: str) -> CollaborationSnapshotResponse | None:
+        session = self.repository.get_session(db, session_id)
+        if session is None or self.collaboration_service is None:
+            return None
+        return CollaborationSnapshotResponse.model_validate(
+            self.collaboration_service.build_collaboration_snapshot(db, session_id=session_id)
+        )
+
+    def list_operator_notes(self, db: Session, *, session_id: str) -> list[OperatorNoteResponse] | None:
+        session = self.repository.get_session(db, session_id)
+        if session is None:
+            return None
+        return [OperatorNoteResponse.model_validate(item, from_attributes=True) for item in self.repository.list_operator_notes(db, session_id=session_id)]
+
+    def list_collaboration_events(self, db: Session, *, session_id: str) -> list[CollaborationEventResponse] | None:
+        session = self.repository.get_session(db, session_id)
+        if session is None:
+            return None
+        return [
+            CollaborationEventResponse.model_validate(
+                {
+                    "id": item.id,
+                    "session_id": item.session_id,
+                    "event_kind": item.event_kind,
+                    "actor_kind": item.actor_kind,
+                    "actor_id": item.actor_id,
+                    "automation_state_before": item.automation_state_before,
+                    "automation_state_after": item.automation_state_after,
+                    "assigned_operator_before": item.assigned_operator_before,
+                    "assigned_operator_after": item.assigned_operator_after,
+                    "assigned_queue_before": item.assigned_queue_before,
+                    "assigned_queue_after": item.assigned_queue_after,
+                    "related_run_id": item.related_run_id,
+                    "related_note_id": item.related_note_id,
+                    "related_proposal_id": item.related_proposal_id,
+                    "payload_json": item.payload_json,
+                    "created_at": item.created_at,
+                }
+            )
+            for item in self.repository.list_collaboration_events(db, session_id=session_id)
+        ]
+
+    def list_approval_action_prompts(self, db: Session, *, session_id: str) -> list[ApprovalActionPromptResponse] | None:
+        session = self.repository.get_session(db, session_id)
+        if session is None:
+            return None
+        return [
+            ApprovalActionPromptResponse.model_validate(item, from_attributes=True)
+            for item in self.repository.list_approval_action_prompts(db, session_id=session_id)
         ]
 
     def get_run(self, db: Session, run_id: str) -> ExecutionRunResponse | None:

@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -25,7 +25,14 @@ from src.db.models import (
     ResourceProposalRecord,
     ResourceVersionRecord,
     ScheduledJobRecord,
+    ApprovalActionPromptRecord,
+    ApprovalActionPromptStatus,
+    ExecutionRunRecord,
+    ExecutionRunStatus,
+    SessionAutomationState,
+    SessionCollaborationEventRecord,
     SessionMemoryRecord,
+    SessionOperatorNoteRecord,
     SessionArtifactRecord,
     SessionKind,
     SessionRecord,
@@ -131,6 +138,10 @@ class SessionRepository:
     def get_session(self, db: Session, session_id: str) -> SessionRecord | None:
         return db.get(SessionRecord, session_id)
 
+    def get_session_for_update(self, db: Session, *, session_id: str) -> SessionRecord | None:
+        stmt = select(SessionRecord).where(SessionRecord.id == session_id).with_for_update()
+        return db.scalar(stmt)
+
     def get_session_by_key(self, db: Session, *, session_key: str) -> SessionRecord | None:
         return db.scalar(select(SessionRecord).where(SessionRecord.session_key == session_key))
 
@@ -144,6 +155,123 @@ class SessionRepository:
         if message_id is None:
             return None
         return db.get(MessageRecord, message_id)
+
+    def count_blocked_runs(self, db: Session, *, session_id: str) -> int:
+        return db.scalar(
+            select(func.count()).select_from(ExecutionRunRecord).where(
+                ExecutionRunRecord.session_id == session_id,
+                ExecutionRunRecord.status == ExecutionRunStatus.BLOCKED.value,
+            )
+        ) or 0
+
+    def update_session_collaboration(
+        self,
+        db: Session,
+        *,
+        session: SessionRecord,
+        expected_collaboration_version: int,
+        automation_state: str | None = None,
+        assigned_operator_id: str | None = None,
+        assigned_queue_key: str | None = None,
+        reason: str | None = None,
+        update_assignment: bool = False,
+        now: datetime | None = None,
+    ) -> SessionRecord:
+        if session.collaboration_version != expected_collaboration_version:
+            raise ValueError("stale collaboration version")
+        current_time = now or datetime.now(timezone.utc)
+        if automation_state is not None:
+            session.automation_state = automation_state
+            session.automation_state_reason = reason
+            session.automation_state_changed_at = current_time
+        if update_assignment:
+            session.assigned_operator_id = assigned_operator_id
+            session.assigned_queue_key = assigned_queue_key
+            session.assignment_updated_at = current_time
+        session.collaboration_version += 1
+        db.flush()
+        return session
+
+    def append_operator_note(
+        self,
+        db: Session,
+        *,
+        session_id: str,
+        author_kind: str,
+        author_id: str | None,
+        note_kind: str,
+        body: str,
+    ) -> SessionOperatorNoteRecord:
+        record = SessionOperatorNoteRecord(
+            session_id=session_id,
+            author_kind=author_kind,
+            author_id=author_id,
+            note_kind=note_kind,
+            body=body,
+        )
+        db.add(record)
+        db.flush()
+        return record
+
+    def list_operator_notes(self, db: Session, *, session_id: str) -> list[SessionOperatorNoteRecord]:
+        stmt = (
+            select(SessionOperatorNoteRecord)
+            .where(SessionOperatorNoteRecord.session_id == session_id)
+            .order_by(SessionOperatorNoteRecord.id.asc())
+        )
+        return list(db.scalars(stmt))
+
+    def append_collaboration_event(
+        self,
+        db: Session,
+        *,
+        session_id: str,
+        event_kind: str,
+        actor_kind: str,
+        actor_id: str | None,
+        automation_state_before: str | None = None,
+        automation_state_after: str | None = None,
+        assigned_operator_before: str | None = None,
+        assigned_operator_after: str | None = None,
+        assigned_queue_before: str | None = None,
+        assigned_queue_after: str | None = None,
+        related_run_id: str | None = None,
+        related_note_id: int | None = None,
+        related_proposal_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> SessionCollaborationEventRecord:
+        record = SessionCollaborationEventRecord(
+            session_id=session_id,
+            event_kind=event_kind,
+            actor_kind=actor_kind,
+            actor_id=actor_id,
+            automation_state_before=automation_state_before,
+            automation_state_after=automation_state_after,
+            assigned_operator_before=assigned_operator_before,
+            assigned_operator_after=assigned_operator_after,
+            assigned_queue_before=assigned_queue_before,
+            assigned_queue_after=assigned_queue_after,
+            related_run_id=related_run_id,
+            related_note_id=related_note_id,
+            related_proposal_id=related_proposal_id,
+            payload_json=json.dumps(payload or {}, sort_keys=True),
+        )
+        db.add(record)
+        db.flush()
+        return record
+
+    def list_collaboration_events(self, db: Session, *, session_id: str) -> list[SessionCollaborationEventRecord]:
+        stmt = (
+            select(SessionCollaborationEventRecord)
+            .where(SessionCollaborationEventRecord.session_id == session_id)
+            .order_by(SessionCollaborationEventRecord.id.asc())
+        )
+        return list(db.scalars(stmt))
+
+    def is_automation_active(self, session: SessionRecord) -> bool:
+        if session.session_kind != SessionKind.PRIMARY.value:
+            return True
+        return session.automation_state == SessionAutomationState.ASSISTANT_ACTIVE.value
 
     def get_scheduled_job_by_key(self, db: Session, *, job_key: str) -> ScheduledJobRecord | None:
         return db.scalar(select(ScheduledJobRecord).where(ScheduledJobRecord.job_key == job_key))
@@ -754,6 +882,7 @@ class SessionRepository:
         proposal_id: str | None = None,
         resource_version_id: str | None = None,
         approval_id: str | None = None,
+        approval_prompt_id: int | None = None,
         active_resource_id: str | None = None,
     ) -> GovernanceTranscriptEventRecord:
         event = GovernanceTranscriptEventRecord(
@@ -763,6 +892,7 @@ class SessionRepository:
             proposal_id=proposal_id,
             resource_version_id=resource_version_id,
             approval_id=approval_id,
+            approval_prompt_id=approval_prompt_id,
             active_resource_id=active_resource_id,
             event_payload=json.dumps(payload, sort_keys=True),
         )
@@ -1190,6 +1320,9 @@ class SessionRepository:
             return None
         return proposal
 
+    def get_proposal(self, db: Session, *, proposal_id: str) -> ResourceProposalRecord | None:
+        return db.get(ResourceProposalRecord, proposal_id)
+
     def get_proposal_packet(self, db: Session, *, proposal_id: str) -> dict[str, Any] | None:
         proposal = db.get(ResourceProposalRecord, proposal_id)
         if proposal is None or proposal.latest_version_id is None:
@@ -1254,6 +1387,142 @@ class SessionRepository:
                 }
             )
         return items
+
+    def create_approval_action_prompt(
+        self,
+        db: Session,
+        *,
+        proposal_id: str,
+        session_id: str,
+        agent_id: str,
+        message_id: int,
+        channel_kind: str,
+        channel_account_id: str,
+        transport_address_key: str | None,
+        approve_token_hash: str,
+        deny_token_hash: str,
+        expires_at: datetime,
+        presentation_payload: dict[str, Any],
+    ) -> ApprovalActionPromptRecord:
+        if transport_address_key is None:
+            existing = db.scalar(
+                select(ApprovalActionPromptRecord).where(
+                    ApprovalActionPromptRecord.proposal_id == proposal_id,
+                    ApprovalActionPromptRecord.session_id == session_id,
+                    ApprovalActionPromptRecord.agent_id == agent_id,
+                    ApprovalActionPromptRecord.channel_kind == channel_kind,
+                    ApprovalActionPromptRecord.channel_account_id == channel_account_id,
+                    ApprovalActionPromptRecord.transport_address_key.is_(None),
+                    ApprovalActionPromptRecord.status == ApprovalActionPromptStatus.PENDING.value,
+                )
+            )
+        else:
+            existing = db.scalar(
+                select(ApprovalActionPromptRecord).where(
+                    ApprovalActionPromptRecord.proposal_id == proposal_id,
+                    ApprovalActionPromptRecord.session_id == session_id,
+                    ApprovalActionPromptRecord.agent_id == agent_id,
+                    ApprovalActionPromptRecord.channel_kind == channel_kind,
+                    ApprovalActionPromptRecord.channel_account_id == channel_account_id,
+                    ApprovalActionPromptRecord.transport_address_key == transport_address_key,
+                    ApprovalActionPromptRecord.status == ApprovalActionPromptStatus.PENDING.value,
+                )
+            )
+        if existing is not None:
+            existing.status = ApprovalActionPromptStatus.SUPERSEDED.value
+            existing.updated_at = datetime.now(timezone.utc)
+            db.flush()
+        prompt = ApprovalActionPromptRecord(
+            proposal_id=proposal_id,
+            session_id=session_id,
+            agent_id=agent_id,
+            message_id=message_id,
+            channel_kind=channel_kind,
+            channel_account_id=channel_account_id,
+            transport_address_key=transport_address_key,
+            approve_token_hash=approve_token_hash,
+            deny_token_hash=deny_token_hash,
+            status=ApprovalActionPromptStatus.PENDING.value,
+            expires_at=expires_at,
+            presentation_payload_json=json.dumps(presentation_payload, sort_keys=True),
+        )
+        db.add(prompt)
+        db.flush()
+        return prompt
+
+    def list_approval_action_prompts(self, db: Session, *, session_id: str) -> list[ApprovalActionPromptRecord]:
+        stmt = (
+            select(ApprovalActionPromptRecord)
+            .where(ApprovalActionPromptRecord.session_id == session_id)
+            .order_by(ApprovalActionPromptRecord.created_at.asc(), ApprovalActionPromptRecord.id.asc())
+        )
+        return list(db.scalars(stmt))
+
+    def list_approval_action_prompts_for_surface(
+        self,
+        db: Session,
+        *,
+        channel_kind: str,
+        channel_account_id: str,
+        transport_address_key: str | None,
+    ) -> list[ApprovalActionPromptRecord]:
+        stmt = select(ApprovalActionPromptRecord).where(
+            ApprovalActionPromptRecord.channel_kind == channel_kind,
+            ApprovalActionPromptRecord.channel_account_id == channel_account_id,
+        )
+        if transport_address_key is None:
+            stmt = stmt.where(ApprovalActionPromptRecord.transport_address_key.is_(None))
+        else:
+            stmt = stmt.where(ApprovalActionPromptRecord.transport_address_key == transport_address_key)
+        stmt = stmt.order_by(ApprovalActionPromptRecord.created_at.asc(), ApprovalActionPromptRecord.id.asc())
+        return list(db.scalars(stmt))
+
+    def get_approval_action_prompt(self, db: Session, *, prompt_id: int) -> ApprovalActionPromptRecord | None:
+        return db.get(ApprovalActionPromptRecord, prompt_id)
+
+    def get_approval_action_prompt_by_hash(
+        self,
+        db: Session,
+        *,
+        token_hash: str,
+        decision: str,
+    ) -> ApprovalActionPromptRecord | None:
+        field = (
+            ApprovalActionPromptRecord.approve_token_hash
+            if decision == "approve"
+            else ApprovalActionPromptRecord.deny_token_hash
+        )
+        return db.scalar(select(ApprovalActionPromptRecord).where(field == token_hash))
+
+    def mark_approval_prompt_decision(
+        self,
+        db: Session,
+        *,
+        proposal_id: str,
+        prompt: ApprovalActionPromptRecord | None,
+        status: str,
+        decided_via: str,
+        decider_actor_id: str | None,
+    ) -> None:
+        current_time = datetime.now(timezone.utc)
+        prompts = list(
+            db.scalars(select(ApprovalActionPromptRecord).where(ApprovalActionPromptRecord.proposal_id == proposal_id))
+        )
+        chosen_prompt = prompt
+        if chosen_prompt is None:
+            chosen_prompt = next(
+                (item for item in reversed(prompts) if item.status == ApprovalActionPromptStatus.PENDING.value),
+                None,
+            )
+        for item in prompts:
+            if item.status != ApprovalActionPromptStatus.PENDING.value:
+                continue
+            item.status = status if chosen_prompt is not None and item.id == chosen_prompt.id else ApprovalActionPromptStatus.SUPERSEDED.value
+            item.decided_at = current_time
+            item.decided_via = decided_via
+            item.decider_actor_id = decider_actor_id
+            item.updated_at = current_time
+        db.flush()
 
     def list_conversation_messages(
         self,

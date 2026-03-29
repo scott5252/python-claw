@@ -2,21 +2,35 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from apps.gateway.deps import (
+    get_approval_decision_service,
+    get_collaboration_service,
     get_db,
     get_delegation_service,
     get_diagnostics_service,
+    get_operator_principal,
     get_session_service,
     require_operator_access,
 )
+from src.policies.approval_actions import ApprovalDecisionService
+from src.sessions.collaboration import CollaborationConflictError, SessionCollaborationService
 from src.delegations.service import DelegationService
 from src.domain.schemas import (
     AgentProfileResponse,
+    ApprovalActionPromptResponse,
+    ApprovalDecisionRequest,
+    ApprovalDecisionResponse,
+    CollaborationAssignRequest,
+    CollaborationEventResponse,
+    CollaborationMutationRequest,
+    CollaborationSnapshotResponse,
     DelegationEventResponse,
     DelegationResponse,
     DiagnosticsPageResponse,
     ExecutionRunResponse,
     MessagePageResponse,
     ModelProfileResponse,
+    OperatorNoteCreateRequest,
+    OperatorNoteResponse,
     PendingApprovalResponse,
     RunDiagnosticsResponse,
     SessionContinuityDiagnosticsResponse,
@@ -27,6 +41,10 @@ from src.observability.diagnostics import DiagnosticsService
 from src.sessions.service import SessionService
 
 router = APIRouter(tags=["sessions"])
+
+
+def _raise_conflict() -> None:
+    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="stale collaboration version")
 
 
 @router.get("/sessions/{session_id}", response_model=SessionResponse)
@@ -130,6 +148,70 @@ def get_session_messages(
     return page
 
 
+@router.get(
+    "/sessions/{session_id}/automation",
+    response_model=CollaborationSnapshotResponse,
+    dependencies=[Depends(require_operator_access)],
+)
+def get_session_automation(
+    session_id: str,
+    db: Session = Depends(get_db),
+    service: SessionService = Depends(get_session_service),
+) -> CollaborationSnapshotResponse:
+    snapshot = service.get_collaboration_snapshot(db, session_id=session_id)
+    if snapshot is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    return snapshot
+
+
+@router.get(
+    "/sessions/{session_id}/notes",
+    response_model=list[OperatorNoteResponse],
+    dependencies=[Depends(require_operator_access)],
+)
+def get_session_notes(
+    session_id: str,
+    db: Session = Depends(get_db),
+    service: SessionService = Depends(get_session_service),
+) -> list[OperatorNoteResponse]:
+    notes = service.list_operator_notes(db, session_id=session_id)
+    if notes is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    return notes
+
+
+@router.get(
+    "/sessions/{session_id}/collaboration",
+    response_model=list[CollaborationEventResponse],
+    dependencies=[Depends(require_operator_access)],
+)
+def get_session_collaboration(
+    session_id: str,
+    db: Session = Depends(get_db),
+    service: SessionService = Depends(get_session_service),
+) -> list[CollaborationEventResponse]:
+    events = service.list_collaboration_events(db, session_id=session_id)
+    if events is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    return events
+
+
+@router.get(
+    "/sessions/{session_id}/approval-prompts",
+    response_model=list[ApprovalActionPromptResponse],
+    dependencies=[Depends(require_operator_access)],
+)
+def get_approval_prompts(
+    session_id: str,
+    db: Session = Depends(get_db),
+    service: SessionService = Depends(get_session_service),
+) -> list[ApprovalActionPromptResponse]:
+    prompts = service.list_approval_action_prompts(db, session_id=session_id)
+    if prompts is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    return prompts
+
+
 @router.get("/sessions/{session_id}/governance/pending", response_model=list[PendingApprovalResponse])
 def get_pending_governance_items(
     session_id: str,
@@ -140,6 +222,198 @@ def get_pending_governance_items(
     if items is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
     return items
+
+
+@router.post(
+    "/sessions/{session_id}/takeover",
+    response_model=CollaborationSnapshotResponse,
+    dependencies=[Depends(require_operator_access)],
+)
+def takeover_session(
+    session_id: str,
+    payload: CollaborationMutationRequest,
+    db: Session = Depends(get_db),
+    operator_id: str = Depends(get_operator_principal),
+    collaboration: SessionCollaborationService = Depends(get_collaboration_service),
+    service: SessionService = Depends(get_session_service),
+) -> CollaborationSnapshotResponse:
+    try:
+        collaboration.takeover_session(
+            db,
+            session_id=session_id,
+            expected_collaboration_version=payload.expected_collaboration_version,
+            operator_id=operator_id,
+            reason=payload.reason,
+            note=payload.note,
+        )
+    except CollaborationConflictError:
+        _raise_conflict()
+    except LookupError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    db.commit()
+    snapshot = service.get_collaboration_snapshot(db, session_id=session_id)
+    if snapshot is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    return snapshot
+
+
+@router.post(
+    "/sessions/{session_id}/pause",
+    response_model=CollaborationSnapshotResponse,
+    dependencies=[Depends(require_operator_access)],
+)
+def pause_session(
+    session_id: str,
+    payload: CollaborationMutationRequest,
+    db: Session = Depends(get_db),
+    operator_id: str = Depends(get_operator_principal),
+    collaboration: SessionCollaborationService = Depends(get_collaboration_service),
+    service: SessionService = Depends(get_session_service),
+) -> CollaborationSnapshotResponse:
+    try:
+        collaboration.pause_session(
+            db,
+            session_id=session_id,
+            expected_collaboration_version=payload.expected_collaboration_version,
+            operator_id=operator_id,
+            reason=payload.reason,
+            note=payload.note,
+        )
+    except CollaborationConflictError:
+        _raise_conflict()
+    except LookupError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    db.commit()
+    snapshot = service.get_collaboration_snapshot(db, session_id=session_id)
+    if snapshot is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    return snapshot
+
+
+@router.post(
+    "/sessions/{session_id}/resume",
+    response_model=CollaborationSnapshotResponse,
+    dependencies=[Depends(require_operator_access)],
+)
+def resume_session(
+    session_id: str,
+    payload: CollaborationMutationRequest,
+    db: Session = Depends(get_db),
+    operator_id: str = Depends(get_operator_principal),
+    collaboration: SessionCollaborationService = Depends(get_collaboration_service),
+    service: SessionService = Depends(get_session_service),
+) -> CollaborationSnapshotResponse:
+    try:
+        collaboration.resume_session(
+            db,
+            session_id=session_id,
+            expected_collaboration_version=payload.expected_collaboration_version,
+            operator_id=operator_id,
+            reason=payload.reason,
+            note=payload.note,
+        )
+    except CollaborationConflictError:
+        _raise_conflict()
+    except LookupError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    db.commit()
+    snapshot = service.get_collaboration_snapshot(db, session_id=session_id)
+    if snapshot is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    return snapshot
+
+
+@router.post(
+    "/sessions/{session_id}/assign",
+    response_model=CollaborationSnapshotResponse,
+    dependencies=[Depends(require_operator_access)],
+)
+def assign_session(
+    session_id: str,
+    payload: CollaborationAssignRequest,
+    db: Session = Depends(get_db),
+    operator_id: str = Depends(get_operator_principal),
+    collaboration: SessionCollaborationService = Depends(get_collaboration_service),
+    service: SessionService = Depends(get_session_service),
+) -> CollaborationSnapshotResponse:
+    try:
+        collaboration.assign_session(
+            db,
+            session_id=session_id,
+            expected_collaboration_version=payload.expected_collaboration_version,
+            operator_id=operator_id,
+            assigned_operator_id=payload.assigned_operator_id,
+            assigned_queue_key=payload.assigned_queue_key,
+            reason=payload.reason,
+            note=payload.note,
+        )
+    except CollaborationConflictError:
+        _raise_conflict()
+    except LookupError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    db.commit()
+    snapshot = service.get_collaboration_snapshot(db, session_id=session_id)
+    if snapshot is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    return snapshot
+
+
+@router.post(
+    "/sessions/{session_id}/notes",
+    response_model=OperatorNoteResponse,
+    dependencies=[Depends(require_operator_access)],
+)
+def create_note(
+    session_id: str,
+    payload: OperatorNoteCreateRequest,
+    db: Session = Depends(get_db),
+    operator_id: str = Depends(get_operator_principal),
+    collaboration: SessionCollaborationService = Depends(get_collaboration_service),
+) -> OperatorNoteResponse:
+    try:
+        note = collaboration.add_operator_note(
+            db,
+            session_id=session_id,
+            operator_id=operator_id,
+            note_kind=payload.note_kind,
+            body=payload.body,
+        )
+    except LookupError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    db.commit()
+    return OperatorNoteResponse.model_validate(note, from_attributes=True)
+
+
+@router.post(
+    "/sessions/{session_id}/governance/{proposal_id}/decision",
+    response_model=ApprovalDecisionResponse,
+    dependencies=[Depends(require_operator_access)],
+)
+def decide_governance(
+    session_id: str,
+    proposal_id: str,
+    payload: ApprovalDecisionRequest,
+    db: Session = Depends(get_db),
+    operator_id: str = Depends(get_operator_principal),
+    approvals: ApprovalDecisionService = Depends(get_approval_decision_service),
+) -> ApprovalDecisionResponse:
+    try:
+        result = approvals.decide(
+            db,
+            session_id=session_id,
+            message_id=0,
+            actor_id=operator_id,
+            decision=payload.decision,
+            proposal_id=proposal_id,
+            token=payload.token,
+            decided_via="admin_api",
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    db.commit()
+    return ApprovalDecisionResponse.model_validate(result, from_attributes=True)
 
 
 @router.get("/runs/{run_id}", response_model=ExecutionRunResponse)

@@ -25,6 +25,7 @@ from src.observability.audit import ToolAuditSink
 from src.observability.diagnostics import DiagnosticsService
 from src.observability.health import HealthService
 from src.policies.service import PolicyService
+from src.policies.approval_actions import ApprovalDecisionService
 from src.providers.models import ProviderBackedModelAdapter, RuleBasedModelAdapter
 from src.media.processor import MediaProcessor
 from src.media.extraction import MediaExtractionService
@@ -35,6 +36,7 @@ from src.execution.contracts import NodeExecutionResult
 from src.execution.runtime import RemoteExecutionRuntime
 from src.sandbox.service import SandboxService
 from src.security.signing import SigningService
+from src.sessions.collaboration import SessionCollaborationService
 from src.sessions.concurrency import SessionConcurrencyService
 from src.sessions.repository import SessionRepository
 from src.sessions.service import SessionService
@@ -73,6 +75,11 @@ def get_db(
 def create_delegation_service(settings: Settings) -> DelegationService:
     session_repository = SessionRepository()
     jobs_repository = JobsRepository()
+    collaboration_service = SessionCollaborationService(
+        repository=session_repository,
+        jobs_repository=jobs_repository,
+        settings=settings,
+    )
     return DelegationService(
         repository=DelegationRepository(
             session_repository=session_repository,
@@ -81,6 +88,24 @@ def create_delegation_service(settings: Settings) -> DelegationService:
         session_repository=session_repository,
         jobs_repository=jobs_repository,
         agent_profile_service=AgentProfileService(repository=AgentRepository(), settings=settings),
+        settings=settings,
+        collaboration_service=collaboration_service,
+    )
+
+
+def create_collaboration_service(settings: Settings) -> SessionCollaborationService:
+    return SessionCollaborationService(
+        repository=SessionRepository(),
+        jobs_repository=JobsRepository(),
+        settings=settings,
+    )
+
+
+def create_approval_decision_service(settings: Settings) -> ApprovalDecisionService:
+    repository = SessionRepository()
+    return ApprovalDecisionService(
+        repository=repository,
+        activation_controller=ActivationController(repository=repository),
         settings=settings,
     )
 
@@ -91,6 +116,7 @@ def build_assistant_graph(
     *,
     binding: AgentExecutionBinding,
     delegation_service: DelegationService | None = None,
+    approval_decision_service: ApprovalDecisionService | None = None,
 ):
     capability_repository = CapabilitiesRepository()
     signing_service = SigningService({settings.node_runner_signing_key_id: settings.node_runner_signing_secret})
@@ -169,6 +195,7 @@ def build_assistant_graph(
             ),
             remote_execution_runtime=remote_runtime,
             delegation_service=delegation_service,
+            approval_decision_service=approval_decision_service,
         )
     ).build()
 
@@ -176,6 +203,8 @@ def build_assistant_graph(
 def create_session_service(settings: Settings) -> SessionService:
     repository = SessionRepository()
     agent_profile_service = AgentProfileService(repository=AgentRepository(), settings=settings)
+    collaboration_service = create_collaboration_service(settings)
+    approval_decision_service = create_approval_decision_service(settings)
     return SessionService(
         repository=repository,
         jobs_repository=JobsRepository(),
@@ -188,6 +217,8 @@ def create_session_service(settings: Settings) -> SessionService:
         session_runs_page_default_limit=settings.session_runs_page_default_limit,
         session_runs_page_max_limit=settings.session_runs_page_max_limit,
         execution_run_max_attempts=settings.execution_run_max_attempts,
+        collaboration_service=collaboration_service,
+        approval_decision_service=approval_decision_service,
     )
 
 
@@ -200,6 +231,8 @@ def create_run_execution_service(
     jobs_repository = JobsRepository()
     agent_profile_service = AgentProfileService(repository=AgentRepository(), settings=settings)
     resolved_delegation_service = delegation_service or create_delegation_service(settings)
+    collaboration_service = create_collaboration_service(settings)
+    approval_decision_service = create_approval_decision_service(settings)
     dispatcher = build_dispatcher(settings)
     attachment_extraction_service = MediaExtractionService(
         storage_root=Path(settings.media_storage_root),
@@ -223,6 +256,7 @@ def create_run_execution_service(
             repository,
             binding=binding,
             delegation_service=resolved_delegation_service,
+            approval_decision_service=approval_decision_service,
         ),
         failure_classifier=FailureClassifier(),
         base_backoff_seconds=settings.execution_run_backoff_seconds,
@@ -240,6 +274,8 @@ def create_run_execution_service(
         attachment_extraction_service=attachment_extraction_service,
         outbound_dispatcher=dispatcher,
         delegation_service=resolved_delegation_service,
+        collaboration_service=collaboration_service,
+        approval_decision_service=approval_decision_service,
     )
 
 
@@ -317,6 +353,26 @@ def get_delegation_service(
     return create_delegation_service(settings)
 
 
+def get_collaboration_service(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> SessionCollaborationService:
+    service = getattr(request.app.state, "collaboration_service", None)
+    if service is not None:
+        return service
+    return create_collaboration_service(settings)
+
+
+def get_approval_decision_service(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> ApprovalDecisionService:
+    service = getattr(request.app.state, "approval_decision_service", None)
+    if service is not None:
+        return service
+    return create_approval_decision_service(settings)
+
+
 def verify_operator_access(
     *,
     settings: Settings,
@@ -342,3 +398,21 @@ def require_operator_access(
         authorization=authorization,
         x_internal_service_token=x_internal_service_token,
     )
+
+
+def get_operator_principal(
+    authorization: str | None = Header(default=None),
+    x_internal_service_token: str | None = Header(default=None),
+    x_operator_id: str | None = Header(default=None),
+    settings: Settings = Depends(get_settings),
+) -> str:
+    verify_operator_access(
+        settings=settings,
+        authorization=authorization,
+        x_internal_service_token=x_internal_service_token,
+    )
+    if x_operator_id and x_operator_id.strip():
+        return x_operator_id.strip()
+    if x_internal_service_token and settings.diagnostics_internal_service_token == x_internal_service_token:
+        return "internal-service"
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="operator principal required")
