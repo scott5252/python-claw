@@ -109,11 +109,12 @@ def _create_execution_run(
 
 
 def test_admin_endpoints_return_404_for_missing_resources(client) -> None:
-    assert client.get("/sessions/missing").status_code == 404
-    assert client.get("/sessions/missing/messages").status_code == 404
-    assert client.get("/sessions/missing/governance/pending").status_code == 404
-    assert client.get("/sessions/missing/runs").status_code == 404
-    assert client.get("/runs/missing").status_code == 404
+    headers = {"Authorization": "Bearer admin-secret", "X-Operator-Id": "operator-1"}
+    assert client.get("/sessions/missing", headers=headers).status_code == 404
+    assert client.get("/sessions/missing/messages", headers=headers).status_code == 404
+    assert client.get("/sessions/missing/governance/pending", headers=headers).status_code == 404
+    assert client.get("/sessions/missing/runs", headers=headers).status_code == 404
+    assert client.get("/runs/missing", headers=headers).status_code == 404
 
 
 def test_inbound_conflict_when_dedupe_claim_is_in_progress(session_manager, settings: Settings) -> None:

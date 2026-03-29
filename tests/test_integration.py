@@ -50,6 +50,10 @@ from src.tools.messaging import create_send_message_tool
 from src.tools.registry import ToolDefinition, ToolRegistry
 
 
+def _admin_headers() -> dict[str, str]:
+    return {"Authorization": "Bearer admin-secret", "X-Operator-Id": "operator-1"}
+
+
 @dataclass
 class StaticModel(ModelAdapter):
     result: ModelTurnResult
@@ -229,6 +233,8 @@ def test_stale_claimed_recovery_and_history_paging(tmp_path) -> None:
         runtime_mode="rule_based",
         dedupe_stale_after_seconds=1,
         runtime_transcript_context_limit=20,
+        diagnostics_admin_bearer_token="admin-secret",
+        operator_auth_bearer_token="admin-secret",
     )
     manager = DatabaseSessionManager(database_url)
     Base.metadata.create_all(manager.engine)
@@ -287,17 +293,19 @@ def test_stale_claimed_recovery_and_history_paging(tmp_path) -> None:
     )
     drain_queue(manager, app.state.run_execution_service)
 
-    page_one = client.get(f"/sessions/{session_id}/messages", params={"limit": 2})
+    page_one = client.get(f"/sessions/{session_id}/messages", headers=_admin_headers(), params={"limit": 2})
     body_one = page_one.json()
     assert body_one["items"][-1]["content"] == "Received: three"
     assert any(item["content"] == "three" for item in body_one["items"] + client.get(
         f"/sessions/{session_id}/messages",
+        headers=_admin_headers(),
         params={"limit": 4},
     ).json()["items"])
     assert body_one["next_before_message_id"] == 5
 
     page_two = client.get(
         f"/sessions/{session_id}/messages",
+        headers=_admin_headers(),
         params={"limit": 2, "before_message_id": 5},
     )
     body_two = page_two.json()
@@ -307,7 +315,13 @@ def test_stale_claimed_recovery_and_history_paging(tmp_path) -> None:
 
 def test_unapproved_tool_request_creates_governance_proposal_without_tool_artifact(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'unapproved.db'}"
-    settings = Settings(database_url=database_url, runtime_mode="rule_based", runtime_transcript_context_limit=20)
+    settings = Settings(
+        database_url=database_url,
+        runtime_mode="rule_based",
+        runtime_transcript_context_limit=20,
+        diagnostics_admin_bearer_token="admin-secret",
+        operator_auth_bearer_token="admin-secret",
+    )
     manager = DatabaseSessionManager(database_url)
     Base.metadata.create_all(manager.engine)
 
@@ -374,7 +388,13 @@ def test_unapproved_tool_request_creates_governance_proposal_without_tool_artifa
 
 def test_governed_capability_requires_approval_then_activates_on_later_turn(tmp_path) -> None:
     database_url = f"sqlite:///{tmp_path / 'governance.db'}"
-    settings = Settings(database_url=database_url, runtime_mode="rule_based", runtime_transcript_context_limit=20)
+    settings = Settings(
+        database_url=database_url,
+        runtime_mode="rule_based",
+        runtime_transcript_context_limit=20,
+        diagnostics_admin_bearer_token="admin-secret",
+        operator_auth_bearer_token="admin-secret",
+    )
     manager = DatabaseSessionManager(database_url)
     Base.metadata.create_all(manager.engine)
 
@@ -409,7 +429,7 @@ def test_governed_capability_requires_approval_then_activates_on_later_turn(tmp_
     assert [event.event_kind for event in events] == ["proposal_created", "approval_requested"]
     assert "Approval required for `send_message`" in messages[-1].content
 
-    pending = client.get(f"/sessions/{session_id}/governance/pending")
+    pending = client.get(f"/sessions/{session_id}/governance/pending", headers=_admin_headers())
     assert pending.status_code == 200
     pending_body = pending.json()
     assert pending_body == [
@@ -447,7 +467,7 @@ def test_governed_capability_requires_approval_then_activates_on_later_turn(tmp_
     assert approve.status_code == 202
     drain_queue(manager, app.state.run_execution_service)
 
-    pending_after_approval = client.get(f"/sessions/{session_id}/governance/pending")
+    pending_after_approval = client.get(f"/sessions/{session_id}/governance/pending", headers=_admin_headers())
     assert pending_after_approval.status_code == 200
     assert pending_after_approval.json() == []
 

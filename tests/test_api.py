@@ -5,6 +5,9 @@ import json
 from src.sessions.repository import SessionRepository
 
 
+OPERATOR_HEADERS = {"Authorization": "Bearer admin-secret", "X-Operator-Id": "operator-1"}
+
+
 def inbound_payload(**overrides):
     payload = {
         "channel_kind": "slack",
@@ -53,11 +56,11 @@ def test_session_reuse_and_message_history(client, drain_queue) -> None:
     session_id = first.json()["session_id"]
     assert second.json()["session_id"] == session_id
 
-    session_response = client.get(f"/sessions/{session_id}")
+    session_response = client.get(f"/sessions/{session_id}", headers=OPERATOR_HEADERS)
     assert session_response.status_code == 200
     assert session_response.json()["scope_name"] == "main"
 
-    messages_response = client.get(f"/sessions/{session_id}/messages", params={"limit": 4})
+    messages_response = client.get(f"/sessions/{session_id}/messages", headers=OPERATOR_HEADERS, params={"limit": 4})
     assert messages_response.status_code == 200
     body = messages_response.json()
     contents = [item["content"] for item in body["items"]]
@@ -86,7 +89,7 @@ def test_pending_governance_endpoint_returns_structured_items(client, drain_queu
     drain_queue()
     session_id = response.json()["session_id"]
 
-    pending = client.get(f"/sessions/{session_id}/governance/pending")
+    pending = client.get(f"/sessions/{session_id}/governance/pending", headers=OPERATOR_HEADERS)
     assert pending.status_code == 200
     body = pending.json()
     assert len(body) == 1
@@ -102,13 +105,13 @@ def test_run_diagnostics_endpoints(client) -> None:
     session_id = response.json()["session_id"]
     trace_id = response.json()["trace_id"]
 
-    run = client.get(f"/runs/{run_id}")
+    run = client.get(f"/runs/{run_id}", headers=OPERATOR_HEADERS)
     assert run.status_code == 200
     assert run.json()["id"] == run_id
     assert run.json()["status"] == "queued"
     assert run.json()["trace_id"] == trace_id
 
-    session_runs = client.get(f"/sessions/{session_id}/runs")
+    session_runs = client.get(f"/sessions/{session_id}/runs", headers=OPERATOR_HEADERS)
     assert session_runs.status_code == 200
     assert session_runs.json()["items"][0]["id"] == run_id
     assert session_runs.json()["items"][0]["trace_id"] == trace_id
@@ -221,6 +224,17 @@ def test_diagnostics_routes_deny_by_default_and_support_paging(client, drain_que
     )
     assert continuity.status_code == 200
     assert continuity.json()["capability_status"] == "enabled"
+
+
+def test_operator_only_reads_reject_internal_service_callers(client) -> None:
+    inbound = client.post("/inbound/message", json=inbound_payload(external_message_id="operator-only-1"))
+    session_id = inbound.json()["session_id"]
+
+    response = client.get(
+        f"/sessions/{session_id}",
+        headers={"X-Internal-Service-Token": "internal-secret"},
+    )
+    assert response.status_code == 403
 
 
 def test_diagnostics_delivery_and_attachment_views_are_sanitized(client, drain_queue, session_manager) -> None:

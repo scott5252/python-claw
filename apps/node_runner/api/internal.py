@@ -7,8 +7,21 @@ from src.execution.contracts import SignedNodeExecRequest
 router = APIRouter()
 
 
+def _require_internal_transport_auth(request: Request) -> None:
+    settings = request.app.state.settings
+    if settings.node_runner_mode != "http":
+        return
+    authorization = request.headers.get("Authorization")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="internal authorization required")
+    token = authorization.removeprefix("Bearer ").strip()
+    if token not in settings.node_runner_transport_tokens():
+        raise HTTPException(status_code=401, detail="internal authorization required")
+
+
 @router.post("/internal/node/exec")
 def post_exec(payload: dict, request: Request) -> dict:
+    _require_internal_transport_auth(request)
     signed = SignedNodeExecRequest.from_payload(payload)
     with request.app.state.session_manager.session() as db:
         decision = request.app.state.node_runner_policy.authorize(db, signed_request=signed)
@@ -36,6 +49,7 @@ def post_exec(payload: dict, request: Request) -> dict:
 
 @router.get("/internal/node/exec/{request_id}")
 def get_exec(request_id: str, request: Request) -> dict:
+    _require_internal_transport_auth(request)
     with request.app.state.session_manager.session() as db:
         record = request.app.state.audit_repository.get_by_request_id(db, request_id=request_id)
         if record is None:

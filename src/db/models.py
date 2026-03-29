@@ -85,6 +85,30 @@ class DelegationStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class RateLimitCounterRecord(Base):
+    __tablename__ = "rate_limit_counters"
+    __table_args__ = (
+        UniqueConstraint(
+            "scope_kind",
+            "scope_key",
+            "window_seconds",
+            "window_start",
+            name="uq_rate_limit_counters_scope_window",
+        ),
+        Index("ix_rate_limit_counters_scope_last_seen", "scope_kind", "last_seen_at"),
+        Index("ix_rate_limit_counters_window_start", "window_start"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scope_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    window_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utc_now)
+
+
 class ModelProfileRecord(Base):
     __tablename__ = "model_profiles"
     __table_args__ = (

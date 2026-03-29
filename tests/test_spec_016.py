@@ -110,7 +110,7 @@ def test_structured_approval_prompt_is_materialized_and_admin_decision_updates_i
 
     drain_queue()
 
-    pending = client.get(f"/sessions/{session_id}/governance/pending")
+    pending = client.get(f"/sessions/{session_id}/governance/pending", headers=_admin_headers())
     assert pending.status_code == 200
     proposal_id = pending.json()[0]["proposal_id"]
 

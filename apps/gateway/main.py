@@ -5,6 +5,7 @@ from apps.gateway.deps import (
     create_delegation_service,
     create_collaboration_service,
     create_approval_decision_service,
+    get_quota_service,
     create_run_execution_service,
     create_scheduler_service,
     create_session_service,
@@ -18,6 +19,7 @@ from apps.gateway.api.webchat import router as webchat_router
 from src.config.settings import Settings, get_settings
 from src.db.base import Base
 from src.db.session import DatabaseSessionManager
+from src.policies.quota import QuotaService
 
 
 def create_app(
@@ -40,6 +42,7 @@ def create_app(
         delegation_service=app.state.delegation_service,
     )
     app.state.scheduler_service = create_scheduler_service(resolved_settings)
+    app.state.quota_service = QuotaService()
     app.include_router(health_router)
     app.include_router(inbound_router)
     app.include_router(slack_router)

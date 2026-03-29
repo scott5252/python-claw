@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
@@ -25,6 +27,7 @@ from src.observability.audit import ToolAuditSink
 from src.observability.diagnostics import DiagnosticsService
 from src.observability.health import HealthService
 from src.policies.service import PolicyService
+from src.policies.quota import QuotaService
 from src.policies.approval_actions import ApprovalDecisionService
 from src.providers.models import ProviderBackedModelAdapter, RuleBasedModelAdapter
 from src.media.processor import MediaProcessor
@@ -47,6 +50,12 @@ from src.tools.remote_exec import create_remote_exec_tool
 from src.tools.registry import ToolRegistry
 from apps.node_runner.executor import NodeRunnerExecutor
 from apps.node_runner.policy import NodeRunnerPolicy
+
+
+@dataclass(frozen=True)
+class AuthenticatedCaller:
+    kind: str
+    principal_id: str | None = None
 
 
 def _build_model_adapter(settings: Settings, *, binding: AgentExecutionBinding):
@@ -119,7 +128,7 @@ def build_assistant_graph(
     approval_decision_service: ApprovalDecisionService | None = None,
 ):
     capability_repository = CapabilitiesRepository()
-    signing_service = SigningService({settings.node_runner_signing_key_id: settings.node_runner_signing_secret})
+    signing_service = SigningService(settings.node_runner_signing_keys())
     audit_repository = ExecutionAuditRepository()
     sandbox_service = SandboxService(settings=settings, capabilities_repository=capability_repository)
     runner_policy = NodeRunnerPolicy(
@@ -132,6 +141,15 @@ def build_assistant_graph(
     runner_executor = NodeRunnerExecutor(audit_repository=audit_repository)
 
     def runner_client(db: Session, signed_request):
+        if settings.node_runner_mode == "http":
+            response = httpx.post(
+                f"{settings.node_runner_base_url.rstrip('/')}/internal/node/exec",
+                json=signed_request.signed_payload(),
+                headers={"Authorization": f"Bearer {settings.node_runner_internal_bearer_token}"},
+                timeout=settings.node_runner_timeout_ceiling_seconds,
+            )
+            response.raise_for_status()
+            return NodeExecutionResult(**response.json())
         decision = runner_policy.authorize(db, signed_request=signed_request)
         if decision.should_execute:
             return runner_executor.execute(db, record=decision.record, request=signed_request.request)
@@ -333,6 +351,13 @@ def get_health_service(
     return HealthService(settings=settings)
 
 
+def get_quota_service(request: Request) -> QuotaService:
+    service = getattr(request.app.state, "quota_service", None)
+    if service is not None:
+        return service
+    return QuotaService()
+
+
 def get_diagnostics_service(
     request: Request,
     settings: Settings = Depends(get_settings),
@@ -373,46 +398,133 @@ def get_approval_decision_service(
     return create_approval_decision_service(settings)
 
 
-def verify_operator_access(
+def _extract_bearer_token(authorization: str | None) -> str | None:
+    if not authorization:
+        return None
+    prefix = "Bearer "
+    if not authorization.startswith(prefix):
+        return None
+    token = authorization[len(prefix) :].strip()
+    return token or None
+
+
+def _auth_is_configured(settings: Settings) -> bool:
+    return bool(settings.operator_auth_tokens() or settings.internal_service_auth_tokens())
+
+
+def authenticate_caller(*, request: Request, settings: Settings) -> AuthenticatedCaller:
+    operator_token = _extract_bearer_token(request.headers.get("Authorization"))
+    if operator_token and operator_token in settings.operator_auth_tokens():
+        principal = request.headers.get(settings.operator_principal_header_name) or request.headers.get("X-Operator-Id")
+        return AuthenticatedCaller(kind="operator", principal_id=principal.strip() if principal and principal.strip() else None)
+    internal_token = request.headers.get("X-Internal-Service-Token")
+    if internal_token and internal_token in settings.internal_service_auth_tokens():
+        principal_header = settings.internal_service_principal_header_name
+        principal = request.headers.get(principal_header) or request.headers.get("X-Internal-Service-Principal")
+        return AuthenticatedCaller(
+            kind="internal_service",
+            principal_id=principal.strip() if principal and principal.strip() else "internal-service",
+        )
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="authentication required")
+
+
+def _enforce_admin_quota(
     *,
+    request: Request,
+    db: Session,
     settings: Settings,
-    authorization: str | None,
-    x_internal_service_token: str | None,
+    quota_service: QuotaService,
+    caller: AuthenticatedCaller,
 ) -> None:
-    admin_token = settings.diagnostics_admin_bearer_token
-    internal_token = settings.diagnostics_internal_service_token
-    admin_ok = bool(admin_token and authorization == f"Bearer {admin_token}")
-    internal_ok = bool(internal_token and x_internal_service_token == internal_token)
-    if admin_ok or internal_ok:
+    if not settings.rate_limits_enabled:
         return
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="operator authorization required")
+    if caller.kind == "operator":
+        scope_kind = "operator_principal"
+        scope_key = caller.principal_id or "anonymous-operator"
+    else:
+        route_path = getattr(request.scope.get("route"), "path", request.url.path)
+        scope_kind = "gateway_route"
+        scope_key = f"{route_path}:internal_service"
+    decision = quota_service.check_and_increment(
+        db,
+        scope_kind=scope_kind,
+        scope_key=scope_key,
+        limit=settings.admin_requests_per_minute_per_operator,
+        window_seconds=60,
+    )
+    if decision.allowed:
+        db.commit()
+        return
+    db.rollback()
+    raise HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail="rate limit exceeded",
+        headers={"Retry-After": str(decision.retry_after_seconds or 60)},
+    )
+
+
+def require_internal_or_operator_read(
+    request: Request,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    quota_service: QuotaService = Depends(get_quota_service),
+) -> AuthenticatedCaller:
+    if not settings.diagnostics_require_auth or not _auth_is_configured(settings):
+        return AuthenticatedCaller(kind="public", principal_id="public")
+    caller = authenticate_caller(request=request, settings=settings)
+    _enforce_admin_quota(request=request, db=db, settings=settings, quota_service=quota_service, caller=caller)
+    return caller
+
+
+def require_operator_read_access(
+    request: Request,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    quota_service: QuotaService = Depends(get_quota_service),
+) -> AuthenticatedCaller:
+    if not settings.admin_reads_require_auth or not _auth_is_configured(settings):
+        return AuthenticatedCaller(kind="operator", principal_id=None)
+    caller = authenticate_caller(request=request, settings=settings)
+    if caller.kind != "operator":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="operator access required")
+    _enforce_admin_quota(request=request, db=db, settings=settings, quota_service=quota_service, caller=caller)
+    return caller
 
 
 def require_operator_access(
+    request: Request,
+    db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
-    authorization: str | None = Header(default=None),
-    x_internal_service_token: str | None = Header(default=None),
-) -> None:
-    verify_operator_access(
-        settings=settings,
-        authorization=authorization,
-        x_internal_service_token=x_internal_service_token,
-    )
+    quota_service: QuotaService = Depends(get_quota_service),
+) -> AuthenticatedCaller:
+    if not _auth_is_configured(settings):
+        return AuthenticatedCaller(
+            kind="operator",
+            principal_id=request.headers.get(settings.operator_principal_header_name) or request.headers.get("X-Operator-Id"),
+        )
+    caller = authenticate_caller(request=request, settings=settings)
+    if caller.kind != "operator":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="operator access required")
+    _enforce_admin_quota(request=request, db=db, settings=settings, quota_service=quota_service, caller=caller)
+    return caller
+
+
+def require_ready_access(
+    request: Request,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    quota_service: QuotaService = Depends(get_quota_service),
+) -> AuthenticatedCaller:
+    if not settings.health_ready_requires_auth or not _auth_is_configured(settings):
+        return AuthenticatedCaller(kind="public", principal_id="public")
+    caller = authenticate_caller(request=request, settings=settings)
+    _enforce_admin_quota(request=request, db=db, settings=settings, quota_service=quota_service, caller=caller)
+    return caller
 
 
 def get_operator_principal(
-    authorization: str | None = Header(default=None),
-    x_internal_service_token: str | None = Header(default=None),
-    x_operator_id: str | None = Header(default=None),
-    settings: Settings = Depends(get_settings),
+    caller: AuthenticatedCaller = Depends(require_operator_access),
 ) -> str:
-    verify_operator_access(
-        settings=settings,
-        authorization=authorization,
-        x_internal_service_token=x_internal_service_token,
-    )
-    if x_operator_id and x_operator_id.strip():
-        return x_operator_id.strip()
-    if x_internal_service_token and settings.diagnostics_internal_service_token == x_internal_service_token:
-        return "internal-service"
-    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="operator principal required")
+    if not caller.principal_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="operator principal required")
+    return caller.principal_id

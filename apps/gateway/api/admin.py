@@ -9,6 +9,8 @@ from apps.gateway.deps import (
     get_diagnostics_service,
     get_operator_principal,
     get_session_service,
+    require_internal_or_operator_read,
+    require_operator_read_access,
     require_operator_access,
 )
 from src.policies.approval_actions import ApprovalDecisionService
@@ -47,7 +49,7 @@ def _raise_conflict() -> None:
     raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="stale collaboration version")
 
 
-@router.get("/sessions/{session_id}", response_model=SessionResponse)
+@router.get("/sessions/{session_id}", response_model=SessionResponse, dependencies=[Depends(require_operator_read_access)])
 def get_session(
     session_id: str,
     db: Session = Depends(get_db),
@@ -59,7 +61,7 @@ def get_session(
     return session
 
 
-@router.get("/agents", response_model=list[AgentProfileResponse], dependencies=[Depends(require_operator_access)])
+@router.get("/agents", response_model=list[AgentProfileResponse], dependencies=[Depends(require_operator_read_access)])
 def list_agents(
     db: Session = Depends(get_db),
     service: SessionService = Depends(get_session_service),
@@ -67,7 +69,7 @@ def list_agents(
     return service.list_agents(db)
 
 
-@router.get("/agents/{agent_id}", response_model=AgentProfileResponse, dependencies=[Depends(require_operator_access)])
+@router.get("/agents/{agent_id}", response_model=AgentProfileResponse, dependencies=[Depends(require_operator_read_access)])
 def get_agent(
     agent_id: str,
     db: Session = Depends(get_db),
@@ -82,7 +84,7 @@ def get_agent(
 @router.get(
     "/agents/{agent_id}/sessions",
     response_model=list[SessionResponse],
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_operator_read_access)],
 )
 def get_agent_sessions(
     agent_id: str,
@@ -95,7 +97,7 @@ def get_agent_sessions(
 @router.get(
     "/agents/{agent_id}/delegations",
     response_model=list[DelegationResponse],
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_operator_read_access)],
 )
 def get_agent_delegations(
     agent_id: str,
@@ -105,7 +107,7 @@ def get_agent_delegations(
     return [DelegationResponse.model_validate(item, from_attributes=True) for item in service.repository.list_by_child_agent(db, agent_id=agent_id)]
 
 
-@router.get("/model-profiles", response_model=list[ModelProfileResponse], dependencies=[Depends(require_operator_access)])
+@router.get("/model-profiles", response_model=list[ModelProfileResponse], dependencies=[Depends(require_operator_read_access)])
 def list_model_profiles(
     db: Session = Depends(get_db),
     service: SessionService = Depends(get_session_service),
@@ -116,7 +118,7 @@ def list_model_profiles(
 @router.get(
     "/model-profiles/{profile_key}",
     response_model=ModelProfileResponse,
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_operator_read_access)],
 )
 def get_model_profile(
     profile_key: str,
@@ -129,7 +131,7 @@ def get_model_profile(
     return profile
 
 
-@router.get("/sessions/{session_id}/messages", response_model=MessagePageResponse)
+@router.get("/sessions/{session_id}/messages", response_model=MessagePageResponse, dependencies=[Depends(require_operator_read_access)])
 def get_session_messages(
     session_id: str,
     limit: int | None = Query(default=None, ge=1),
@@ -151,7 +153,7 @@ def get_session_messages(
 @router.get(
     "/sessions/{session_id}/automation",
     response_model=CollaborationSnapshotResponse,
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_operator_read_access)],
 )
 def get_session_automation(
     session_id: str,
@@ -167,7 +169,7 @@ def get_session_automation(
 @router.get(
     "/sessions/{session_id}/notes",
     response_model=list[OperatorNoteResponse],
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_operator_read_access)],
 )
 def get_session_notes(
     session_id: str,
@@ -183,7 +185,7 @@ def get_session_notes(
 @router.get(
     "/sessions/{session_id}/collaboration",
     response_model=list[CollaborationEventResponse],
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_operator_read_access)],
 )
 def get_session_collaboration(
     session_id: str,
@@ -199,7 +201,7 @@ def get_session_collaboration(
 @router.get(
     "/sessions/{session_id}/approval-prompts",
     response_model=list[ApprovalActionPromptResponse],
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_operator_read_access)],
 )
 def get_approval_prompts(
     session_id: str,
@@ -212,7 +214,11 @@ def get_approval_prompts(
     return prompts
 
 
-@router.get("/sessions/{session_id}/governance/pending", response_model=list[PendingApprovalResponse])
+@router.get(
+    "/sessions/{session_id}/governance/pending",
+    response_model=list[PendingApprovalResponse],
+    dependencies=[Depends(require_operator_read_access)],
+)
 def get_pending_governance_items(
     session_id: str,
     db: Session = Depends(get_db),
@@ -227,7 +233,7 @@ def get_pending_governance_items(
 @router.post(
     "/sessions/{session_id}/takeover",
     response_model=CollaborationSnapshotResponse,
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_operator_read_access)],
 )
 def takeover_session(
     session_id: str,
@@ -416,7 +422,7 @@ def decide_governance(
     return ApprovalDecisionResponse.model_validate(result, from_attributes=True)
 
 
-@router.get("/runs/{run_id}", response_model=ExecutionRunResponse)
+@router.get("/runs/{run_id}", response_model=ExecutionRunResponse, dependencies=[Depends(require_operator_read_access)])
 def get_run(
     run_id: str,
     db: Session = Depends(get_db),
@@ -428,7 +434,7 @@ def get_run(
     return run
 
 
-@router.get("/sessions/{session_id}/runs", response_model=SessionRunPageResponse)
+@router.get("/sessions/{session_id}/runs", response_model=SessionRunPageResponse, dependencies=[Depends(require_operator_read_access)])
 def get_session_runs(
     session_id: str,
     limit: int | None = Query(default=None, ge=1),
@@ -444,7 +450,7 @@ def get_session_runs(
 @router.get(
     "/sessions/{session_id}/delegations",
     response_model=list[DelegationResponse],
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_operator_read_access)],
 )
 def get_session_delegations(
     session_id: str,
@@ -457,7 +463,7 @@ def get_session_delegations(
 @router.get(
     "/delegations/{delegation_id}",
     response_model=DelegationResponse,
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_operator_read_access)],
 )
 def get_delegation(
     delegation_id: str,
@@ -473,7 +479,7 @@ def get_delegation(
 @router.get(
     "/delegations/{delegation_id}/events",
     response_model=list[DelegationEventResponse],
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_operator_read_access)],
 )
 def get_delegation_events(
     delegation_id: str,
@@ -489,7 +495,7 @@ def get_delegation_events(
 @router.get(
     "/diagnostics/runs",
     response_model=DiagnosticsPageResponse,
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_internal_or_operator_read)],
 )
 def list_runs(
     limit: int | None = Query(default=None, ge=1),
@@ -519,7 +525,7 @@ def list_runs(
 @router.get(
     "/diagnostics/runs/{run_id}",
     response_model=RunDiagnosticsResponse,
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_internal_or_operator_read)],
 )
 def get_run_diagnostics(
     run_id: str,
@@ -535,7 +541,7 @@ def get_run_diagnostics(
 @router.get(
     "/diagnostics/sessions/{session_id}/continuity",
     response_model=SessionContinuityDiagnosticsResponse,
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_internal_or_operator_read)],
 )
 def get_session_continuity(
     session_id: str,
@@ -548,7 +554,7 @@ def get_session_continuity(
 @router.get(
     "/diagnostics/outbox-jobs",
     response_model=DiagnosticsPageResponse,
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_internal_or_operator_read)],
 )
 def get_outbox_jobs(
     limit: int | None = Query(default=None, ge=1),
@@ -564,7 +570,7 @@ def get_outbox_jobs(
 @router.get(
     "/diagnostics/node-executions",
     response_model=DiagnosticsPageResponse,
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_internal_or_operator_read)],
 )
 def get_node_executions(
     limit: int | None = Query(default=None, ge=1),
@@ -580,7 +586,7 @@ def get_node_executions(
 @router.get(
     "/diagnostics/deliveries",
     response_model=DiagnosticsPageResponse,
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_internal_or_operator_read)],
 )
 def get_deliveries(
     limit: int | None = Query(default=None, ge=1),
@@ -596,7 +602,7 @@ def get_deliveries(
 @router.get(
     "/diagnostics/attachments",
     response_model=DiagnosticsPageResponse,
-    dependencies=[Depends(require_operator_access)],
+    dependencies=[Depends(require_internal_or_operator_read)],
 )
 def get_attachments(
     limit: int | None = Query(default=None, ge=1),

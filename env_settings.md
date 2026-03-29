@@ -1,6 +1,6 @@
 # Environment Settings Guide
 
-This document explains every setting in [.env.example](/Users/scottcornell/src/my-projects/python-claw/.env.example) and how it relates to the behavior described in the README and Specs 001 through 015.
+This document explains every setting in [.env.example](/Users/scottcornell/src/my-projects/python-claw/.env.example) and how it relates to the behavior described in the README and Specs 001 through 017.
 
 ## How configuration is loaded
 
@@ -1266,6 +1266,43 @@ PYTHON_CLAW_DELEGATION_PACKAGE_MAX_CHARS=5000
 PYTHON_CLAW_REMOTE_EXECUTION_ENABLED=false
 ```
 
+### `PYTHON_CLAW_NODE_RUNNER_MODE`
+
+- Default: `in_process`
+- Type: string
+- Allowed values: `in_process`, `http`
+- What it does: Chooses how the runtime reaches the node-runner boundary. `in_process` keeps execution inside the trusted local process for development and deterministic tests. `http` makes the gateway call a separate node-runner service over HTTP and requires both transport authentication and signed payload verification.
+- How to configure it: Use `in_process` for local development, unit tests, and simple single-process deployments. Use `http` when the node runner is deployed as a separate service or host and you want a real network trust boundary.
+- Good example values:
+  - `in_process`
+    - Best for local development and CI
+  - `http`
+    - Best for production-style multi-process deployment
+- Example:
+
+```env
+PYTHON_CLAW_NODE_RUNNER_MODE=in_process
+```
+
+### `PYTHON_CLAW_NODE_RUNNER_BASE_URL`
+
+- Default: empty
+- Type: string or empty
+- What it does: Supplies the base URL the gateway uses when `PYTHON_CLAW_NODE_RUNNER_MODE=http`. Requests are sent to this service for `/internal/node/exec` execution and status lookups.
+- How to configure it: Leave it empty when using `in_process`. Set it to the fully qualified internal URL of the node-runner service when using `http`. This should usually be an internal-only address behind service networking, not a public URL.
+- Good example values:
+  - `http://localhost:8100`
+    - Useful for local multi-process testing
+  - `http://node-runner:8100`
+    - Useful in Docker Compose or internal service discovery
+  - `https://node-runner.internal.example.com`
+    - Useful in production behind internal TLS
+- Example:
+
+```env
+PYTHON_CLAW_NODE_RUNNER_BASE_URL=http://node-runner:8100
+```
+
 ### `PYTHON_CLAW_NODE_RUNNER_SIGNING_KEY_ID`
 
 - Default: `local-dev`
@@ -1288,6 +1325,76 @@ PYTHON_CLAW_NODE_RUNNER_SIGNING_KEY_ID=prod-node-key-2026-01
 
 ```env
 PYTHON_CLAW_NODE_RUNNER_SIGNING_SECRET=replace-with-a-long-random-secret
+```
+
+### `PYTHON_CLAW_NODE_RUNNER_PREVIOUS_SIGNING_KEY_ID`
+
+- Default: empty
+- Type: string or empty
+- What it does: Holds the previous signing key identifier that the node-runner may still accept during a key rotation overlap window. This allows the gateway and node runner to roll forward one side at a time without dropping valid requests immediately.
+- How to configure it: Leave it empty when no rotation is happening. During a rotation, set this to the old key id while `PYTHON_CLAW_NODE_RUNNER_SIGNING_KEY_ID` points to the new active signer. Remove it after all senders and verifiers are on the new key.
+- Good example values:
+  - empty
+    - No rotation overlap
+  - `prod-node-key-2025-12`
+    - Previous key still accepted temporarily
+- Example:
+
+```env
+PYTHON_CLAW_NODE_RUNNER_PREVIOUS_SIGNING_KEY_ID=prod-node-key-2025-12
+```
+
+### `PYTHON_CLAW_NODE_RUNNER_PREVIOUS_SIGNING_SECRET`
+
+- Default: empty
+- Type: string or empty
+- What it does: Stores the secret material for the previous signing key during a bounded node-runner signing rotation. The verifier accepts both the current and previous secret while the overlap is active.
+- How to configure it: Leave it empty when there is no ongoing rotation. During rotation, set it to the old signing secret and remove it after all requests are being signed with the new key.
+- Good example values:
+  - empty
+    - No overlap
+  - `old-rotation-secret-material`
+    - Temporary overlap during rollout
+- Example:
+
+```env
+PYTHON_CLAW_NODE_RUNNER_PREVIOUS_SIGNING_SECRET=replace-with-the-previous-secret
+```
+
+### `PYTHON_CLAW_NODE_RUNNER_INTERNAL_BEARER_TOKEN`
+
+- Default: empty
+- Type: string or empty
+- What it does: Defines the shared bearer token used by the gateway to authenticate to the node-runner transport when `PYTHON_CLAW_NODE_RUNNER_MODE=http`. This is separate from request signing and protects the HTTP surface itself before payload verification runs.
+- How to configure it: Leave it empty for `in_process`. Set a strong random secret for `http` mode. This token should be different from operator or diagnostics tokens because it protects a different trust boundary.
+- Good example values:
+  - empty
+    - Local in-process mode
+  - `local-node-runner-dev-token`
+    - Local multi-process testing
+  - a long random secret from a password generator
+    - Production internal service auth
+- Example:
+
+```env
+PYTHON_CLAW_NODE_RUNNER_INTERNAL_BEARER_TOKEN=replace-with-a-long-random-internal-token
+```
+
+### `PYTHON_CLAW_NODE_RUNNER_PREVIOUS_INTERNAL_BEARER_TOKEN`
+
+- Default: empty
+- Type: string or empty
+- What it does: Allows the node-runner HTTP surface to temporarily accept the previous internal bearer token during transport-auth rotation. This keeps gateway and runner rollouts from failing if they are updated a few minutes apart.
+- How to configure it: Leave it empty when there is no transport-token rotation. Set it only during overlap, then remove it once all callers use the new value from `PYTHON_CLAW_NODE_RUNNER_INTERNAL_BEARER_TOKEN`.
+- Good example values:
+  - empty
+    - No rotation
+  - `previous-node-runner-dev-token`
+    - Temporary overlap during rollout
+- Example:
+
+```env
+PYTHON_CLAW_NODE_RUNNER_PREVIOUS_INTERNAL_BEARER_TOKEN=replace-with-the-previous-internal-token
 ```
 
 ### `PYTHON_CLAW_NODE_RUNNER_REQUEST_TTL_SECONDS`
@@ -1462,6 +1569,161 @@ PYTHON_CLAW_DIAGNOSTICS_ADMIN_BEARER_TOKEN=replace-with-a-real-admin-token
 PYTHON_CLAW_DIAGNOSTICS_INTERNAL_SERVICE_TOKEN=replace-with-a-real-internal-token
 ```
 
+### `PYTHON_CLAW_ADMIN_READS_REQUIRE_AUTH`
+
+- Default: `true`
+- Type: boolean
+- What it does: Controls whether operator-facing admin read routes such as session reads, transcript reads, governance views, and run-history reads require authentication. In Spec 017 this should normally stay enabled so internal state is not exposed anonymously.
+- How to configure it: Keep this `true` in staging and production. Set it to `false` only for temporary local debugging if you intentionally want older open-read behavior.
+- Good example values:
+  - `true`
+    - Recommended for shared environments
+  - `false`
+    - Only for local debugging or temporary migration compatibility
+- Example:
+
+```env
+PYTHON_CLAW_ADMIN_READS_REQUIRE_AUTH=true
+```
+
+### `PYTHON_CLAW_DIAGNOSTICS_REQUIRE_AUTH`
+
+- Default: `true`
+- Type: boolean
+- What it does: Controls whether diagnostics routes require operator or internal-service authentication. This applies to the machine-safe diagnostics surfaces that expose operational state such as runs, deliveries, node executions, and continuity views.
+- How to configure it: Keep this `true` almost everywhere. Only disable it in isolated local environments where diagnostics exposure is not a concern.
+- Good example values:
+  - `true`
+    - Recommended default
+  - `false`
+    - Local-only convenience setting
+- Example:
+
+```env
+PYTHON_CLAW_DIAGNOSTICS_REQUIRE_AUTH=true
+```
+
+### `PYTHON_CLAW_OPERATOR_AUTH_BEARER_TOKEN`
+
+- Default: empty
+- Type: string or empty
+- What it does: Defines the primary bearer token for authenticated operator requests to admin and protected read surfaces. This is the preferred Spec 017 operator token and supersedes the older diagnostics-specific naming, though the older variable still works as a compatibility alias.
+- How to configure it: Set a strong secret in any environment where admin surfaces exist. Pair it with the operator principal header so operator-authored changes are attributed to a real durable principal instead of a placeholder.
+- Good example values:
+  - `local-admin-token`
+    - Local development
+  - a long random string from a secret manager or password generator
+    - Shared staging or production
+- Example:
+
+```env
+PYTHON_CLAW_OPERATOR_AUTH_BEARER_TOKEN=replace-with-a-real-operator-token
+```
+
+### `PYTHON_CLAW_PREVIOUS_OPERATOR_AUTH_BEARER_TOKEN`
+
+- Default: empty
+- Type: string or empty
+- What it does: Defines the previous operator bearer token accepted during operator-token rotation overlap. This allows rolling updates of operator tooling, dashboards, or scripts without forcing an instantaneous cutover.
+- How to configure it: Leave empty when no rotation is active. Set it temporarily during rotation, then remove it once all callers use the new primary operator token.
+- Good example values:
+  - empty
+    - No rotation overlap
+  - `old-admin-token`
+    - Temporary backward compatibility during rollout
+- Example:
+
+```env
+PYTHON_CLAW_PREVIOUS_OPERATOR_AUTH_BEARER_TOKEN=replace-with-the-previous-operator-token
+```
+
+### `PYTHON_CLAW_INTERNAL_SERVICE_AUTH_TOKEN`
+
+- Default: empty
+- Type: string or empty
+- What it does: Defines the primary token for trusted automation or service-to-service callers on machine-safe read surfaces such as readiness and diagnostics. It must not be used as a substitute for operator-authored mutations.
+- How to configure it: Set this to a strong secret distinct from the operator token. Use it for deployment health checks, background operational probes, or trusted internal tooling that should read diagnostics but not act as a human operator.
+- Good example values:
+  - `local-internal-token`
+    - Local development
+  - a long random internal service secret
+    - Production or staging
+- Example:
+
+```env
+PYTHON_CLAW_INTERNAL_SERVICE_AUTH_TOKEN=replace-with-a-real-internal-service-token
+```
+
+### `PYTHON_CLAW_PREVIOUS_INTERNAL_SERVICE_AUTH_TOKEN`
+
+- Default: empty
+- Type: string or empty
+- What it does: Allows the previous internal-service auth token to remain valid during a bounded rotation overlap. This reduces rollout risk for automation clients that may update slightly later than the server.
+- How to configure it: Leave it empty unless a rotation is happening. Remove it after all clients are confirmed to use the new internal-service token.
+- Good example values:
+  - empty
+    - Normal steady state
+  - `old-internal-service-token`
+    - Temporary overlap
+- Example:
+
+```env
+PYTHON_CLAW_PREVIOUS_INTERNAL_SERVICE_AUTH_TOKEN=replace-with-the-previous-internal-token
+```
+
+### `PYTHON_CLAW_OPERATOR_PRINCIPAL_HEADER_NAME`
+
+- Default: `X-Operator-Id`
+- Type: string
+- What it does: Defines which HTTP header the backend reads to determine the durable operator principal id after operator authentication succeeds. This value is used when writing operator-attributed audit fields such as notes or collaboration actions.
+- How to configure it: Keep the default unless you already have an API gateway, proxy, or admin client that uses a different header name. The chosen header should carry a stable operator identifier like an email alias, employee id, or internal user id.
+- Good example values:
+  - `X-Operator-Id`
+    - Simple default
+  - `X-Authenticated-User`
+    - Useful if an upstream identity layer already populates it
+  - `X-Employee-Id`
+    - Useful for internal enterprise conventions
+- Example:
+
+```env
+PYTHON_CLAW_OPERATOR_PRINCIPAL_HEADER_NAME=X-Operator-Id
+```
+
+### `PYTHON_CLAW_INTERNAL_SERVICE_PRINCIPAL_HEADER_NAME`
+
+- Default: `X-Internal-Service-Principal`
+- Type: string
+- What it does: Defines which header the backend reads to identify the calling internal service on machine-safe authenticated reads. This helps operational diagnostics distinguish one automation client from another without granting human mutation rights.
+- How to configure it: Keep the default unless your deployment platform already injects a different header for service identity. Use values that identify the calling automation role, such as `deploy-checker`, `ops-dashboard`, or `sre-probe`.
+- Good example values:
+  - `X-Internal-Service-Principal`
+    - Default
+  - `X-Service-Name`
+    - Common internal gateway style
+- Example:
+
+```env
+PYTHON_CLAW_INTERNAL_SERVICE_PRINCIPAL_HEADER_NAME=X-Internal-Service-Principal
+```
+
+### `PYTHON_CLAW_AUTH_FAIL_CLOSED_IN_PRODUCTION`
+
+- Default: `true`
+- Type: boolean
+- What it does: Documents and enforces the intended security posture for protected surfaces once auth is configured. In practice this means the system should default toward rejecting unauthenticated access rather than silently allowing it.
+- How to configure it: Keep this `true` for any real deployment. Only set it to `false` if you are deliberately running a local compatibility mode and understand that it weakens Spec 017 protections.
+- Good example values:
+  - `true`
+    - Recommended default
+  - `false`
+    - Local-only compatibility/debug posture
+- Example:
+
+```env
+PYTHON_CLAW_AUTH_FAIL_CLOSED_IN_PRODUCTION=true
+```
+
 ### `PYTHON_CLAW_HEALTH_READY_REQUIRES_AUTH`
 
 - Default: `true`
@@ -1472,6 +1734,137 @@ PYTHON_CLAW_DIAGNOSTICS_INTERNAL_SERVICE_TOKEN=replace-with-a-real-internal-toke
 
 ```env
 PYTHON_CLAW_HEALTH_READY_REQUIRES_AUTH=true
+```
+
+### `PYTHON_CLAW_RATE_LIMITS_ENABLED`
+
+- Default: `false`
+- Type: boolean
+- What it does: Enables the durable PostgreSQL-backed quota and rate-limit enforcement added in Spec 017. When enabled, the app can reject requests before mutation on inbound, admin, diagnostics, and other protected surfaces.
+- How to configure it: Start with `false` in local development if you do not want test traffic throttled. Turn it on in staging and production once you have chosen sane limits for your workload.
+- Good example values:
+  - `false`
+    - Local development
+  - `true`
+    - Staging and production hardening
+- Example:
+
+```env
+PYTHON_CLAW_RATE_LIMITS_ENABLED=true
+```
+
+### `PYTHON_CLAW_INBOUND_REQUESTS_PER_MINUTE_PER_CHANNEL_ACCOUNT`
+
+- Default: `60`
+- Type: integer
+- What it does: Limits how many inbound requests one `(channel_kind, channel_account_id)` scope may submit per minute before the app returns `429`. This protects the gateway before transcript append, dedupe finalization, or run creation.
+- How to configure it: Choose a value based on expected traffic for each configured channel account. Smaller internal bots may use low values; large chat surfaces may need a much higher ceiling.
+- Good example values:
+  - `30`
+    - Low-volume staging or single-tenant bot
+  - `60`
+    - Conservative default
+  - `300`
+    - Higher-volume production account
+- Example:
+
+```env
+PYTHON_CLAW_INBOUND_REQUESTS_PER_MINUTE_PER_CHANNEL_ACCOUNT=60
+```
+
+### `PYTHON_CLAW_ADMIN_REQUESTS_PER_MINUTE_PER_OPERATOR`
+
+- Default: `120`
+- Type: integer
+- What it does: Limits how many authenticated admin or diagnostics reads one operator principal may make per minute. Internal-service reads currently share the same limiter shape but are keyed by route and caller kind instead of by human principal.
+- How to configure it: Keep this high enough for dashboards and manual operator investigation, but low enough to prevent aggressive polling or accidental script loops from hammering the database.
+- Good example values:
+  - `60`
+    - Conservative production posture
+  - `120`
+    - Reasonable default
+  - `300`
+    - Busy operator console or heavy diagnostics usage
+- Example:
+
+```env
+PYTHON_CLAW_ADMIN_REQUESTS_PER_MINUTE_PER_OPERATOR=120
+```
+
+### `PYTHON_CLAW_APPROVAL_ACTION_REQUESTS_PER_MINUTE_PER_SESSION`
+
+- Default: `30`
+- Type: integer
+- What it does: Defines the intended per-session approval-action limit for approval callbacks and interactive approval surfaces. This helps prevent one noisy session from flooding the approval-decision path.
+- How to configure it: Use a small but practical number. Approval actions should usually be human-paced, so this limit can remain much lower than generic inbound traffic.
+- Good example values:
+  - `10`
+    - Very strict human-paced control
+  - `30`
+    - Reasonable default
+  - `60`
+    - Busier collaborative or automation-heavy approval flows
+- Example:
+
+```env
+PYTHON_CLAW_APPROVAL_ACTION_REQUESTS_PER_MINUTE_PER_SESSION=30
+```
+
+### `PYTHON_CLAW_PROVIDER_TOKENS_PER_HOUR_PER_AGENT`
+
+- Default: `200000`
+- Type: integer
+- What it does: Sets the estimated provider token budget one agent may consume per hour. This is a coarse application-owned quota guard used to prevent one agent profile from consuming unbounded provider capacity or cost.
+- How to configure it: Size this to the expected prompt and completion volume for each agent. If you run only a default agent, this effectively becomes your per-agent hourly provider budget.
+- Good example values:
+  - `50000`
+    - Small prototype or test deployment
+  - `200000`
+    - Moderate default
+  - `1000000`
+    - Larger production deployment with heavier usage
+- Example:
+
+```env
+PYTHON_CLAW_PROVIDER_TOKENS_PER_HOUR_PER_AGENT=200000
+```
+
+### `PYTHON_CLAW_PROVIDER_REQUESTS_PER_MINUTE_PER_MODEL`
+
+- Default: `120`
+- Type: integer
+- What it does: Limits how many provider requests may be made per minute for one model scope. This helps smooth spikes and keeps application-side behavior aligned with upstream provider rate limits.
+- How to configure it: Start conservatively if you are unsure of your provider quota. Increase it only when you know your upstream limits and worker concurrency support a higher volume.
+- Good example values:
+  - `30`
+    - Small account or conservative staging
+  - `120`
+    - Reasonable default
+  - `600`
+    - Large production account with higher upstream rate limits
+- Example:
+
+```env
+PYTHON_CLAW_PROVIDER_REQUESTS_PER_MINUTE_PER_MODEL=120
+```
+
+### `PYTHON_CLAW_QUOTA_COUNTER_RETENTION_DAYS`
+
+- Default: `7`
+- Type: integer
+- What it does: Controls how long durable quota-counter rows are retained before cleanup. This affects how much recent rate-limit history is available for debugging and how quickly the quota table is trimmed.
+- How to configure it: Keep it long enough to support operational troubleshooting, but not so long that the table grows needlessly. One week is a practical default for most deployments.
+- Good example values:
+  - `3`
+    - Short retention with aggressive cleanup
+  - `7`
+    - Balanced default
+  - `30`
+    - Longer operational lookback
+- Example:
+
+```env
+PYTHON_CLAW_QUOTA_COUNTER_RETENTION_DAYS=7
 ```
 
 ### `PYTHON_CLAW_OBSERVABILITY_METRICS_ENABLED`
@@ -1508,6 +1901,63 @@ PYTHON_CLAW_OBSERVABILITY_METRICS_PATH=/metrics
 
 ```env
 PYTHON_CLAW_OBSERVABILITY_TRACING_ENABLED=true
+```
+
+### `PYTHON_CLAW_PROVIDER_RETRY_BASE_SECONDS`
+
+- Default: `1.0`
+- Type: float
+- What it does: Sets the initial retry backoff delay for retryable provider failures such as transient unavailability or timeouts. This delay is used inside one logical run attempt, not by minting a new run.
+- How to configure it: Keep it short enough to recover quickly from brief provider blips, but not so short that immediate retries amplify a rate-limit burst.
+- Good example values:
+  - `0.5`
+    - Fast local or staging retry loop
+  - `1.0`
+    - Reasonable default
+  - `2.0`
+    - More conservative production retry posture
+- Example:
+
+```env
+PYTHON_CLAW_PROVIDER_RETRY_BASE_SECONDS=1.0
+```
+
+### `PYTHON_CLAW_PROVIDER_RETRY_MAX_SECONDS`
+
+- Default: `16.0`
+- Type: float
+- What it does: Caps the exponential backoff delay for retryable provider failures. This prevents retry waits from growing without bound while still allowing the app to back off meaningfully.
+- How to configure it: Set it above the base retry delay and below the point where waiting is no longer useful for your user experience or worker latency budget.
+- Good example values:
+  - `8.0`
+    - Short bounded retry window
+  - `16.0`
+    - Reasonable default
+  - `30.0`
+    - More patient retry posture for noisy providers
+- Example:
+
+```env
+PYTHON_CLAW_PROVIDER_RETRY_MAX_SECONDS=16.0
+```
+
+### `PYTHON_CLAW_PROVIDER_RETRY_JITTER_SECONDS`
+
+- Default: `0.25`
+- Type: float
+- What it does: Adds bounded random jitter to provider retry delays so multiple workers do not retry in lockstep. This reduces synchronized thundering-herd behavior during provider incidents.
+- How to configure it: Keep it non-negative and modest relative to the base delay. A small value is usually enough.
+- Good example values:
+  - `0.0`
+    - Fully deterministic retry timing
+  - `0.25`
+    - Reasonable default
+  - `1.0`
+    - Stronger spread across many workers
+- Example:
+
+```env
+PYTHON_CLAW_PROVIDER_RETRY_JITTER_SECONDS=0.25
 ```
 
 ### `PYTHON_CLAW_EXECUTION_RUN_STALE_AFTER_SECONDS`
@@ -1591,10 +2041,15 @@ Use this when you want the project to run without live LLM credentials:
 ```env
 PYTHON_CLAW_RUNTIME_MODE=rule_based
 PYTHON_CLAW_DATABASE_URL=postgresql+psycopg://openassistant:openassistant@localhost:5432/openassistant
+PYTHON_CLAW_OPERATOR_AUTH_BEARER_TOKEN=change-me
+PYTHON_CLAW_INTERNAL_SERVICE_AUTH_TOKEN=change-me-internal
 PYTHON_CLAW_DIAGNOSTICS_ADMIN_BEARER_TOKEN=change-me
 PYTHON_CLAW_DIAGNOSTICS_INTERNAL_SERVICE_TOKEN=change-me-internal
+PYTHON_CLAW_ADMIN_READS_REQUIRE_AUTH=true
+PYTHON_CLAW_DIAGNOSTICS_REQUIRE_AUTH=true
 PYTHON_CLAW_HEALTH_READY_REQUIRES_AUTH=true
 PYTHON_CLAW_REMOTE_EXECUTION_ENABLED=false
+PYTHON_CLAW_RATE_LIMITS_ENABLED=false
 ```
 
 ### Local provider-backed profile
@@ -1608,6 +2063,9 @@ PYTHON_CLAW_LLM_API_KEY=sk-your-provider-key
 PYTHON_CLAW_LLM_MODEL=gpt-4o-mini
 PYTHON_CLAW_LLM_TIMEOUT_SECONDS=30
 PYTHON_CLAW_LLM_MAX_RETRIES=1
+PYTHON_CLAW_PROVIDER_RETRY_BASE_SECONDS=1.0
+PYTHON_CLAW_PROVIDER_RETRY_MAX_SECONDS=16.0
+PYTHON_CLAW_PROVIDER_RETRY_JITTER_SECONDS=0.25
 PYTHON_CLAW_LLM_TOOL_CALL_MODE=auto
 PYTHON_CLAW_LLM_DISABLE_TOOLS=false
 ```
@@ -1622,6 +2080,13 @@ PYTHON_CLAW_MEDIA_ALLOWED_SCHEMES=file,https
 PYTHON_CLAW_MEDIA_ALLOWED_MIME_PREFIXES=image/,audio/,text/,application/pdf
 PYTHON_CLAW_MEDIA_MAX_BYTES=5242880
 PYTHON_CLAW_DIAGNOSTICS_ENABLED=true
+PYTHON_CLAW_ADMIN_READS_REQUIRE_AUTH=true
+PYTHON_CLAW_DIAGNOSTICS_REQUIRE_AUTH=true
+PYTHON_CLAW_OPERATOR_AUTH_BEARER_TOKEN=change-me
+PYTHON_CLAW_INTERNAL_SERVICE_AUTH_TOKEN=change-me-internal
+PYTHON_CLAW_RATE_LIMITS_ENABLED=true
+PYTHON_CLAW_INBOUND_REQUESTS_PER_MINUTE_PER_CHANNEL_ACCOUNT=60
+PYTHON_CLAW_ADMIN_REQUESTS_PER_MINUTE_PER_OPERATOR=120
 PYTHON_CLAW_OBSERVABILITY_JSON_LOGS=true
 PYTHON_CLAW_OBSERVABILITY_LOG_CONTENT_PREVIEW=false
 ```

@@ -187,10 +187,16 @@ class Settings(BaseSettings):
     delegation_package_attachment_items: int = 2
     delegation_package_max_chars: int = 4000
     remote_execution_enabled: bool = False
+    node_runner_mode: Literal["in_process", "http"] = "in_process"
+    node_runner_base_url: str | None = None
     node_runner_signing_key_id: str = "local-dev"
     node_runner_signing_secret: str = "local-dev-secret"
+    node_runner_previous_signing_key_id: str | None = None
+    node_runner_previous_signing_secret: str | None = None
     node_runner_request_ttl_seconds: int = 30
     node_runner_timeout_ceiling_seconds: int = 30
+    node_runner_internal_bearer_token: str | None = None
+    node_runner_previous_internal_bearer_token: str | None = None
     node_runner_allow_off_mode: bool = False
     node_runner_allowed_executables: str = "/bin/echo,/usr/bin/env"
     sandbox_workspace_root: str = ".claw-sandboxes"
@@ -203,6 +209,15 @@ class Settings(BaseSettings):
     diagnostics_page_max_limit: int = 50
     diagnostics_admin_bearer_token: str | None = None
     diagnostics_internal_service_token: str | None = None
+    admin_reads_require_auth: bool = True
+    diagnostics_require_auth: bool = True
+    operator_auth_bearer_token: str | None = None
+    previous_operator_auth_bearer_token: str | None = None
+    internal_service_auth_token: str | None = None
+    previous_internal_service_auth_token: str | None = None
+    operator_principal_header_name: str = "X-Operator-Id"
+    internal_service_principal_header_name: str = "X-Internal-Service-Principal"
+    auth_fail_closed_in_production: bool = True
     default_assignment_queue_key: str = "default"
     approval_action_token_ttl_seconds: int = 3600
     slack_interactive_approvals_enabled: bool = False
@@ -211,9 +226,19 @@ class Settings(BaseSettings):
     takeover_suppresses_inflight_dispatch: bool = True
     operator_note_max_chars: int = 2000
     health_ready_requires_auth: bool = True
+    rate_limits_enabled: bool = False
+    inbound_requests_per_minute_per_channel_account: int = 60
+    admin_requests_per_minute_per_operator: int = 120
+    approval_action_requests_per_minute_per_session: int = 30
+    provider_tokens_per_hour_per_agent: int = 200000
+    provider_requests_per_minute_per_model: int = 120
+    quota_counter_retention_days: int = 7
     observability_metrics_enabled: bool = False
     observability_metrics_path: str = "/metrics"
     observability_tracing_enabled: bool = False
+    provider_retry_base_seconds: float = 1.0
+    provider_retry_max_seconds: float = 16.0
+    provider_retry_jitter_seconds: float = 0.25
     execution_run_stale_after_seconds: int = 300
     outbox_job_stale_after_seconds: int = 300
     scheduled_job_fire_stale_after_seconds: int = 300
@@ -244,12 +269,36 @@ class Settings(BaseSettings):
             raise ValueError("llm_max_tool_requests_per_turn must be greater than 0")
         if self.runtime_streaming_chunk_chars <= 0:
             raise ValueError("runtime_streaming_chunk_chars must be greater than 0")
+        if self.node_runner_mode not in {"in_process", "http"}:
+            raise ValueError("node_runner_mode must be one of: in_process, http")
+        if self.node_runner_mode == "http" and not (self.node_runner_base_url or "").strip():
+            raise ValueError("node_runner_base_url is required when node_runner_mode=http")
+        if self.node_runner_mode == "http" and not self.node_runner_internal_bearer_token:
+            raise ValueError("node_runner_internal_bearer_token is required when node_runner_mode=http")
         if self.webchat_sse_replay_limit <= 0:
             raise ValueError("webchat_sse_replay_limit must be greater than 0")
         if self.approval_action_token_ttl_seconds <= 0:
             raise ValueError("approval_action_token_ttl_seconds must be greater than 0")
         if self.operator_note_max_chars <= 0:
             raise ValueError("operator_note_max_chars must be greater than 0")
+        if self.inbound_requests_per_minute_per_channel_account <= 0:
+            raise ValueError("inbound_requests_per_minute_per_channel_account must be greater than 0")
+        if self.admin_requests_per_minute_per_operator <= 0:
+            raise ValueError("admin_requests_per_minute_per_operator must be greater than 0")
+        if self.approval_action_requests_per_minute_per_session <= 0:
+            raise ValueError("approval_action_requests_per_minute_per_session must be greater than 0")
+        if self.provider_tokens_per_hour_per_agent <= 0:
+            raise ValueError("provider_tokens_per_hour_per_agent must be greater than 0")
+        if self.provider_requests_per_minute_per_model <= 0:
+            raise ValueError("provider_requests_per_minute_per_model must be greater than 0")
+        if self.quota_counter_retention_days <= 0:
+            raise ValueError("quota_counter_retention_days must be greater than 0")
+        if self.provider_retry_base_seconds <= 0:
+            raise ValueError("provider_retry_base_seconds must be greater than 0")
+        if self.provider_retry_max_seconds < self.provider_retry_base_seconds:
+            raise ValueError("provider_retry_max_seconds must be greater than or equal to provider_retry_base_seconds")
+        if self.provider_retry_jitter_seconds < 0:
+            raise ValueError("provider_retry_jitter_seconds must be greater than or equal to 0")
         if self.llm_max_output_tokens is not None and self.llm_max_output_tokens <= 0:
             raise ValueError("llm_max_output_tokens must be greater than 0 when set")
         if self.runtime_mode == "provider" and not self.llm_api_key:
@@ -323,6 +372,52 @@ class Settings(BaseSettings):
         self._tool_profile_lookup = tool_lookup
         self._historical_agent_override_lookup = override_lookup
         return self
+
+    @property
+    def resolved_operator_auth_bearer_token(self) -> str | None:
+        return self.operator_auth_bearer_token or self.diagnostics_admin_bearer_token
+
+    @property
+    def resolved_internal_service_auth_token(self) -> str | None:
+        return self.internal_service_auth_token or self.diagnostics_internal_service_token
+
+    def operator_auth_tokens(self) -> set[str]:
+        return {
+            token
+            for token in {
+                self.resolved_operator_auth_bearer_token,
+                self.previous_operator_auth_bearer_token,
+                self.diagnostics_admin_bearer_token,
+            }
+            if token
+        }
+
+    def internal_service_auth_tokens(self) -> set[str]:
+        return {
+            token
+            for token in {
+                self.resolved_internal_service_auth_token,
+                self.previous_internal_service_auth_token,
+                self.diagnostics_internal_service_token,
+            }
+            if token
+        }
+
+    def node_runner_transport_tokens(self) -> set[str]:
+        return {
+            token
+            for token in {
+                self.node_runner_internal_bearer_token,
+                self.node_runner_previous_internal_bearer_token,
+            }
+            if token
+        }
+
+    def node_runner_signing_keys(self) -> dict[str, str]:
+        keys = {self.node_runner_signing_key_id: self.node_runner_signing_secret}
+        if self.node_runner_previous_signing_key_id and self.node_runner_previous_signing_secret:
+            keys[self.node_runner_previous_signing_key_id] = self.node_runner_previous_signing_secret
+        return keys
 
     def get_channel_account(self, *, channel_kind: str, channel_account_id: str) -> ChannelAccountConfig:
         key = (channel_kind.strip(), channel_account_id.strip())

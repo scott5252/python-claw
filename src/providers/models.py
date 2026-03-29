@@ -238,9 +238,6 @@ class ProviderBackedModelAdapter(ModelAdapter):
     model_profile: ResolvedModelProfile
     client: ProviderClient | None = None
     _default_client: ProviderClient = field(init=False, repr=False)
-    _base_retry_delay_seconds: float = field(default=1.0, init=False, repr=False)
-    _max_retry_delay_seconds: float = field(default=16.0, init=False, repr=False)
-
     def __post_init__(self) -> None:
         self._default_client = OpenAIResponsesClient()
 
@@ -248,8 +245,11 @@ class ProviderBackedModelAdapter(ModelAdapter):
         return ToolRuntimeServices()
 
     def _retry_delay_seconds(self, *, attempt_number: int) -> float:
-        delay = min(self._max_retry_delay_seconds, self._base_retry_delay_seconds * (2 ** max(attempt_number - 1, 0)))
-        jitter = random.uniform(0.0, 0.25 * delay)
+        delay = min(
+            self.settings.provider_retry_max_seconds,
+            self.settings.provider_retry_base_seconds * (2 ** max(attempt_number - 1, 0)),
+        )
+        jitter = random.uniform(0.0, self.settings.provider_retry_jitter_seconds)
         return delay + jitter
 
     def complete_turn(self, *, state: AssistantState, available_tools: list[str]) -> ModelTurnResult:

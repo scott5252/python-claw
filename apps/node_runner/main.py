@@ -23,7 +23,7 @@ def create_app(
     manager = session_manager or DatabaseSessionManager(resolved_settings.database_url)
     capabilities_repository = CapabilitiesRepository()
     audit_repository = ExecutionAuditRepository()
-    signing_service = SigningService({resolved_settings.node_runner_signing_key_id: resolved_settings.node_runner_signing_secret})
+    signing_service = SigningService(resolved_settings.node_runner_signing_keys())
     app = FastAPI(title="python-claw-node-runner")
     app.state.settings = resolved_settings
     app.state.session_manager = manager

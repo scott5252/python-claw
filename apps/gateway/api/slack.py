@@ -3,7 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from apps.gateway.deps import get_approval_decision_service, get_session_manager, get_session_service, get_settings
+from apps.gateway.deps import get_approval_decision_service, get_quota_service, get_session_manager, get_session_service, get_settings
+from src.policies.quota import QuotaService
 from src.channels.adapters.slack import SlackAdapter
 from src.config.settings import Settings
 from src.db.session import DatabaseSessionManager
@@ -22,6 +23,7 @@ async def slack_events(
     session_manager: DatabaseSessionManager = Depends(get_session_manager),
     service: SessionService = Depends(get_session_service),
     settings: Settings = Depends(get_settings),
+    quota_service: QuotaService = Depends(get_quota_service),
 ):
     body = await request.body()
     payload = await request.json()
@@ -40,6 +42,23 @@ async def slack_events(
     translated = adapter.translate_inbound(payload=payload, channel_account_id=channel_account_id)
     if translated is None:
         return JSONResponse(status_code=status.HTTP_200_OK, content={"status": "ignored"})
+    if settings.rate_limits_enabled:
+        with session_manager.session() as db:
+            decision = quota_service.check_and_increment(
+                db,
+                scope_kind="channel_account",
+                scope_key=f"slack:{channel_account_id}",
+                limit=settings.inbound_requests_per_minute_per_channel_account,
+                window_seconds=60,
+            )
+            if not decision.allowed:
+                db.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="rate limit exceeded",
+                    headers={"Retry-After": str(decision.retry_after_seconds or 60)},
+                )
+            db.commit()
     with session_manager.session() as db:
         result = service.process_inbound(db=db, **translated)
         db.commit()

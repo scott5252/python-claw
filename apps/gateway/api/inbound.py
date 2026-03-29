@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 
-from apps.gateway.deps import get_session_manager, get_session_service, get_settings
+from apps.gateway.deps import get_quota_service, get_session_manager, get_session_service, get_settings
+from src.policies.quota import QuotaService
 from src.config.settings import Settings
 from src.db.session import DatabaseSessionManager
 from src.domain.schemas import InboundMessageRequest, InboundMessageResponse
@@ -21,10 +22,29 @@ router = APIRouter(prefix="/inbound", tags=["inbound"])
 @router.post("/message", response_model=InboundMessageResponse, status_code=status.HTTP_202_ACCEPTED)
 def post_inbound_message(
     payload: InboundMessageRequest,
+    response: Response,
     session_manager: DatabaseSessionManager = Depends(get_session_manager),
     service: SessionService = Depends(get_session_service),
     settings: Settings = Depends(get_settings),
+    quota_service: QuotaService = Depends(get_quota_service),
 ) -> InboundMessageResponse:
+    if settings.rate_limits_enabled:
+        with session_manager.session() as db:
+            decision = quota_service.check_and_increment(
+                db,
+                scope_kind="channel_account",
+                scope_key=f"{payload.channel_kind}:{payload.channel_account_id}",
+                limit=settings.inbound_requests_per_minute_per_channel_account,
+                window_seconds=60,
+            )
+            if not decision.allowed:
+                db.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="rate limit exceeded",
+                    headers={"Retry-After": str(decision.retry_after_seconds or 60)},
+                )
+            db.commit()
     try:
         with session_manager.session() as db:
             try:
@@ -65,6 +85,7 @@ def post_inbound_message(
             external_message_id=payload.external_message_id.strip(),
         ),
     )
+    response.headers["X-RateLimit-Scope"] = f"{payload.channel_kind}:{payload.channel_account_id}"
     return InboundMessageResponse(
         session_id=result.session_id,
         message_id=result.message_id,
