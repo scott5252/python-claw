@@ -338,8 +338,33 @@ Decision:
 
 ## Contracts
 ### Auth and Authorization Contract
-- Operator, admin, diagnostics, governance-read, collaboration, run-inspection, and transcript-inspection routes exposed from `apps/gateway/api/admin.py` must require authenticated operator or internal-service access in production mode.
-- If `admin_reads_require_auth=true`, even read-only session and transcript routes must fail closed without valid operator credentials.
+- This slice defines one authoritative route-auth matrix so operator and internal-service callers are handled consistently across gateway surfaces:
+  - `public_live_only`
+    - `GET /health`
+    - `GET /health/live`
+    - allowed callers: anonymous, operator, internal-service
+  - `internal_or_operator_read`
+    - `GET /health/ready` when readiness auth is enabled
+    - diagnostics list and detail reads
+    - exporter posture reads
+    - bounded run-inspection reads intended for trusted automation
+    - allowed callers: operator or internal-service
+  - `operator_only_read`
+    - admin session metadata reads
+    - transcript reads
+    - governance reads
+    - collaboration-state reads
+    - approval-prompt reads
+    - agent/profile inventory reads
+    - allowed callers: operator only when `admin_reads_require_auth=true`
+  - `operator_only_mutation`
+    - collaboration takeover, pause, resume, assignment, and note mutation routes
+    - operator approval-decision routes exposed through admin APIs
+    - any future operator-authored admin mutation that writes durable operator-visible state
+    - allowed callers: operator only
+- `admin_reads_require_auth=true` means all admin routes in `apps/gateway/api/admin.py` fail closed.
+- When `admin_reads_require_auth=true`, session, transcript, governance, collaboration, approval-prompt, delegation, and profile reads are classified as `operator_only_read`, not `internal_or_operator_read`.
+- Internal-service callers remain limited to explicitly machine-safe operational surfaces and must not read operator-facing session or transcript history through admin routes merely because the route is read-only.
 - `get_operator_principal(...)` or its replacement remains the sole gateway-owned source of durable operator identity for operator-authored mutations and audit joins.
 - Internal-service access remains distinct from operator access:
   - internal-service calls may satisfy authorization for trusted automation
@@ -348,6 +373,11 @@ Decision:
 - Internal-service callers must carry a durable service principal separate from human operator identity, using a bounded header or equivalent internal caller contract.
 - Routes that mutate collaboration state, assignments, operator notes, or operator approval decisions must reject internal-service-only caller identity even when the internal-service token is otherwise valid.
 - Health readiness and diagnostics read routes may accept internal-service authentication, but operator-facing admin mutations may not.
+- Shared auth helpers must derive one typed caller identity carrying at minimum:
+  - `caller_kind` with values `operator` or `internal_service`
+  - bounded authenticated principal id
+  - authorization ceiling derived from the route-auth matrix
+- Route handlers must authorize against the route-auth matrix rather than ad hoc token checks.
 - `apps/node_runner/api/internal.py` must require both:
   - valid transport-level internal authentication such as `Authorization: Bearer ...` or equivalent header contract
   - valid signed request verification through the existing signing policy
@@ -357,6 +387,27 @@ Decision:
   - `http`, where both internal bearer auth and signed request verification are mandatory on every POST and status GET
 - Channel-provider callback surfaces must continue verifying provider signatures or secrets through their adapters before acceptance, and failures must return bounded auth errors without leaking configured credentials.
 - Health and readiness surfaces may stay public only for `live` probes. Any surface that reveals dependency readiness, configuration posture, or diagnostics detail must require auth when the corresponding hardening setting is enabled.
+
+### Node-Runner HTTP Wire Contract
+- `node_runner_mode=http` uses one explicit backend-owned HTTP auth contract rather than implicit shared-secret checks.
+- Required request headers for `POST /internal/node/exec` and `GET /internal/node/exec/{request_id}` are:
+  - `Authorization: Bearer {token}` carrying one valid internal bearer token from the active overlap set
+  - signed-request metadata required by the existing signing policy, including key id and signed canonical payload material for execute requests
+- `POST /internal/node/exec` must verify, in order:
+  - transport bearer token
+  - request-shape validity
+  - signed payload validity and key-id match
+  - policy authorization
+- `GET /internal/node/exec/{request_id}` must verify the same transport bearer contract as the POST surface before returning bounded status data.
+- Bearer-token rotation must support exactly two concurrent accepted tokens during the configured overlap window:
+  - current token
+  - previous token
+- Signing-key rotation must support exactly two concurrent accepted signing key ids during the configured overlap window:
+  - current signing key id
+  - previous signing key id
+- Outside the configured overlap window, previous bearer tokens and previous signing key ids must fail closed.
+- Execute and status responses must never disclose which secret value failed verification; they may disclose only bounded auth failure categories.
+- `node_runner_mode=in_process` bypasses only the HTTP transport layer; it does not weaken signed-request construction, request-id determinism, sandbox enforcement, or audit persistence.
 
 ### Credential and Secret-Handling Contract
 - Provider API keys, channel tokens, signing secrets, webhook secrets, and node-runner bearer tokens remain settings-backed secrets in this slice.
@@ -378,6 +429,47 @@ Decision:
   - authenticated admin and diagnostics routes
   - provider-backed model execution before expensive provider requests
 - A rate-limit decision must be based on a bounded scope and bounded window, not on unbounded free-form user identifiers.
+- The quota policy matrix for this slice is:
+  - inbound gateway acceptance
+    - enforcement point: `POST /inbound/message`
+    - scope kind: `channel_account`
+    - scope key: `{channel_kind}:{channel_account_id}`
+    - window: minute
+    - on exceed: reject with `429` before dedupe claim finalization, transcript append, or run creation
+  - provider callback ingress
+    - enforcement point: verified Slack, Telegram, and webchat callback routes
+    - scope kind: `channel_account`
+    - scope key: `{channel_kind}:{channel_account_id}`
+    - window: minute
+    - on exceed: reject with `429` before transcript append, dedupe finalization, approval mutation, or delivery mutation
+  - admin and operator reads or mutations
+    - enforcement point: authenticated routes in `apps/gateway/api/admin.py`
+    - scope kind: `operator_principal`
+    - scope key: authenticated operator principal id
+    - window: minute
+    - on exceed: reject with `429` before any durable mutation; read routes perform no repository mutation after denial
+  - diagnostics and readiness machine-safe reads
+    - enforcement point: authenticated diagnostics and readiness routes
+    - scope kind: `gateway_route`
+    - scope key: `{route_class}:{caller_kind}`
+    - window: minute
+    - on exceed: reject with `429` before diagnostics query execution
+  - approval action callbacks
+    - enforcement point: callback or write endpoint that consumes one approval action token
+    - scope kind: `approval_surface`
+    - scope key: `{session_id}:{channel_kind}:{decision_surface}`
+    - window: minute
+    - on exceed: reject with `429` before proposal mutation or prompt-state mutation
+  - provider model requests
+    - enforcement point: provider-backed runtime before outbound provider network calls
+    - scope kind: `provider_model`
+    - scope key: `{agent_id}:{model_profile_key}`
+    - windows:
+      - minute for request counts
+      - hour for token estimates
+    - on exceed: reschedule or terminally fail the existing run according to retryability; never create a new run
+- Scope keys must be derived only from bounded enum-like identifiers, durable principal ids, session ids, agent ids, model profile keys, and channel account ids already persisted or validated by the backend.
+- Raw user ids, free-form transport addresses, request bodies, prompt text, and provider-native opaque payloads must not be used as quota scope keys.
 - Gateway rate-limit rejection must:
   - return HTTP `429`
   - set `Retry-After` when a meaningful retry boundary exists
@@ -416,24 +508,41 @@ Decision:
   - `node_execution_audits`
 - Recovery scans must be bounded by configurable batch size and lookback windows.
 - Recovery decisions must be idempotent and auditable.
+- Before applying any repair action, `RecoveryService` must evaluate family-specific prechecks against the current durable row set:
+  - whether the target row is already terminal
+  - whether a newer successful attempt or terminal state already exists for the same durable identity
+  - whether collaboration state currently requires the work to remain blocked rather than runnable
+  - whether a proposal, prompt, delegation, or delivery identity for the same durable artifact already exists
+  - whether the owning run, session, or delivery has been superseded by a later canonical durable outcome
 - The stale-state matrix for this slice is:
   - `execution_runs`
     - stale when status is `claimed` or `running` and either the active lease is expired or the row age exceeds the configured run recovery grace threshold
+    - prechecks must confirm the run is not already terminal, not intentionally `blocked`, and not already superseded by a later successful continuation for the same trigger identity
     - repair actions may only requeue, classify failed, or dead-letter the existing row
   - `outbox_jobs`
     - stale when status is `running` and `updated_at` is older than the configured outbox recovery grace threshold
+    - prechecks must confirm no terminal delivery-owned outcome already exists for the same logical outbound work and that current collaboration state does not require suppression
     - repair actions may only return the existing job to `pending` with a bounded future `available_at`, or mark it terminally failed
   - `outbound_deliveries`
     - stale when the latest attempt is non-terminal beyond the configured delivery recovery grace threshold, or when a retryable failed delivery is due for redrive at `available_at`
+    - prechecks must confirm the logical delivery row is still the canonical owner for `(outbound_intent_id, chunk_index)` and that no later sent or terminal non-retryable outcome already exists
     - repair actions may only create a new attempt under the existing logical delivery row, or mark the existing delivery terminally failed
   - `node_execution_audits`
     - stale when status is `received` or `running` beyond the configured node-execution recovery grace threshold
+    - prechecks must confirm no later terminal audit exists for the same `request_id` and that the owning run is still eligible for retry or terminal reconciliation
     - repair actions may only reconcile the existing `request_id` to a bounded terminal state, or release the owning run to retry through a later execution attempt
 - Minimum recovery actions in this slice are:
   - reclaim stale claimed or running `execution_runs` whose leases are expired and whose terminal state was not persisted
   - redrive stale `outbox_jobs` that are safe to retry from existing durable inputs
   - reschedule retryable `outbound_deliveries` whose `available_at` is due
   - reconcile `node_execution_audits` stuck in in-flight states by rechecking or terminally classifying them according to signed request id and timeout rules
+- Recovery forbidden side effects are explicit:
+  - must not create a new inbound dedupe identity or a second inbound transcript row
+  - must not create a new `execution_run` when repairing an existing stale run
+  - must not create a new child session, new delegation row, or new parent-result continuation for an existing delegation identity
+  - must not create a new proposal or a second pending approval prompt for an already-persisted proposal or prompt surface
+  - must not append a second assistant transcript row for already-persisted assistant output
+  - must not create a second logical delivery row for an existing `(outbound_intent_id, chunk_index)` identity
 - Recovery must never create a second inbound transcript row for the same upstream event.
 - Recovery must never create a second child session, second delegation row, second proposal, or second approval prompt for the same durable identity.
 

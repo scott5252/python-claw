@@ -159,13 +159,19 @@
   - one helper that can authorize either caller kind for approved read surfaces
   - one helper that derives a durable operator principal only for real operator callers
   - one helper that derives a durable internal-service principal for machine-safe reads
-- Update `apps/gateway/api/admin.py` so all sensitive reads and writes follow the selected fail-closed auth policy, including session and transcript reads when `admin_reads_require_auth=true`.
+- Encode the spec route-auth matrix directly in shared auth helpers so route classes are explicit and testable:
+  - `public_live_only`
+  - `internal_or_operator_read`
+  - `operator_only_read`
+  - `operator_only_mutation`
+- Update `apps/gateway/api/admin.py` so all sensitive reads and writes follow the route-auth matrix, with session, transcript, governance, collaboration, approval-prompt, delegation, and profile reads classified as `operator_only_read` when `admin_reads_require_auth=true`.
 - Update `apps/gateway/api/health.py` readiness behavior to use the same shared auth contract rather than a special-case check.
 - Update `apps/node_runner/api/internal.py` so `http` transport mode requires valid transport auth before signed payload verification.
 - Add clear authorization ceilings:
   - internal service can read approved operational surfaces
   - internal service cannot perform operator-authored collaboration or approval mutations
   - operator writes still require durable human operator identity
+- Keep internal-service access off operator-facing transcript and session-history reads even when those reads are bounded and authenticated.
 
 ### 2. Secret Validation, Redaction, and Rotation Posture
 - Expand settings validation in `src/config/settings.py` to fail boot when enabled real accounts or remote execution modes are missing required credentials.
@@ -190,6 +196,13 @@
   - `agent_id`
   - `provider_model`
   - `approval_surface`
+- Encode the quota policy matrix in one shared mapping so enforcement points do not invent their own scope keys:
+  - inbound ingress uses `{channel_kind}:{channel_account_id}`
+  - provider callbacks use `{channel_kind}:{channel_account_id}`
+  - admin routes use authenticated operator principal id
+  - diagnostics and readiness machine-safe reads use `{route_class}:{caller_kind}`
+  - approval callbacks use `{session_id}:{channel_kind}:{decision_surface}`
+  - provider runtime uses `{agent_id}:{model_profile_key}`
 - Enforce quotas at the required first points:
   - `POST /inbound/message`
   - provider callback routes
@@ -198,6 +211,7 @@
   - provider-backed model execution before network calls
 - Return `429` plus `Retry-After` when appropriate and ensure rejection happens before dedupe finalization, transcript append, run creation, or provider request dispatch.
 - Emit bounded telemetry and diagnostics context for rate-limit denials without adding unbounded labels or scope keys.
+- Keep raw user ids, prompt text, transport addresses, and provider-native opaque payloads out of quota scope keys and metric labels.
 - Add the explicit quota settings contract to `src/config/settings.py`, including:
   - `rate_limits_enabled`
   - `inbound_requests_per_minute_per_channel_account`
@@ -250,6 +264,11 @@
   - stale `outbox_jobs`
   - due or stale retryable `outbound_deliveries`
   - stale `node_execution_audits`
+- Encode per-family prechecks directly in `RecoveryService` before any repair:
+  - skip rows already terminal
+  - skip rows superseded by a later canonical durable outcome
+  - respect current collaboration blocking or suppression state
+  - confirm no existing durable proposal, prompt, delegation, or delivery identity already owns the work being considered
 - Ensure repair actions are idempotent and bounded:
   - requeue the same run row
   - move the same outbox row back to pending with a future `available_at`
@@ -258,8 +277,10 @@
 - Record recovery state and reason on the repaired row and emit auditable telemetry so diagnostics can explain what happened.
 - Keep the repair rules aligned with existing durable identities introduced in earlier specs:
   - never create a second inbound transcript row
+  - never create a second run row for the same stale run repair
   - never create a second child session or delegation row
   - never create a second approval prompt for the same durable prompt identity
+  - never create a second logical delivery row for an existing `(outbound_intent_id, chunk_index)` identity
 - Add the explicit recovery settings contract:
   - `recovery_scan_interval_seconds`
   - `recovery_batch_size`
@@ -307,6 +328,12 @@
   - `media_delete_grace_seconds`
 - Update `src/security/signing.py` and node-runner wiring to support overlapping signing keys and explicit key-id validation during rotation windows.
 - Update `src/execution/runtime.py` and dependency wiring so remote execution can cleanly switch between `in_process` and `http` modes without weakening signing requirements.
+- Define and implement one explicit node-runner HTTP wire contract:
+  - `Authorization: Bearer ...` on execute and status routes
+  - signed request metadata with explicit key-id validation on execute routes
+  - exactly one current and one previous bearer token accepted during overlap
+  - exactly one current and one previous signing key id accepted during overlap
+  - bounded auth failure categories only, with no secret-leak detail
 - Harden `src/sandbox/service.py` and `apps/node_runner/policy.py` so `off` mode is treated as exceptional and environment-gated.
 - Ensure node-runner audit storage and executor behavior cap stdout or stderr previews and truncation metadata deterministically.
 - Add a media purge workflow in `src/media/processor.py` or a small retention helper that deletes expired files safely and records purge-pending or purge-failed state when cleanup fails.
@@ -335,22 +362,26 @@
 ### Phase A: Schema, Settings, and Auth Foundation
 - Migrations for quota and recovery fields
 - shared auth settings and principal contracts
+- route-auth matrix encoded in shared dependencies and route tests
 - startup credential validation
 - admin, readiness, diagnostics, and node-runner auth unification
 
 ### Phase B: Quotas, Retry, and Delivery Ownership
 - quota service and ingress or provider enforcement
+- quota policy matrix encoded in shared scope-key helpers
 - provider retry settings and metrics hooks
 - delivery retry ownership encoded in repository and dispatcher behavior
 
 ### Phase C: Recovery and Operational Visibility
 - recovery service and reaper scan loops
+- family-specific recovery prechecks and forbidden side-effect guards
 - retention-aware diagnostics filters
 - exporter-backed metrics and tracing
 - readiness posture expansion and alertable signals
 
 ### Phase D: Sandbox, Media, and Production Validation
 - node-runner mode split and transport auth
+- explicit node-runner HTTP header and rotation-overlap contract
 - signing-key rotation overlap
 - stdout or stderr bounds
 - media purge workflow
