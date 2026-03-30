@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>python-claw webchat</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    background: #16213e;
+    padding: 12px 20px;
+    border-bottom: 1px solid #0f3460;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  header h1 { font-size: 18px; font-weight: 600; color: #e94560; }
+  header .status {
+    font-size: 12px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    background: #0f3460;
+    color: #7ec8e3;
+  }
+  header .status.connected { background: #1b4332; color: #95d5b2; }
+  header .status.error { background: #5c1010; color: #f4a0a0; }
+
+  #config-bar {
+    background: #16213e;
+    padding: 8px 20px;
+    border-bottom: 1px solid #0f3460;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+  }
+  #config-bar label { font-size: 12px; color: #7ec8e3; }
+  #config-bar input, #config-bar select {
+    font-size: 12px;
+    padding: 4px 8px;
+    border: 1px solid #0f3460;
+    border-radius: 4px;
+    background: #1a1a2e;
+    color: #e0e0e0;
+  }
+  #config-bar input:focus, #config-bar select:focus { outline: none; border-color: #e94560; }
+  #config-bar button {
+    font-size: 12px;
+    padding: 4px 12px;
+    border: none;
+    border-radius: 4px;
+    background: #e94560;
+    color: white;
+    cursor: pointer;
+  }
+  #config-bar button:hover { background: #c73e54; }
+
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .message {
+    max-width: 75%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 14px;
+    line-height: 1.5;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+  }
+  .message.user {
+    align-self: flex-end;
+    background: #0f3460;
+    color: #e0e0e0;
+    border-bottom-right-radius: 4px;
+  }
+  .message.assistant {
+    align-self: flex-start;
+    background: #2a2a4a;
+    color: #e0e0e0;
+    border-bottom-left-radius: 4px;
+  }
+  .message.system {
+    align-self: center;
+    background: #1b4332;
+    color: #95d5b2;
+    font-size: 12px;
+    padding: 6px 14px;
+    border-radius: 8px;
+    max-width: 90%;
+  }
+  .message.error {
+    align-self: center;
+    background: #5c1010;
+    color: #f4a0a0;
+    font-size: 12px;
+    padding: 6px 14px;
+    border-radius: 8px;
+  }
+  .message .meta {
+    font-size: 11px;
+    color: #888;
+    margin-top: 4px;
+  }
+  .message .payload {
+    margin-top: 6px;
+    padding: 6px 8px;
+    background: rgba(0,0,0,0.2);
+    border-radius: 4px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 12px;
+    overflow-x: auto;
+  }
+
+  #input-bar {
+    background: #16213e;
+    padding: 12px 20px;
+    border-top: 1px solid #0f3460;
+    display: flex;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+  #input-bar textarea {
+    flex: 1;
+    padding: 10px 14px;
+    border: 1px solid #0f3460;
+    border-radius: 8px;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    font-family: inherit;
+    font-size: 14px;
+    resize: none;
+    min-height: 44px;
+    max-height: 120px;
+  }
+  #input-bar textarea:focus { outline: none; border-color: #e94560; }
+  #input-bar textarea::placeholder { color: #555; }
+  #input-bar button {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    background: #e94560;
+    color: white;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  #input-bar button:hover { background: #c73e54; }
+  #input-bar button:disabled { background: #444; cursor: default; }
+
+  #log-panel {
+    background: #111;
+    border-top: 1px solid #0f3460;
+    max-height: 200px;
+    overflow-y: auto;
+    padding: 8px 14px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 11px;
+    color: #666;
+    display: none;
+    flex-shrink: 0;
+  }
+  #log-panel.visible { display: block; }
+  #log-panel div { padding: 1px 0; }
+  #log-panel .log-send { color: #7ec8e3; }
+  #log-panel .log-recv { color: #95d5b2; }
+  #log-panel .log-err { color: #f4a0a0; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>python-claw</h1>
+  <span id="conn-status" class="status">disconnected</span>
+  <span style="flex:1"></span>
+  <button onclick="toggleLog()" style="font-size:11px;padding:3px 10px;border:none;border-radius:4px;background:#0f3460;color:#7ec8e3;cursor:pointer">toggle log</button>
+</header>
+
+<div id="config-bar">
+  <label>Gateway</label>
+  <input id="cfg-gateway" type="text" value="http://localhost:8000" style="width:200px">
+  <label>Account</label>
+  <input id="cfg-account" type="text" value="webchat-demo" style="width:120px">
+  <label>Token</label>
+  <input id="cfg-token" type="text" value="fake-webchat-token" style="width:140px">
+  <label>User</label>
+  <input id="cfg-user" type="text" value="demo-user" style="width:100px">
+  <label>Poll (ms)</label>
+  <input id="cfg-poll" type="number" value="3000" style="width:70px" min="500" max="30000">
+  <button onclick="connect()">Connect</button>
+</div>
+
+<div id="messages"></div>
+
+<div id="input-bar">
+  <textarea id="input" placeholder="Type a message..." rows="1" disabled></textarea>
+  <button id="send-btn" onclick="sendMessage()" disabled>Send</button>
+</div>
+
+<div id="log-panel"></div>
+
+<script>
+const messagesEl = document.getElementById('messages');
+const inputEl = document.getElementById('input');
+const sendBtn = document.getElementById('send-btn');
+const statusEl = document.getElementById('conn-status');
+const logPanel = document.getElementById('log-panel');
+
+let gateway = '';
+let accountId = '';
+let token = '';
+let userId = '';
+let streamId = '';
+let pollMs = 3000;
+let pollTimer = null;
+let afterDeliveryId = null;
+let sessionId = null;
+let connected = false;
+let seenDeliveryIds = new Set();
+
+function toggleLog() {
+  logPanel.classList.toggle('visible');
+}
+
+function log(cls, text) {
+  const d = document.createElement('div');
+  d.className = cls;
+  d.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
+  logPanel.appendChild(d);
+  logPanel.scrollTop = logPanel.scrollHeight;
+}
+
+function addMessage(type, text, meta, payload) {
+  const div = document.createElement('div');
+  div.className = `message ${type}`;
+
+  let html = escapeHtml(text);
+  if (meta) html += `<div class="meta">${escapeHtml(meta)}</div>`;
+  if (payload) html += `<div class="payload">${escapeHtml(typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2))}</div>`;
+  div.innerHTML = html;
+
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className = `status ${cls}`;
+}
+
+async function connect() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+
+  gateway = document.getElementById('cfg-gateway').value.replace(/\/$/, '');
+  accountId = document.getElementById('cfg-account').value;
+  token = document.getElementById('cfg-token').value;
+  userId = document.getElementById('cfg-user').value;
+  pollMs = parseInt(document.getElementById('cfg-poll').value) || 3000;
+  streamId = userId;
+  afterDeliveryId = null;
+  sessionId = null;
+  seenDeliveryIds.clear();
+
+  messagesEl.innerHTML = '';
+  setStatus('connecting...', '');
+
+  try {
+    const r = await fetch(`${gateway}/health/live`);
+    if (!r.ok) throw new Error(`health check failed: ${r.status}`);
+    setStatus('connected', 'connected');
+    connected = true;
+    inputEl.disabled = false;
+    sendBtn.disabled = false;
+    inputEl.focus();
+    addMessage('system', `Connected to ${gateway} as ${userId}`);
+    log('log-recv', `health/live OK`);
+    pollTimer = setInterval(poll, pollMs);
+  } catch (e) {
+    setStatus('error', 'error');
+    addMessage('error', `Connection failed: ${e.message}`);
+    log('log-err', `connect error: ${e.message}`);
+  }
+}
+
+async function sendMessage() {
+  const content = inputEl.value.trim();
+  if (!content || !connected) return;
+
+  inputEl.value = '';
+  inputEl.style.height = 'auto';
+  addMessage('user', content);
+
+  const url = `${gateway}/providers/webchat/accounts/${accountId}/messages`;
+  const body = {
+    actor_id: userId,
+    peer_id: userId,
+    content: content
+  };
+
+  log('log-send', `POST ${url}`);
+
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Webchat-Client-Token': token
+      },
+      body: JSON.stringify(body)
+    });
+    const data = await r.json();
+
+    if (!r.ok) {
+      addMessage('error', `Send failed: ${r.status} ${JSON.stringify(data)}`);
+      log('log-err', `send error: ${r.status}`);
+      return;
+    }
+
+    if (!sessionId && data.session_id) {
+      sessionId = data.session_id;
+      addMessage('system', `Session: ${sessionId}`);
+    }
+
+    log('log-recv', `202 run_id=${data.run_id} session=${data.session_id}`);
+  } catch (e) {
+    addMessage('error', `Send error: ${e.message}`);
+    log('log-err', `send error: ${e.message}`);
+  }
+}
+
+async function poll() {
+  if (!connected) return;
+
+  let url = `${gateway}/providers/webchat/accounts/${accountId}/poll?stream_id=${encodeURIComponent(streamId)}&limit=50`;
+  if (afterDeliveryId != null) url += `&after_delivery_id=${afterDeliveryId}`;
+
+  try {
+    const r = await fetch(url, {
+      headers: { 'X-Webchat-Client-Token': token }
+    });
+
+    if (!r.ok) {
+      log('log-err', `poll error: ${r.status}`);
+      return;
+    }
+
+    const data = await r.json();
+
+    if (data.items && data.items.length > 0) {
+      log('log-recv', `poll: ${data.items.length} items`);
+
+      for (const item of data.items) {
+        if (seenDeliveryIds.has(item.delivery_id)) continue;
+        seenDeliveryIds.add(item.delivery_id);
+
+        const payload = item.payload || {};
+        const text = payload.text || payload.content || '';
+        const kind = item.delivery_kind || '';
+        const meta = `delivery #${item.delivery_id} | ${kind} | ${item.status}`;
+
+        if (text) {
+          addMessage('assistant', text, meta);
+        } else {
+          addMessage('assistant', `[${kind}]`, meta, payload);
+        }
+      }
+
+      if (data.next_after_delivery_id != null) {
+        afterDeliveryId = data.next_after_delivery_id;
+      }
+    }
+  } catch (e) {
+    log('log-err', `poll error: ${e.message}`);
+  }
+}
+
+// Auto-resize textarea and Enter to send
+inputEl.addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+});
+
+inputEl.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+// Connect on load
+window.addEventListener('load', connect);
+</script>
+</body>
+</html>
