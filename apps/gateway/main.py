@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from apps.gateway.deps import (
     bootstrap_runtime_state,
@@ -29,6 +30,13 @@ def create_app(
 ) -> FastAPI:
     resolved_settings = settings or get_settings()
     app = FastAPI(title=resolved_settings.app_name)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:3000"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.state.settings = resolved_settings
     app.state.session_manager = session_manager or DatabaseSessionManager(resolved_settings.database_url)
     Base.metadata.create_all(app.state.session_manager.engine)

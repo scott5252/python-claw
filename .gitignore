@@ -9,5 +9,7 @@ dist/
 .idea/
 .vscode/
 .env
+.env.demo
+.env.original
 htmlcov/
 coverage/

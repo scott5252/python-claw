@@ -17,6 +17,7 @@ RUN uv sync --no-dev --no-editable
 # Copy application code
 COPY src/ src/
 COPY apps/ apps/
+COPY scripts/ scripts/
 COPY migrations/ migrations/
 COPY alembic.ini ./
 

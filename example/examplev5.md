@@ -77,13 +77,15 @@ npm install -g serve
 
 Both are one-time global installs.
 
-## Step 2: Configure `.env`
+## Step 2: Prepare `.env` From `.env.demo`
+
+For this example, `.env.demo` is the source configuration file. The compose files load `.env`, so the first step is:
 
 ```bash
-cp .env.example .env
+cp .env.demo .env
 ```
 
-Replace the contents with the following. Change only `YOUR_OPENAI_API_KEY`:
+Then edit `.env.demo` and update only the OpenAI API key value:
 
 ```text
 PYTHON_CLAW_APP_NAME=python-claw-gateway
@@ -131,6 +133,7 @@ PYTHON_CLAW_OPERATOR_PRINCIPAL_HEADER_NAME=X-Operator-Id
 PYTHON_CLAW_INTERNAL_SERVICE_PRINCIPAL_HEADER_NAME=X-Internal-Service-Principal
 PYTHON_CLAW_DIAGNOSTICS_ADMIN_BEARER_TOKEN=demo-operator-token
 PYTHON_CLAW_DIAGNOSTICS_INTERNAL_SERVICE_TOKEN=demo-internal-token
+PYTHON_CLAW_WEBCHAT_INTERACTIVE_APPROVALS_ENABLED=true
 
 PYTHON_CLAW_RATE_LIMITS_ENABLED=true
 PYTHON_CLAW_INBOUND_REQUESTS_PER_MINUTE_PER_CHANNEL_ACCOUNT=20
@@ -157,6 +160,12 @@ PYTHON_CLAW_WORKER_POLL_SECONDS=2
 PYTHON_CLAW_WORKER_IDLE_LOG_EVERY=30
 ```
 
+After editing `.env.demo`, copy it to `.env` again before running any Docker commands:
+
+```bash
+cp .env.demo .env
+```
+
 ### Configuration highlights
 
 - **`NODE_RUNNER_MODE=http`** — the node-runner runs as a separate Docker service, giving true process isolation.
@@ -166,7 +175,9 @@ PYTHON_CLAW_WORKER_IDLE_LOG_EVERY=30
 
 ## Step 3: Start Everything
 
-You will have **four terminals** open:
+Make sure you already copied `.env.demo` to `.env` before this step. Docker Compose reads `.env`, not `.env.demo`.
+
+You will have **five terminals** open:
 
 ### Terminal 1 — MailDev
 
@@ -186,10 +197,22 @@ You should see: `Webhook receiver listening on http://localhost:3001`
 
 ### Terminal 3 — Docker (python-claw stack)
 
-Build and start all services:
+If you previously ran the project with a different `.env` or in `rule_based` mode, reset the stack and volumes first so the demo agent/model profiles are recreated from `.env.demo`:
 
 ```bash
-docker compose --env-file .env -f docker-compose.yml -f docker-compose.app.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.app.yml down -v
+```
+
+Start PostgreSQL and Redis first:
+
+```bash
+docker compose --env-file .env -f docker-compose.yml up -d postgres redis
+```
+
+Wait until both are healthy:
+
+```bash
+docker compose --env-file .env -f docker-compose.yml ps
 ```
 
 Run database migrations:
@@ -197,6 +220,12 @@ Run database migrations:
 ```bash
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.app.yml \
   run --rm gateway uv run alembic upgrade head
+```
+
+Then build and start the application services:
+
+```bash
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.app.yml up -d --build
 ```
 
 Verify:
@@ -213,9 +242,18 @@ Tail the worker logs (keep this running):
 docker logs -f python-claw-worker
 ```
 
-### Terminal 4 — Webchat UI
+### Terminal 4 — Gateway Logs
+
+Tail the gateway logs (keep this running):
 
 ```bash
+docker logs -f python-claw-gateway
+```
+
+### Terminal 5 — Webchat UI
+
+```bash
+cd example
 npx serve -l 3000 .
 ```
 
@@ -240,6 +278,7 @@ Press Enter (or click Send).
 3. Within a few seconds, assistant responses appear on the left:
    - The parent agent confirms it is delegating to `deploy-agent`.
    - An approval prompt appears with a proposal ID for the `remote_exec` command.
+   - If you only see `Received: ...`, the app is still using the rule-based profile from older database state. Go back to Step 3 and run the `down -v` reset before starting the stack again.
 
 ## Step 5: Chat — Approve The Deployment Action
 
@@ -252,7 +291,21 @@ approve <paste-proposal-id-here>
 ### What happens
 
 1. The approval is recorded.
-2. The worker re-runs the child. The `curl` command executes on the node-runner.
+2. The approval activates the proposed `remote_exec` action for an exact retry of the same request.
+3. The assistant should confirm the approval and tell you to retry the original request.
+
+## Step 6: Chat — Retry The Deployment Request
+
+Send the same deployment request again:
+
+```
+Deploy the app northwind-api to staging. Delegate this to deploy-agent. The deploy-agent should use remote_exec to POST a JSON payload to http://host.docker.internal:3001/deploy-events with curl. The payload should include correlation_id=northwind-api-staging-001, event=deployment_started, app=northwind-api, environment=staging.
+```
+
+### What happens
+
+1. The child run reuses the approved `remote_exec` action.
+2. The `curl` command executes on the node-runner.
 3. Check **Terminal 2** (webhook receiver) — you should see:
 
 ```
@@ -264,7 +317,7 @@ Body: {"correlation_id":"northwind-api-staging-001","event":"deployment_started"
 
 4. The child run completes. The parent receives the delegation result.
 
-## Step 6: Send The Deployment Callback
+## Step 7: Send The Deployment Callback
 
 This is the one step done outside the chat UI, because it simulates an external system calling back. Run in any terminal:
 
@@ -283,7 +336,7 @@ curl -X POST http://localhost:8000/inbound/message \
 
 The callback uses `peer_id: "demo-user"` to route into the **same session**. The parent LLM will see it in the chat transcript.
 
-## Step 7: Chat — Request A Deploy Report
+## Step 8: Chat — Request A Deploy Report
 
 Back in the browser chat, type:
 
@@ -304,7 +357,7 @@ docker exec python-claw-node-runner find /app/.claw-sandboxes/sessions/code-agen
 docker exec python-claw-node-runner cat /app/.claw-sandboxes/sessions/code-agent/*/deploy_report.json 2>/dev/null
 ```
 
-## Step 8: Chat — Request Email Notification
+## Step 9: Chat — Request Email Notification
 
 In the browser chat, type:
 
@@ -322,7 +375,7 @@ approve <paste-proposal-id-here>
 
 Open [http://localhost:1080](http://localhost:1080). You should see the email in MailDev.
 
-## Step 9: Inspect The Audit Trail
+## Step 10: Inspect The Audit Trail
 
 Use the admin APIs to inspect everything that happened:
 
