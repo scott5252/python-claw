@@ -8,9 +8,12 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
+from src.agents.service import AgentProfileService
 from src.capabilities.activation import ActivationController
 from src.config.settings import Settings
 from src.db.models import ApprovalActionPromptStatus
+from src.delegations.repository import DelegationRepository
+from src.jobs.repository import JobsRepository
 from src.sessions.repository import SessionRepository
 
 
@@ -21,6 +24,10 @@ class ApprovalDecisionResult:
     outcome: str
     prompt_id: int | None = None
     approval_id: str | None = None
+    continuation_enqueued: bool = False
+    continuation_run_id: str | None = None
+    continuation_session_id: str | None = None
+    continuation_agent_id: str | None = None
 
 
 def hash_token(token: str) -> str:
@@ -51,6 +58,9 @@ class ApprovalDecisionService:
     repository: SessionRepository
     activation_controller: ActivationController
     settings: Settings
+    jobs_repository: JobsRepository | None = None
+    delegation_repository: DelegationRepository | None = None
+    agent_profile_service: AgentProfileService | None = None
 
     def materialize_prompt_for_session(
         self,
@@ -172,12 +182,21 @@ class ApprovalDecisionService:
                 decided_via=decided_via,
                 decider_actor_id=actor_id,
             )
+            continuation = self._enqueue_approved_continuation(
+                db,
+                proposal_id=proposal_id,
+                actor_id=actor_id,
+            )
             return ApprovalDecisionResult(
                 proposal_id=proposal_id,
                 decision=decision,
                 outcome="approved",
                 prompt_id=None if prompt is None else prompt.id,
                 approval_id=approval.id,
+                continuation_enqueued=continuation["enqueued"],
+                continuation_run_id=continuation["run_id"],
+                continuation_session_id=continuation["session_id"],
+                continuation_agent_id=continuation["agent_id"],
             )
         self.repository.deny_proposal(
             db,
@@ -199,4 +218,113 @@ class ApprovalDecisionService:
             decision=decision,
             outcome="denied",
             prompt_id=None if prompt is None else prompt.id,
+        )
+
+    def _enqueue_approved_continuation(
+        self,
+        db: Session,
+        *,
+        proposal_id: str,
+        actor_id: str,
+    ) -> dict[str, str | bool | None]:
+        if (
+            self.jobs_repository is None
+            or self.delegation_repository is None
+            or self.agent_profile_service is None
+        ):
+            return {"enqueued": False, "run_id": None, "session_id": None, "agent_id": None}
+
+        proposal = self.repository.get_proposal(db, proposal_id=proposal_id)
+        if proposal is None:
+            return {"enqueued": False, "run_id": None, "session_id": None, "agent_id": None}
+        session = self.repository.get_session(db, proposal.session_id)
+        if session is None or session.session_kind != "child":
+            return {"enqueued": False, "run_id": None, "session_id": None, "agent_id": None}
+        delegation = self.delegation_repository.get_by_child_session(db, child_session_id=session.id)
+        if delegation is None:
+            return {"enqueued": False, "run_id": None, "session_id": None, "agent_id": None}
+
+        packet = self.repository.get_proposal_packet(db, proposal_id=proposal_id)
+        if packet is None:
+            return {"enqueued": False, "run_id": None, "session_id": None, "agent_id": None}
+        try:
+            approved_arguments = json.loads(packet["canonical_params_json"])
+        except Exception:
+            approved_arguments = {}
+
+        continuation_text = self._build_child_approval_continuation_message(
+            proposal_id=proposal_id,
+            capability_name=str(packet["capability_name"]),
+            approved_arguments=approved_arguments,
+        )
+        continuation_message = self.repository.append_message(
+            db,
+            session,
+            role="system",
+            content=continuation_text,
+            external_message_id=None,
+            sender_id=f"system:approval:{actor_id}",
+            last_activity_at=datetime.now(timezone.utc),
+        )
+        binding = self.agent_profile_service.resolve_binding_for_session(db, session=session)
+        run = self.jobs_repository.create_or_get_execution_run(
+            db,
+            session_id=session.id,
+            message_id=continuation_message.id,
+            agent_id=binding.agent_id,
+            model_profile_key=binding.model_profile_key,
+            policy_profile_key=binding.policy_profile_key,
+            tool_profile_key=binding.tool_profile_key,
+            trigger_kind="delegation_child",
+            trigger_ref=f"{delegation.id}:approved:{proposal_id}",
+            lane_key=session.id,
+            max_attempts=self.settings.execution_run_max_attempts,
+        )
+        self.delegation_repository.requeue_child_run(
+            db,
+            delegation_id=delegation.id,
+            child_message_id=continuation_message.id,
+            child_run_id=run.id,
+        )
+        self.delegation_repository.append_event(
+            db,
+            delegation_id=delegation.id,
+            event_kind="approved_continuation_queued",
+            status="queued",
+            actor_kind="system",
+            actor_ref=proposal_id,
+            payload={
+                "proposal_id": proposal_id,
+                "child_run_id": run.id,
+                "child_message_id": continuation_message.id,
+            },
+        )
+        return {
+            "enqueued": True,
+            "run_id": run.id,
+            "session_id": session.id,
+            "agent_id": binding.agent_id,
+        }
+
+    def _build_child_approval_continuation_message(
+        self,
+        *,
+        proposal_id: str,
+        capability_name: str,
+        approved_arguments: dict[str, object],
+    ) -> str:
+        arguments_json = json.dumps(approved_arguments, indent=2, sort_keys=True)
+        return "\n".join(
+            [
+                f"Approval was granted for proposal `{proposal_id}`.",
+                "",
+                f"Continue the pending `{capability_name}` action now.",
+                "Use the exact approved tool arguments below.",
+                "Do not ask for another approval, do not create a new proposal, and do not delegate again.",
+                "",
+                "Approved arguments:",
+                arguments_json,
+                "",
+                f"Your next response should be the `{capability_name}` tool request using those exact arguments.",
+            ]
         )

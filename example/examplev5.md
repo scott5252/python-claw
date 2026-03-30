@@ -265,8 +265,16 @@ The chat UI will automatically connect to the gateway. You should see a green "c
 
 In the browser chat, type:
 
-```
-Deploy the app northwind-api to staging. Delegate this to deploy-agent. The deploy-agent should use remote_exec to POST a JSON payload to http://host.docker.internal:3001/deploy-events with curl. The payload should include correlation_id=northwind-api-staging-001, event=deployment_started, app=northwind-api, environment=staging.
+```  
+Deploy the app northwind-api to staging.
+Delegate this to deploy-agent.
+The deploy-agent should use remote_exec to POST a JSON payload to
+http://host.docker.internal:3001/deploy-events with curl.
+The payload should include:
+- correlation_id=northwind-api-staging-001
+- event=deployment_started
+- app=northwind-api
+- environment=staging
 ```
 
 Press Enter (or click Send).
@@ -277,12 +285,17 @@ Press Enter (or click Send).
 2. The session ID appears as a system message.
 3. Within a few seconds, assistant responses appear on the left:
    - The parent agent confirms it is delegating to `deploy-agent`.
-   - An approval prompt appears with a proposal ID for the `remote_exec` command.
+   - A user-friendly approval message appears explaining that `deploy-agent` is ready to run the deployment command, but needs approval first.
+   - The message includes:
+     - the action name `remote_exec`
+     - the proposal ID on its own line
+     - the exact approval command to type
+     - a note telling you to resend the original request after approval
    - If you only see `Received: ...`, the app is still using the rule-based profile from older database state. Go back to Step 3 and run the `down -v` reset before starting the stack again.
 
 ## Step 5: Chat — Approve The Deployment Action
 
-Copy the proposal ID from the approval prompt in the chat, then type:
+Copy the proposal ID from the approval message in the chat, then type:
 
 ```
 approve <paste-proposal-id-here>
@@ -292,14 +305,29 @@ approve <paste-proposal-id-here>
 
 1. The approval is recorded.
 2. The approval activates the proposed `remote_exec` action for an exact retry of the same request.
-3. The assistant should confirm the approval and tell you to retry the original request.
+3. The assistant should respond with a clearer confirmation message such as:
+
+```text
+Approval recorded for proposal `<proposal_id>`.
+
+You have authorized the system to run the deployment command.
+Next step: resend your original request so the authorized action can run.
+```
 
 ## Step 6: Chat — Retry The Deployment Request
 
 Send the same deployment request again:
 
 ```
-Deploy the app northwind-api to staging. Delegate this to deploy-agent. The deploy-agent should use remote_exec to POST a JSON payload to http://host.docker.internal:3001/deploy-events with curl. The payload should include correlation_id=northwind-api-staging-001, event=deployment_started, app=northwind-api, environment=staging.
+Deploy the app northwind-api to staging.
+Delegate this to deploy-agent.
+The deploy-agent should use remote_exec to POST a JSON payload to
+http://host.docker.internal:3001/deploy-events with curl.
+The payload should include:
+- correlation_id=northwind-api-staging-001
+- event=deployment_started
+- app=northwind-api
+- environment=staging
 ```
 
 ### What happens
@@ -344,7 +372,7 @@ Back in the browser chat, type:
 The deployment completed. Now delegate to code-agent to generate a Python deployment report. The code-agent should use remote_exec with python3 -c to write a deploy_report.json with app=northwind-api, environment=staging, status=completed, correlation_id=northwind-api-staging-001, and a generated_at timestamp. Also write a deploy_report.py script that reads and prints the JSON. Execute the script and show the output.
 ```
 
-Wait for the approval prompt, then type:
+Wait for the approval message with the proposal ID, then type:
 
 ```
 approve <paste-proposal-id-here>
@@ -365,7 +393,7 @@ In the browser chat, type:
 Now delegate to notify-agent to send a deployment-complete email. The notify-agent should use remote_exec with python3 -c to send an email using smtplib to host.docker.internal port 1025. From: python-claw@localhost, To: ops-team@localhost, Subject: Deployment complete northwind-api staging, Body: The deployment for northwind-api completed successfully. Correlation id: northwind-api-staging-001.
 ```
 
-Wait for the approval prompt, then type:
+Wait for the approval message with the proposal ID, then type:
 
 ```
 approve <paste-proposal-id-here>

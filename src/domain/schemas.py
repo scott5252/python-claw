@@ -118,6 +118,7 @@ class DelegationResultPayload(BaseModel):
     child_agent_id: str
     status: str
     summary_text: str
+    pending_approvals: list[dict[str, Any]] = Field(default_factory=list)
     tool_event_count: int = 0
     outbound_intent_count: int = 0
     error: str | None = None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -239,6 +240,7 @@ class DelegationService:
                 "child_agent_id": payload.child_agent_id,
                 "status": payload.status,
                 "summary_text": payload.summary_text,
+                "pending_approvals": payload.pending_approvals,
             },
             sort_keys=True,
         )
@@ -320,6 +322,10 @@ class DelegationService:
         )
         artifacts = self.session_repository.list_artifacts(db, session_id=delegation.child_session_id)
         assistant_messages = [message for message in messages if message.role == "assistant"]
+        pending_approvals = [
+            self._json_safe_value(item)
+            for item in self.session_repository.list_pending_approvals(db, session_id=delegation.child_session_id)
+        ]
         summary_text = ""
         if assistant_messages:
             summary_text = assistant_messages[-1].content.strip()
@@ -339,10 +345,20 @@ class DelegationService:
             child_agent_id=delegation.child_agent_id,
             status=delegation.status if delegation.status != DelegationStatus.QUEUED.value else "completed",
             summary_text=summary_text,
+            pending_approvals=pending_approvals,
             tool_event_count=len([item for item in artifacts if item.artifact_kind == "tool_result"]),
             outbound_intent_count=len([item for item in artifacts if item.artifact_kind == "outbound_intent"]),
             error=delegation.failure_detail,
         )
+
+    def _json_safe_value(self, value):
+        if isinstance(value, datetime):
+            return value.isoformat().replace("+00:00", "Z")
+        if isinstance(value, dict):
+            return {key: self._json_safe_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._json_safe_value(item) for item in value]
+        return value
 
     def _build_context_package(
         self,
@@ -358,7 +374,7 @@ class DelegationService:
         task_text: str,
         expected_output: str | None,
         notes: str | None,
-    ) -> tuple[dict[str, object], str]:
+        ) -> tuple[dict[str, object], str]:
         summary = self.session_repository.get_latest_summary_snapshot_for_session(db, session_id=parent_session_id)
         transcript = self.session_repository.list_messages(
             db,
@@ -383,14 +399,84 @@ class DelegationService:
                 for row in transcript
             ],
         }
-        content = json.dumps(payload, sort_keys=True)
+        content = self._build_child_instruction(
+            parent_agent_id=parent_agent_id,
+            child_agent_id=child_agent_id,
+            delegation_kind=delegation_kind,
+            task_text=task_text,
+            expected_output=expected_output,
+            notes=notes,
+            transcript=[
+                {"role": row.role, "sender_id": row.sender_id, "content": row.content}
+                for row in transcript
+            ],
+            summary_text=None if summary is None else summary.summary_text,
+        )
         if len(content) > self.settings.delegation_package_max_chars:
             payload["recent_transcript"] = payload["recent_transcript"][-max(1, self.settings.delegation_package_transcript_turns // 2) :]
-            content = json.dumps(payload, sort_keys=True)
+            content = self._build_child_instruction(
+                parent_agent_id=parent_agent_id,
+                child_agent_id=child_agent_id,
+                delegation_kind=delegation_kind,
+                task_text=task_text,
+                expected_output=expected_output,
+                notes=notes,
+                transcript=payload["recent_transcript"],
+                summary_text=payload.get("summary_text"),
+            )
             if len(content) > self.settings.delegation_package_max_chars:
                 payload["summary_text"] = (payload.get("summary_text") or "")[: self.settings.delegation_package_max_chars // 3]
-                content = json.dumps(payload, sort_keys=True)[: self.settings.delegation_package_max_chars]
+                content = self._build_child_instruction(
+                    parent_agent_id=parent_agent_id,
+                    child_agent_id=child_agent_id,
+                    delegation_kind=delegation_kind,
+                    task_text=task_text,
+                    expected_output=expected_output,
+                    notes=notes,
+                    transcript=payload["recent_transcript"],
+                    summary_text=payload.get("summary_text"),
+                )[: self.settings.delegation_package_max_chars]
         return payload, content
+
+    def _build_child_instruction(
+        self,
+        *,
+        parent_agent_id: str,
+        child_agent_id: str,
+        delegation_kind: str,
+        task_text: str,
+        expected_output: str | None,
+        notes: str | None,
+        transcript: list[dict[str, object]],
+        summary_text: str | None,
+    ) -> str:
+        lines = [
+            f"You are `{child_agent_id}` handling a delegated `{delegation_kind}` task from `{parent_agent_id}`.",
+            "",
+            "Task:",
+            task_text.strip(),
+        ]
+        if expected_output and expected_output.strip():
+            lines.extend(["", "Expected output:", expected_output.strip()])
+        if notes and notes.strip():
+            lines.extend(["", "Notes:", notes.strip()])
+        if summary_text and summary_text.strip():
+            lines.extend(["", "Parent session summary:", summary_text.strip()])
+        if transcript:
+            lines.extend(["", "Recent parent transcript:"])
+            for item in transcript:
+                role = str(item.get("role") or "message")
+                content = str(item.get("content") or "").strip()
+                if content:
+                    lines.append(f"- {role}: {content}")
+        lines.extend(
+            [
+                "",
+                "If an available tool can perform the requested action, use the tool instead of describing the action in prose.",
+                "If the action requires approval, still emit the tool request so the backend can create the proposal.",
+            ]
+        )
+        return "\n".join(lines)
 
     def _tool_context_stub(self, session_id: str, message_id: int, agent_id: str):
         from src.graphs.state import ToolRuntimeContext, ToolRuntimeServices

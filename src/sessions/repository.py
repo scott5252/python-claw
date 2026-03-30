@@ -1314,6 +1314,58 @@ class SessionRepository:
             )
         return approvals
 
+    def list_active_approvals_for_child_session_family(
+        self,
+        db: Session,
+        *,
+        parent_session_id: str,
+        agent_id: str,
+        now: datetime,
+    ) -> list[dict[str, Any]]:
+        stmt = (
+            select(ResourceApprovalRecord, ResourceProposalRecord, ResourceVersionRecord, ActiveResourceRecord)
+            .join(ResourceProposalRecord, ResourceApprovalRecord.proposal_id == ResourceProposalRecord.id)
+            .join(ResourceVersionRecord, ResourceApprovalRecord.resource_version_id == ResourceVersionRecord.id)
+            .join(SessionRecord, SessionRecord.id == ResourceProposalRecord.session_id)
+            .join(
+                ActiveResourceRecord,
+                and_(
+                    ActiveResourceRecord.proposal_id == ResourceApprovalRecord.proposal_id,
+                    ActiveResourceRecord.resource_version_id == ResourceApprovalRecord.resource_version_id,
+                    ActiveResourceRecord.typed_action_id == ResourceApprovalRecord.typed_action_id,
+                    ActiveResourceRecord.canonical_params_hash == ResourceApprovalRecord.canonical_params_hash,
+                ),
+            )
+            .where(
+                SessionRecord.parent_session_id == parent_session_id,
+                ResourceProposalRecord.agent_id == agent_id,
+                ResourceProposalRecord.current_state == "approved",
+                ResourceApprovalRecord.revoked_at.is_(None),
+                or_(ResourceApprovalRecord.expires_at.is_(None), ResourceApprovalRecord.expires_at > now),
+                ActiveResourceRecord.activation_state == "active",
+            )
+            .order_by(ResourceApprovalRecord.approved_at.desc(), ResourceProposalRecord.created_at.desc())
+        )
+        approvals: list[dict[str, Any]] = []
+        for approval, proposal, version, active in db.execute(stmt).all():
+            payload = json.loads(version.resource_payload)
+            approvals.append(
+                {
+                    "approval_id": approval.id,
+                    "proposal_id": proposal.id,
+                    "resource_version_id": version.id,
+                    "content_hash": version.content_hash,
+                    "typed_action_id": approval.typed_action_id,
+                    "tool_schema_name": payload["tool_schema_name"],
+                    "tool_schema_version": payload["tool_schema_version"],
+                    "canonical_params_json": approval.canonical_params_json,
+                    "canonical_params_hash": approval.canonical_params_hash,
+                    "active_resource_id": active.id,
+                    "capability_name": payload["capability_name"],
+                }
+            )
+        return approvals
+
     def get_pending_proposal(self, db: Session, *, proposal_id: str) -> ResourceProposalRecord | None:
         proposal = db.get(ResourceProposalRecord, proposal_id)
         if proposal is None or proposal.current_state != "pending_approval":

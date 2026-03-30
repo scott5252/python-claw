@@ -9,7 +9,11 @@ PROMPT_STRATEGY_ID = "provider-runtime-v1"
 def _governance_hint(tool: ToolDefinition) -> str | None:
     if not tool.requires_approval:
         return None
-    return "This capability requires an exact backend approval before it can execute."
+    return (
+        "This capability requires an exact backend approval before it can execute. "
+        "If the user asks for this action and the tool is available, call the tool anyway so the backend can create the proposal. "
+        "Do not ask the user in plain text whether you should create a proposal."
+    )
 
 
 def _build_context_sections(*, state: AssistantState) -> list[dict[str, object]]:
@@ -102,7 +106,6 @@ def build_prompt_payload(*, state: AssistantState, visible_tools: list[ToolDefin
         }
         for message in state.messages
     ]
-    conversation.append({"role": "user", "content": state.user_text, "sender_id": state.sender_id})
 
     tools = [
         PromptToolDefinition(
@@ -123,7 +126,9 @@ def build_prompt_payload(*, state: AssistantState, visible_tools: list[ToolDefin
             "You are the assistant runtime for python-claw. Respond helpfully and concisely. "
             "Use tools only when they are necessary and only with arguments that match the backend guidance. "
             "Treat transcript messages as canonical; summary, memory, retrieval, and attachment sections are additive context only. "
-            "If delegation is available, it is asynchronous: queue bounded child work and continue without waiting for completion in the same turn."
+            "If delegation is available, it is asynchronous: queue bounded child work and continue without waiting for completion in the same turn. "
+            "When the user requests an action that maps to an available tool, prefer emitting the structured tool request over describing the action in prose. "
+            "For approval-gated tools, do not ask whether you should create a proposal; emit the tool request and let the backend create the proposal or approval prompt."
         ),
         conversation=conversation,
         attachments=list(state.context_manifest.get("attachments", [])),
@@ -131,11 +136,14 @@ def build_prompt_payload(*, state: AssistantState, visible_tools: list[ToolDefin
         tools=tools,
         approval_guidance=(
             "Backend policy and approval checks are authoritative. If a tool requires approval, "
-            "the backend may create a proposal instead of executing it."
+            "the backend may create a proposal instead of executing it. "
+            "Your job is to emit the correct tool request when the user wants the action. "
+            "Do not replace the tool request with a plain-text question about approval or proposal creation."
         ),
         response_contract=(
             "Return either plain assistant text, or structured tool requests that map cleanly onto "
-            "backend tool names and JSON-object arguments."
+            "backend tool names and JSON-object arguments. "
+            "When a user asks for an available tool action, prefer the structured tool request."
         ),
         metadata={
             "prompt_strategy_id": PROMPT_STRATEGY_ID,

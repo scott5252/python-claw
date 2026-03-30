@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -120,6 +121,134 @@ def _record_governance_audit(
     )
 
 
+def _build_delegation_approval_response(*, user_text: str) -> str | None:
+    try:
+        payload = json.loads(user_text)
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or payload.get("kind") != "delegation_result":
+        return None
+    pending_approvals = payload.get("pending_approvals")
+    if not isinstance(pending_approvals, list) or not pending_approvals:
+        return None
+    child_agent_id = str(payload.get("child_agent_id") or "child-agent")
+    lines = [
+        f"`{child_agent_id}` prepared the next step, but it needs your approval before it can continue.",
+        "",
+        "Pending approvals:",
+    ]
+    for index, item in enumerate(pending_approvals, start=1):
+        if not isinstance(item, dict):
+            continue
+        proposal_id = str(item.get("proposal_id") or "").strip()
+        capability_name = str(item.get("capability_name") or "unknown")
+        next_action = str(item.get("next_action") or "").strip()
+        if not proposal_id:
+            continue
+        lines.append(f"{index}. Action: `{capability_name}`")
+        lines.append(f"   Proposal ID: `{proposal_id}`")
+        if next_action:
+            lines.append(f"   To approve: `{next_action}`")
+    if len(lines) == 3:
+        return None
+    lines.extend(
+        [
+            "",
+            "Reply with the approval command for the proposal you want to activate.",
+            "After approval, the delegated agent will continue automatically.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _friendly_capability_label(*, capability_name: str) -> str:
+    if capability_name == "remote_exec":
+        return "run the deployment command"
+    return f"use `{capability_name}`"
+
+
+def _format_approval_required_message(
+    *,
+    agent_id: str,
+    capability_name: str,
+    proposal_id: str,
+) -> str:
+    action_label = _friendly_capability_label(capability_name=capability_name)
+    next_action = f"approve {proposal_id}"
+    return "\n".join(
+        [
+            f"`{agent_id}` is ready to {action_label}, but this step needs your approval first.",
+            "",
+            f"Action: `{capability_name}`",
+            "Proposal ID:",
+            f"`{proposal_id}`",
+            "",
+            "To continue, reply with:",
+            f"`{next_action}`",
+            "",
+            "After approval, the delegated agent will continue automatically.",
+        ]
+    )
+
+
+def _format_approval_confirmed_message(
+    *,
+    capability_name: str,
+    proposal_id: str,
+    continuation_enqueued: bool = False,
+    continuation_agent_id: str | None = None,
+) -> str:
+    action_label = _friendly_capability_label(capability_name=capability_name)
+    if continuation_enqueued:
+        agent_label = f"`{continuation_agent_id}`" if continuation_agent_id else "The delegated agent"
+        return "\n".join(
+            [
+                f"Approval recorded for proposal `{proposal_id}`.",
+                "",
+                f"You have authorized the system to {action_label}.",
+                f"{agent_label} is continuing automatically now, so you do not need to resend your original request.",
+            ]
+        )
+    return "\n".join(
+        [
+            f"Approval recorded for proposal `{proposal_id}`.",
+            "",
+            f"You have authorized the system to {action_label}.",
+            "Next step: resend your original request so the authorized action can run.",
+        ]
+    )
+
+
+def _format_approval_denied_message(*, proposal_id: str) -> str:
+    return "\n".join(
+        [
+            f"Proposal `{proposal_id}` was denied.",
+            "",
+            "No action will be taken for that request unless a new proposal is created later.",
+        ]
+    )
+
+
+def _format_missing_pending_proposal_message(*, proposal_id: str) -> str:
+    return "\n".join(
+        [
+            f"I couldn't find a pending proposal for `{proposal_id}`.",
+            "",
+            "It may already be approved, denied, expired, or the ID may be incorrect.",
+        ]
+    )
+
+
+def _format_revoked_message(*, proposal_id: str) -> str:
+    return "\n".join(
+        [
+            f"Proposal `{proposal_id}` was revoked.",
+            "",
+            "Future turns will no longer treat that approval as active.",
+        ]
+    )
+
+
 def _handle_approval_decision(
     *,
     db: Session,
@@ -130,7 +259,7 @@ def _handle_approval_decision(
     proposal_id = classification.proposal_id or ""
     pending = dependencies.repository.get_pending_proposal(db, proposal_id=proposal_id)
     if pending is None:
-        state.response_text = f"No pending proposal found for `{proposal_id}`."
+        state.response_text = _format_missing_pending_proposal_message(proposal_id=proposal_id)
         return state
 
     if dependencies.approval_decision_service is not None:
@@ -159,9 +288,11 @@ def _handle_approval_decision(
                 "approver_id": state.sender_id,
             },
         )
-        state.response_text = (
-            f"Approved proposal `{proposal_id}` for `{packet['capability_name']}`. "
-            "Retry the original request to use the newly active capability."
+        state.response_text = _format_approval_confirmed_message(
+            capability_name=packet["capability_name"],
+            proposal_id=proposal_id,
+            continuation_enqueued=result.continuation_enqueued,
+            continuation_agent_id=result.continuation_agent_id,
         )
         return state
 
@@ -200,9 +331,9 @@ def _handle_approval_decision(
             "approver_id": state.sender_id,
         },
     )
-    state.response_text = (
-        f"Approved proposal `{proposal_id}` for `{packet['capability_name']}`. "
-        "Retry the original request to use the newly active capability."
+    state.response_text = _format_approval_confirmed_message(
+        capability_name=packet["capability_name"],
+        proposal_id=proposal_id,
     )
     return state
 
@@ -217,7 +348,7 @@ def _handle_approval_denial(
     proposal_id = classification.proposal_id or ""
     pending = dependencies.repository.get_pending_proposal(db, proposal_id=proposal_id)
     if pending is None:
-        state.response_text = f"No pending proposal found for `{proposal_id}`."
+        state.response_text = _format_missing_pending_proposal_message(proposal_id=proposal_id)
         return state
     if dependencies.approval_decision_service is not None:
         dependencies.approval_decision_service.decide(
@@ -250,7 +381,7 @@ def _handle_approval_denial(
             proposal_id=proposal_id,
             approver_id=state.sender_id,
         )
-    state.response_text = f"Denied proposal `{proposal_id}`."
+    state.response_text = _format_approval_denied_message(proposal_id=proposal_id)
     return state
 
 
@@ -271,7 +402,7 @@ def _handle_revocation(
         reason="user_requested",
     )
     if not revoked:
-        state.response_text = f"No proposal found for `{proposal_id}`."
+        state.response_text = _format_missing_pending_proposal_message(proposal_id=proposal_id)
         return state
     packet = dependencies.repository.get_proposal_packet(db, proposal_id=proposal_id)
     capability_name = packet["capability_name"] if packet is not None else "governance"
@@ -285,7 +416,7 @@ def _handle_revocation(
         status="revoked",
         payload={"proposal_id": proposal_id, "revoked_by": state.sender_id},
     )
-    state.response_text = f"Revoked proposal `{proposal_id}`."
+    state.response_text = _format_revoked_message(proposal_id=proposal_id)
     return state
 
 
@@ -338,11 +469,10 @@ def _handle_awaiting_approval(
         canonical_params_json=packet["canonical_params_json"],
     )
     state.awaiting_approval = True
-    state.response_text = (
-        f"Approval required for `{capability_name}`. "
-        f"Proposal `{proposal.id}` is waiting for approval. "
-        f"Review packet: action `{packet['typed_action_id']}`, params `{packet['canonical_params_json']}`. "
-        f"Reply `approve {proposal.id}` to activate it."
+    state.response_text = _format_approval_required_message(
+        agent_id=state.agent_id,
+        capability_name=capability_name,
+        proposal_id=proposal.id,
     )
     return state
 
@@ -503,10 +633,10 @@ def _handle_governed_tool_request(
         canonical_params_json=packet["canonical_params_json"],
     )
     state.awaiting_approval = True
-    state.response_text = (
-        f"Approval required for `{call.capability_name}`. "
-        f"Proposal `{proposal.id}` is waiting for approval. "
-        f"Reply `approve {proposal.id}` to activate it."
+    state.response_text = _format_approval_required_message(
+        agent_id=state.agent_id,
+        capability_name=call.capability_name,
+        proposal_id=proposal.id,
     )
     return ToolEvent(
         correlation_id=proposal.id,
@@ -586,6 +716,12 @@ def execute_turn_with_options(
 
     context = _build_context(state=state, dependencies=dependencies, db=db)
     classification: TurnClassification = context.policy_context["classification"]
+    delegation_approval_response = _build_delegation_approval_response(user_text=state.user_text)
+    if delegation_approval_response is not None:
+        state.response_text = delegation_approval_response
+        if persist_final_message:
+            persist_final_state(db=db, state=state, dependencies=dependencies)
+        return state
 
     if classification.request_class == "approval_decision":
         state = _handle_approval_decision(

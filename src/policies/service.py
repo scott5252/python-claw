@@ -187,6 +187,15 @@ class PolicyService:
             now=datetime.now(timezone.utc),
         )
         if not approvals:
+            session = repository.get_session(db, session_id)
+            if session is not None and getattr(session, "session_kind", "") == "child" and getattr(session, "parent_session_id", None):
+                approvals = repository.list_active_approvals_for_child_session_family(
+                    db,
+                    parent_session_id=session.parent_session_id,
+                    agent_id=agent_id,
+                    now=datetime.now(timezone.utc),
+                )
+        if not approvals:
             approvals = repository.replay_active_approvals(
                 db,
                 session_id=session_id,

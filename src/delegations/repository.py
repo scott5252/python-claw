@@ -194,6 +194,29 @@ class DelegationRepository:
         db.flush()
         return record
 
+    def requeue_child_run(
+        self,
+        db: Session,
+        *,
+        delegation_id: str,
+        child_message_id: int,
+        child_run_id: str,
+        queued_at: datetime | None = None,
+    ) -> DelegationRecord:
+        record = self._require(db, delegation_id=delegation_id)
+        current_time = queued_at or utc_now()
+        record.child_message_id = child_message_id
+        record.child_run_id = child_run_id
+        record.status = DelegationStatus.QUEUED.value
+        record.failure_detail = None
+        record.completed_at = None
+        record.started_at = None
+        record.parent_result_message_id = None
+        record.parent_result_run_id = None
+        record.updated_at = current_time
+        db.flush()
+        return record
+
     def mark_completed(
         self,
         db: Session,

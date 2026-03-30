@@ -112,10 +112,17 @@ def create_collaboration_service(settings: Settings) -> SessionCollaborationServ
 
 def create_approval_decision_service(settings: Settings) -> ApprovalDecisionService:
     repository = SessionRepository()
+    jobs_repository = JobsRepository()
     return ApprovalDecisionService(
         repository=repository,
         activation_controller=ActivationController(repository=repository),
         settings=settings,
+        jobs_repository=jobs_repository,
+        delegation_repository=DelegationRepository(
+            session_repository=repository,
+            jobs_repository=jobs_repository,
+        ),
+        agent_profile_service=AgentProfileService(repository=AgentRepository(), settings=settings),
     )
 
 

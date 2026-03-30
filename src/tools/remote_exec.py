@@ -83,7 +83,10 @@ def create_remote_exec_tool(context: ToolRuntimeContext) -> ToolDefinition:
         tool_schema_name="remote_exec.invocation",
         schema_version="1.0",
         usage_guidance=(
-            "Use only with approval-relevant invocation arguments. Provide a flat JSON object with scalar values only."
+            "Use when the user wants an approved command or external action to run. "
+            "If approval is still needed, call this tool anyway so the backend can create the proposal. "
+            "Do not ask in plain text whether a proposal should be created. "
+            "Provide a flat JSON object with scalar values only."
         ),
         provider_input_schema={
             "type": "object",
