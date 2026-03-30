@@ -1,1042 +1,1139 @@
 # Database Overview
 
-This document explains the database schema in `python-claw`, how the code uses each table, and how data moves from the first inbound user message through the end of a conversation turn.
+This document explains the database structure for `python-claw` as it exists after Specs `001` through `017`.
 
-It is written for junior developers, so it focuses on three questions:
+It is written to answer four practical questions:
 
-1. What does each table store?
-2. Which code writes or reads it?
-3. When in the application flow does that happen?
+1. what durable records exist
+2. why each table exists
+3. which feature slice introduced it
+4. how the records work together during runtime, approvals, delivery, delegation, collaboration, and recovery
+
+The schema authority is the code in [`src/db/models.py`](/Users/scottcornell/src/my-projects/python-claw/src/db/models.py) plus the migration history in [`migrations/versions`](/Users/scottcornell/src/my-projects/python-claw/migrations/versions).
 
 ## 1. Big Picture
 
-The database is the durable source of truth for the application. The main idea across Specs 001 through 008 is:
+The database is the durable source of truth for the system.
 
-- the gateway accepts a message and writes canonical state first
-- the worker executes the turn later from durable state
-- the runtime appends assistant, tool, governance, and continuity records instead of mutating past transcript state
-- diagnostics read durable records instead of reconstructing everything from logs
+The platform follows a few consistent rules across all specs:
 
-In practice, the tables fall into these groups:
+- the gateway writes canonical inbound state first
+- transcript rows are append-only
+- workers execute from durable queue state rather than request memory
+- approvals, deliveries, streaming events, node executions, delegations, and collaboration actions are all durable records
+- summaries, memories, retrieval rows, extraction rows, and manifests are additive derived state, not canonical transcript truth
+- diagnostics read the same durable records that runtime code uses
 
-- Conversation core: `sessions`, `messages`, `inbound_dedupe`
-- Runtime and tool artifacts: `session_artifacts`, `tool_audit_events`
-- Governance and approvals: `governance_transcript_events`, `resource_proposals`, `resource_versions`, `resource_approvals`, `active_resources`
-- Queueing and scheduling: `execution_runs`, `session_run_leases`, `global_run_leases`, `scheduled_jobs`, `scheduled_job_fires`
-- Continuity and context: `summary_snapshots`, `outbox_jobs`, `context_manifests`
-- Media and outbound delivery: `inbound_message_attachments`, `message_attachments`, `outbound_deliveries`, `outbound_delivery_attempts`
-- Remote execution and sandboxing: `node_execution_audits`, `agent_sandbox_profiles`
+At a high level, the tables fall into these groups:
 
-## 2. How The Specs Built The Schema
+- conversation core
+- runtime artifacts and tool auditing
+- governance and approval state
+- queueing and scheduling
+- media, extraction, and outbound delivery
+- context continuity and retrieval
+- agent profiles, sandboxing, and node execution
+- delegation and child-session orchestration
+- collaboration and operator workflow
+- rate limiting and production hardening
 
-| Spec | Main database impact |
+## 2. Spec-to-Schema Map
+
+| Spec | Database impact |
 | --- | --- |
-| 001 Gateway Sessions | Added durable session routing, transcript storage, and inbound dedupe with `sessions`, `messages`, `inbound_dedupe`. |
-| 002 Runtime Tools | Added append-only runtime artifacts with `session_artifacts` and `tool_audit_events`. |
-| 003 Capability Governance | Added governance and approval lifecycle tables. |
-| 004 Context Continuity | Added summaries, outbox jobs, and manifest persistence. |
-| 005 Async Queueing | Added queued execution runs, leases, and scheduler fire tracking. |
-| 006 Node Sandbox | Added remote execution audit rows and agent sandbox profiles. |
-| 007 Channels Media | Added inbound attachment staging, normalized attachments, and outbound delivery auditing. |
-| 008 Observability Hardening | Extended existing operational tables with `trace_id`, failure metadata, and diagnostics reads. |
+| `001` Gateway Sessions | `sessions`, `messages`, `inbound_dedupe` |
+| `002` Runtime Tools | `session_artifacts`, `tool_audit_events` |
+| `003` Capability Governance | `governance_transcript_events`, `resource_proposals`, `resource_versions`, `resource_approvals`, `active_resources` |
+| `004` Context Continuity | `summary_snapshots`, `outbox_jobs`, `context_manifests` |
+| `005` Async Queueing | `execution_runs`, `session_run_leases`, `global_run_leases`, `scheduled_jobs`, `scheduled_job_fires` |
+| `006` Node Sandbox | `node_execution_audits`, `agent_sandbox_profiles` |
+| `007` Channels Media | `inbound_message_attachments`, `message_attachments`, `outbound_deliveries`, `outbound_delivery_attempts` |
+| `008` Observability Hardening | adds trace/failure metadata to operational tables |
+| `009` Provider Runtime | no major new table family, but later uses `model_profiles` and run metadata heavily |
+| `010` Typed Tool Schemas | no standalone table family, but tightens governance identity and runtime artifact usage |
+| `011` Retrieval / Memory / Attachment Understanding | `session_memories`, `retrieval_records`, `attachment_extractions` |
+| `012` Production Channel Integration | expands session transport metadata and delivery/provider metadata usage |
+| `013` Streaming Real-Time Delivery | `outbound_delivery_stream_events`, streaming fields on delivery attempts |
+| `014` Agent Profiles | `model_profiles`, `agent_profiles`; adds session ownership and run profile binding fields |
+| `015` Sub-Agent Delegation | `delegations`, `delegation_events`; child-session links on `sessions` |
+| `016` Human Handoff / Collaboration | collaboration fields on `sessions`, `session_operator_notes`, `session_collaboration_events`, `approval_action_prompts`, blocked-run fields on `execution_runs` |
+| `017` Production Hardening | `rate_limit_counters`; stronger operational ownership of existing run, outbox, delivery, node-exec, auth, and recovery metadata |
 
-## 3. Main Code Paths That Touch The Database
+## 3. Core Design Rules
 
-These are the most important DB-facing code entry points:
+### Canonical vs derived state
 
-- `apps/gateway/api/inbound.py`
-  - Starts inbound acceptance with one transaction around `SessionService.process_inbound()`.
-- `src/sessions/service.py`
-  - Orchestrates session lookup, message append, attachment staging, run creation, and read APIs.
-- `src/sessions/repository.py`
-  - The main repository for transcript, artifacts, governance, continuity, attachments, and deliveries.
-- `src/gateway/idempotency.py`
-  - Owns `inbound_dedupe` claim/finalize logic.
-- `src/jobs/repository.py`
-  - Owns `execution_runs`, lease tables, and scheduler fire rows.
-- `src/jobs/service.py`
-  - Worker-side run claiming, execution, retries, and post-turn outbox enqueueing.
-- `src/context/service.py`
-  - Reads transcript, summaries, governance state, and attachments to assemble context; writes `context_manifests`.
-- `src/graphs/nodes.py`
-  - Appends assistant messages, runtime artifacts, governance state, and approval-driven changes.
-- `src/media/processor.py`
-  - Turns accepted inbound attachment references into normalized `message_attachments`.
-- `src/channels/dispatch.py`
-  - Creates and updates outbound delivery and attempt rows.
-- `src/execution/audit.py`
-  - Creates and updates `node_execution_audits`.
-- `src/capabilities/repository.py` and `src/sandbox/service.py`
-  - Read and update sandbox profile and approval-related execution metadata.
-- `src/observability/diagnostics.py`
-  - Reads operational tables for `/diagnostics/*` routes.
+Canonical state:
 
-## 4. ERD
+- `sessions`
+- `messages`
+- `inbound_dedupe`
+- `execution_runs`
+- governance approval/activation records
+- outbound delivery records
+- delegation records
+- collaboration state on `sessions`
+
+Derived or additive state:
+
+- `summary_snapshots`
+- `session_memories`
+- `retrieval_records`
+- `attachment_extractions`
+- `context_manifests`
+- `outbox_jobs`
+- diagnostics-facing failure metadata
+
+### Append-only expectations
+
+The system prefers append-only records for auditability:
+
+- `messages`
+- `session_artifacts`
+- `tool_audit_events`
+- `governance_transcript_events`
+- `delegation_events`
+- `session_operator_notes`
+- `session_collaboration_events`
+- `outbound_delivery_attempts`
+- `outbound_delivery_stream_events`
+
+Some tables track current state and therefore update in place:
+
+- `sessions`
+- `execution_runs`
+- `scheduled_jobs`
+- `scheduled_job_fires`
+- `resource_proposals`
+- `active_resources`
+- `outbox_jobs`
+- `outbound_deliveries`
+- `approval_action_prompts`
+- `node_execution_audits`
+- `rate_limit_counters`
+
+### Durable identity boundaries
+
+Important durable identities in the schema:
+
+- session identity: `sessions.session_key`
+- inbound dedupe identity: `channel_kind + channel_account_id + external_message_id`
+- run identity: `execution_runs(trigger_kind, trigger_ref)`
+- summary identity: `summary_snapshots(session_id, snapshot_version)`
+- outbox identity: `outbox_jobs.job_dedupe_key`
+- delivery identity: `outbound_deliveries(outbound_intent_id, chunk_index)`
+- delivery attempt identity: `outbound_delivery_attempts(outbound_delivery_id, attempt_number)`
+- stream event identity: `outbound_delivery_stream_events(outbound_delivery_attempt_id, sequence_number)`
+- exact approval identity: proposal + version + typed action + canonical params hash
+- delegation identity: `delegations(parent_run_id, parent_tool_call_correlation_id)`
+- collaboration concurrency identity: `sessions.collaboration_version`
+
+## 4. Main Runtime Relationships
 
 ```mermaid
 erDiagram
     sessions ||--o{ messages : has
-    sessions ||--o{ inbound_dedupe : replays
     sessions ||--o{ execution_runs : queues
+    sessions ||--o{ inbound_dedupe : dedupes
     sessions ||--o{ session_artifacts : records
     sessions ||--o{ tool_audit_events : audits
     sessions ||--o{ governance_transcript_events : records
-    sessions ||--o{ resource_proposals : owns
-    sessions ||--o{ summary_snapshots : compacts
-    sessions ||--o{ outbox_jobs : queues
+    sessions ||--o{ summary_snapshots : summarizes
+    sessions ||--o{ session_memories : derives
+    sessions ||--o{ retrieval_records : derives
+    sessions ||--o{ attachment_extractions : derives
+    sessions ||--o{ outbox_jobs : follows
     sessions ||--o{ context_manifests : explains
-    sessions ||--o{ inbound_message_attachments : accepts
-    sessions ||--o{ message_attachments : normalizes
     sessions ||--o{ outbound_deliveries : sends
     sessions ||--o{ node_execution_audits : traces
-    sessions ||--o{ scheduled_jobs : targets
+    sessions ||--o{ session_operator_notes : notes
+    sessions ||--o{ session_collaboration_events : audits
+    sessions ||--o{ approval_action_prompts : presents
+    sessions ||--o{ delegations : owns
 
     messages ||--o{ inbound_message_attachments : stages
     messages ||--o{ message_attachments : normalizes
+    messages ||--o{ execution_runs : triggers
     messages ||--o{ governance_transcript_events : links
     messages ||--o{ resource_proposals : starts
-    messages ||--o{ execution_runs : triggers
     messages ||--o{ outbox_jobs : follows
-    messages ||--o{ context_manifests : triggers
-    messages ||--o{ node_execution_audits : correlates
-    messages ||--o{ summary_snapshots : bounds
+    messages ||--o{ context_manifests : explains
 
     inbound_message_attachments ||--o{ message_attachments : becomes
+    message_attachments ||--o{ attachment_extractions : extracts
+    message_attachments ||--o{ outbound_deliveries : attaches
 
-    execution_runs ||--o| session_run_leases : owns
-    execution_runs ||--o| global_run_leases : owns
+    execution_runs ||--o| session_run_leases : locks
+    execution_runs ||--o| global_run_leases : caps
     execution_runs ||--o{ outbound_deliveries : dispatches
     execution_runs ||--o{ node_execution_audits : executes
-    execution_runs ||--o{ scheduled_job_fires : backs
-
-    session_artifacts ||--o{ outbound_deliveries : intent
-    outbound_deliveries ||--o{ outbound_delivery_attempts : retries
-    message_attachments ||--o{ outbound_deliveries : references
+    execution_runs ||--o{ delegations : parents
 
     resource_proposals ||--o{ resource_versions : versions
-    resource_proposals ||--o{ resource_approvals : approvals
-    resource_proposals ||--o{ active_resources : activations
-    resource_proposals ||--o{ governance_transcript_events : history
-    resource_versions ||--o{ resource_approvals : exact_match
-    resource_versions ||--o{ active_resources : active
-    resource_versions ||--o{ governance_transcript_events : history
-    resource_approvals ||--o{ governance_transcript_events : decision
-    resource_approvals ||--o{ node_execution_audits : authorizes
-    active_resources ||--o{ governance_transcript_events : activation
+    resource_proposals ||--o{ resource_approvals : approves
+    resource_proposals ||--o{ active_resources : activates
+    resource_proposals ||--o{ approval_action_prompts : prompts
+
+    outbound_deliveries ||--o{ outbound_delivery_attempts : retries
+    outbound_delivery_attempts ||--o{ outbound_delivery_stream_events : streams
 
     scheduled_jobs ||--o{ scheduled_job_fires : fires
+    delegations ||--o{ delegation_events : logs
 ```
 
-## 5. Sequence Diagram For One Normal User Turn
+## 5. Table-by-Table Reference
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant Gateway
-    participant DB
-    participant Worker
-    participant Context
-    participant Graph
-    participant Dispatcher
-    participant Channel
+## Conversation Core
 
-    User->>Gateway: POST /inbound/message
-    Gateway->>DB: claim inbound_dedupe
-    Gateway->>DB: get or create session
-    Gateway->>DB: append user message
-    Gateway->>DB: append inbound attachment rows
-    Gateway->>DB: create or get execution_run
-    Gateway->>DB: finalize dedupe
-    Gateway-->>User: 202 Accepted + session_id + message_id + run_id + trace_id
-
-    Worker->>DB: claim eligible execution_run
-    Worker->>DB: acquire session/global leases
-    Worker->>DB: load triggering message
-    Worker->>DB: normalize attachments into message_attachments
-
-    Worker->>Context: assemble turn context
-    Context->>DB: read messages, artifacts, governance events, summaries, attachments
-
-    Worker->>Graph: execute turn
-    Graph->>DB: write tool artifacts and tool audit rows
-    Graph->>DB: write governance rows if approval flow is involved
-    Graph->>DB: append assistant message
-    Graph->>DB: append outbound intent artifact if needed
-    Graph->>DB: write context_manifest
-
-    Worker->>Dispatcher: dispatch outbound intent
-    Dispatcher->>DB: create outbound_deliveries
-    Dispatcher->>DB: create outbound_delivery_attempts
-    Dispatcher->>Channel: send text/media
-    Dispatcher->>DB: mark delivery sent or failed
-
-    Worker->>DB: enqueue outbox_jobs
-    Worker->>DB: mark execution_run completed or failed
-    Worker->>DB: release leases
-```
-
-## 6. Step-By-Step Conversation Flow
-
-This is the normal user-message flow from start to end of one conversation turn.
-
-### Step 1: The gateway accepts an inbound message
-
-Code:
-
-- `apps/gateway/api/inbound.py`
-- `src/sessions/service.py::SessionService.process_inbound`
-- `src/gateway/idempotency.py::IdempotencyService`
-
-Tables used:
-
-- `inbound_dedupe`
-- `sessions`
-- `messages`
-- `inbound_message_attachments`
-- `execution_runs`
-
-What happens:
-
-1. The API receives `POST /inbound/message`.
-2. `IdempotencyService.claim()` checks or creates an `inbound_dedupe` row so the same external message is not processed twice.
-3. `SessionRepository.get_or_create_session()` finds or creates the durable conversation row in `sessions`.
-4. `SessionRepository.append_message()` writes the user message into `messages`.
-5. If attachments are present, `SessionRepository.append_inbound_attachments()` writes the accepted attachment metadata into `inbound_message_attachments`.
-6. `JobsRepository.create_or_get_execution_run()` creates the queued worker task in `execution_runs`.
-7. `IdempotencyService.finalize()` updates `inbound_dedupe` with the final `session_id` and `message_id`.
-8. The gateway commits and returns `202 Accepted`.
-
-Important design rule:
-
-- the user-visible turn is durable before the worker starts
-
-### Step 2: The worker claims the run
-
-Code:
-
-- `src/jobs/service.py::RunExecutionService.process_next_run`
-- `src/jobs/repository.py::JobsRepository`
-- `src/sessions/concurrency.py::SessionConcurrencyService`
-
-Tables used:
-
-- `execution_runs`
-- `session_run_leases`
-- `global_run_leases`
-
-What happens:
-
-1. The worker asks for the next eligible queued run.
-2. `JobsRepository.claim_next_eligible_run()` picks an `execution_runs` row.
-3. It acquires a per-session lane lease in `session_run_leases`.
-4. It acquires a global concurrency slot in `global_run_leases`.
-5. It marks the run `claimed` and then `running`.
-
-Why these tables matter:
-
-- `execution_runs` is the canonical queue
-- `session_run_leases` prevents two workers from processing the same conversation at once
-- `global_run_leases` enforces a whole-system concurrency cap
-
-### Step 3: Attachments are normalized before context assembly
-
-Code:
-
-- `src/media/processor.py::MediaProcessor.normalize_message_attachments`
-
-Tables used:
-
-- `inbound_message_attachments`
-- `message_attachments`
-
-What happens:
-
-1. The worker reads canonical accepted attachment inputs from `inbound_message_attachments`.
-2. For each one, it validates scheme, MIME type, and size.
-3. It stages safe content into runtime-owned storage.
-4. It writes a new append-only normalized result row into `message_attachments`.
-
-Important design rule:
-
-- `inbound_message_attachments` is the accepted input record
-- `message_attachments` is the normalized record the rest of the runtime consumes
-
-### Step 4: Context is assembled from durable state
-
-Code:
-
-- `src/graphs/assistant_graph.py::AssistantGraph.invoke`
-- `src/context/service.py::ContextService.assemble`
-
-Tables used:
-
-- `messages`
-- `session_artifacts`
-- `governance_transcript_events`
-- `summary_snapshots`
-- `message_attachments`
-
-What happens:
-
-1. The context service reads transcript rows from `messages`.
-2. It reads prior tool and outbound artifacts from `session_artifacts`.
-3. It reads approval and revocation history from `governance_transcript_events`.
-4. It reads the latest valid summary from `summary_snapshots` if the transcript is too large.
-5. It reads normalized stored attachments from `message_attachments`.
-6. It builds `AssistantState` with the selected context.
-
-If the turn overflows the context window:
-
-- the service retries with summary compaction if possible
-- if that still fails, it marks the turn degraded and the worker later queues repair work
-
-### Step 5: The graph executes the assistant turn
-
-Code:
-
-- `src/graphs/nodes.py::execute_turn`
-
-Tables used:
-
-- `session_artifacts`
-- `tool_audit_events`
-- `governance_transcript_events`
-- `resource_proposals`
-- `resource_versions`
-- `resource_approvals`
-- `active_resources`
-- `messages`
-
-What happens:
-
-1. The graph builds policy context and active approval visibility.
-2. If the user is approving or revoking something, governance tables are updated.
-3. If the turn needs approval for a gated action, the graph writes proposal and approval-request state instead of executing the action.
-4. If tools run, the graph writes:
-   - proposal/result artifacts to `session_artifacts`
-   - audit rows to `tool_audit_events`
-5. The graph always appends the assistant reply to `messages`.
-6. If a tool produced a transport-independent outbound intent, it is stored in `session_artifacts` as `artifact_kind="outbound_intent"`.
-
-Important design rule:
-
-- the graph does not call channel transports directly
-
-### Step 6: The manifest for the turn is persisted
-
-Code:
-
-- `src/context/service.py::ContextService.persist_manifest`
-- called from `src/graphs/nodes.py::execute_turn`
-
-Tables used:
-
-- `context_manifests`
-
-What happens:
-
-1. After the turn finishes, the runtime writes one `context_manifests` row.
-2. That manifest records what transcript range, summary, governance artifacts, and attachments were used.
-
-Why it matters:
-
-- it explains why the runtime saw the context it saw
-- it is useful for debugging and replay reasoning
-
-### Step 7: Outbound delivery is dispatched
-
-Code:
-
-- `src/channels/dispatch.py::OutboundDispatcher.dispatch_run`
-
-Tables used:
-
-- `session_artifacts`
-- `outbound_deliveries`
-- `outbound_delivery_attempts`
-- `message_attachments`
-- `execution_runs`
-
-What happens:
-
-1. The dispatcher loads outbound intents from `session_artifacts`.
-2. It parses reply/media/voice directives from the intent text.
-3. It chunks text for the destination channel.
-4. For each logical send, it creates or reuses one `outbound_deliveries` row.
-5. For each send attempt, it appends one `outbound_delivery_attempts` row.
-6. It may read `message_attachments` if the outbound intent references normalized media.
-7. It marks the delivery sent or failed after the adapter call returns.
-
-Important design rule:
-
-- one logical chunk or media send equals one `outbound_deliveries` row
-- retries create new attempt rows, not duplicate logical delivery rows
-
-### Step 8: Follow-up continuity work is queued
-
-Code:
-
-- `src/jobs/service.py::RunExecutionService._enqueue_after_turn_jobs`
-- `src/sessions/repository.py::enqueue_outbox_job`
-
-Tables used:
-
-- `outbox_jobs`
-
-What happens:
-
-1. After the worker finishes the user-visible turn, it enqueues derived follow-up jobs.
-2. It always queues:
-   - `summary_generation`
-   - `retrieval_index`
-3. If the turn degraded, it also queues:
-   - `continuity_repair`
-
-Important design rule:
-
-- `outbox_jobs` are derived work, not the canonical user-visible run queue
-
-### Step 9: The run is completed, retried, or failed
-
-Code:
-
-- `src/jobs/service.py::RunExecutionService.process_next_run`
-- `src/jobs/repository.py`
-
-Tables used:
-
-- `execution_runs`
-- `session_run_leases`
-- `global_run_leases`
-- optionally `scheduled_job_fires`
-
-What happens:
-
-1. If everything succeeds, the worker marks the `execution_runs` row `completed`.
-2. If a retryable failure happens, it updates the row to `retry_wait` or `dead_letter`.
-3. If a non-retryable failure happens, it marks the run `failed`.
-4. It releases the lane and global lease rows.
-5. If the run came from the scheduler, it also updates `scheduled_job_fires`.
-
-After that, the next inbound user message for the same routing identity repeats the same overall flow but reuses the existing `sessions` row. That is how a multi-turn conversation stays continuous over time instead of creating a brand-new conversation record for every message.
-
-## 7. Table-By-Table Reference
-
-### 7.1 Conversation Core
-
-#### `sessions`
+### `sessions`
 
 Purpose:
 
-- One durable conversation identity for a routing tuple.
-
-Written by:
-
-- `SessionRepository.get_or_create_session()`
-
-Read by:
-
-- `SessionService.get_session()`
-- `SessionService.process_inbound()`
-- `RunExecutionService`
-- `OutboundDispatcher`
-- scheduler session resolution
-
-Typical usage:
-
-- Created on the first message for a peer/group route.
-- Reused for later turns so one conversation keeps the same `session_id`.
+- the durable identity of a conversation
+- the routing anchor for direct, group, child, and system sessions
+- the current source of truth for ownership and collaboration state
 
 Important columns:
 
-- `id`: primary session identifier used everywhere else
-- `session_key`: deterministic routing identity
-- `channel_kind`, `channel_account_id`, `peer_id`, `group_id`, `scope_kind`, `scope_name`
+- `id`
+- `session_key`
+- `channel_kind`
+- `channel_account_id`
+- `scope_kind`
+- `peer_id`
+- `group_id`
+- `scope_name`
+- `owner_agent_id`
+- `session_kind`
+- `parent_session_id`
+- `transport_address_key`
+- `transport_address_json`
+- `automation_state`
+- `assigned_operator_id`
+- `assigned_queue_key`
+- `automation_state_reason`
+- `automation_state_changed_at`
+- `assignment_updated_at`
+- `collaboration_version`
+- `created_at`
 - `last_activity_at`
 
-#### `messages`
+Key behaviors from the specs:
+
+- Spec `001`: direct and group routing identity
+- Spec `012`: transport address metadata for provider-backed channels
+- Spec `014`: durable session ownership by `owner_agent_id`
+- Spec `015`: child-session support via `session_kind` and `parent_session_id`
+- Spec `016`: automation state, assignment, and optimistic concurrency
+
+Important indexes:
+
+- unique `session_key`
+- direct lookup on channel/account/peer/scope
+- group lookup on channel/account/group
+- owner-agent lookup
+- parent-session lookup
+- session-kind lookup
+- automation and assignment lookups
+
+Read/write code:
+
+- [`src/routing/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/routing/service.py)
+- [`src/sessions/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/service.py)
+- [`src/sessions/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/repository.py)
+- [`src/sessions/collaboration.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/collaboration.py)
+- [`src/delegations/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/delegations/service.py)
+
+### `messages`
 
 Purpose:
 
-- Canonical append-only transcript.
-
-Written by:
-
-- `SessionRepository.append_message()`
-- called from inbound acceptance, scheduler submission, and graph turn completion
-
-Read by:
-
-- `ContextService.assemble()`
-- admin read endpoints
-- diagnostics indirectly through correlated tables
-
-Typical usage:
-
-- User messages are appended on gateway accept.
-- Assistant messages are appended after graph execution.
-- Scheduler-triggered work creates a synthetic user-role message so it can reuse the same runtime path.
+- canonical append-only transcript rows
 
 Important columns:
 
+- `id`
 - `session_id`
 - `role`
 - `content`
 - `external_message_id`
 - `sender_id`
+- `created_at`
 
-#### `inbound_dedupe`
+Key behaviors:
+
+- Spec `001`: inbound transcript storage
+- later specs: assistant/system rows, scheduler trigger rows, child-session rows, approval fallback text, delegation results
+
+Important index:
+
+- `messages(session_id, id)` for ordered paging
+
+### `inbound_dedupe`
 
 Purpose:
 
-- Prevent duplicate processing of the same external inbound message.
-
-Written by:
-
-- `IdempotencyService.claim()`
-- `IdempotencyService.finalize()`
-
-Read by:
-
-- `IdempotencyService.claim()`
-- duplicate replay handling in `SessionService.process_inbound()`
-
-Typical usage:
-
-- Claimed before transcript mutation.
-- Finalized after the session, message, and run are durable.
+- idempotency guard for inbound message acceptance
 
 Important columns:
 
-- `(channel_kind, channel_account_id, external_message_id)` unique identity
 - `status`
-- `session_id`, `message_id`
-- `first_seen_at`, `expires_at`
+- `channel_kind`
+- `channel_account_id`
+- `external_message_id`
+- `session_id`
+- `message_id`
+- `first_seen_at`
+- `expires_at`
 
-### 7.2 Runtime And Tool Artifact Tables
+Key rule:
 
-#### `session_artifacts`
+- a duplicate inbound delivery must not create a second canonical message row
 
-Purpose:
+## Runtime Artifacts and Tool Audit
 
-- Append-only runtime-owned artifacts linked to a session.
-
-What is stored here:
-
-- tool proposals
-- tool results
-- outbound intents
-
-Written by:
-
-- `SessionRepository.append_tool_proposal()`
-- `SessionRepository.append_tool_event()`
-- `SessionRepository.append_outbound_intent()`
-
-Read by:
-
-- `ContextService.assemble()`
-- `OutboundDispatcher.list_outbound_intents_for_run()`
-
-Typical usage:
-
-- The graph writes these during tool execution.
-- Context assembly reuses them to explain prior tool activity.
-- The dispatcher uses outbound intent artifacts after the turn ends.
-
-#### `tool_audit_events`
+### `session_artifacts`
 
 Purpose:
 
-- Structured audit trail for tool execution attempts and results.
-
-Written by:
-
-- `ToolAuditSink.record()`
-- called from `src/graphs/nodes.py`
-
-Read by:
-
-- mainly for audit/inspection workflows; not heavily consumed in the current runtime
-
-Typical usage:
-
-- One row per governance-aware tool audit event.
-
-### 7.3 Governance And Approval Tables
-
-#### `governance_transcript_events`
-
-Purpose:
-
-- Append-only governance history linked to transcript turns.
-
-Written by:
-
-- `SessionRepository.append_governance_event()`
-- `ActivationController.activate()`
-- approval, denial, revocation paths in `src/graphs/nodes.py`
-
-Read by:
-
-- `ContextService.assemble()`
-- `PolicyService.build_policy_context()`
-- `SessionRepository.replay_active_approvals()`
-
-Typical usage:
-
-- Records proposal creation, approval requested, approval decision, activation result, and revocation result.
-
-#### `resource_proposals`
-
-Purpose:
-
-- One proposed approval-gated capability/action request.
-
-Written by:
-
-- `SessionRepository.create_governance_proposal()`
-
-Read by:
-
-- pending approval endpoints
-- approval/deny/revoke flows
-- active approval lookup joins
-
-Typical usage:
-
-- Created when a gated action is requested without an active matching approval.
-
-#### `resource_versions`
-
-Purpose:
-
-- Immutable versioned payload of what was proposed.
-
-Written by:
-
-- `SessionRepository.create_governance_proposal()`
-- `CapabilitiesRepository.create_remote_exec_capability()`
-
-Read by:
-
-- approval matching
-- node-runner authorization
-- packet reconstruction
-
-Typical usage:
-
-- Stores the canonical payload hash and immutable version body.
-
-#### `resource_approvals`
-
-Purpose:
-
-- Exact-match approval records for a proposal version and canonical parameters.
-
-Written by:
-
-- `SessionRepository.approve_proposal()`
-- `CapabilitiesRepository.create_remote_exec_capability()`
-
-Read by:
-
-- `PolicyService.build_policy_context()`
-- `PolicyService.assert_execution_allowed()`
-- node execution audit correlation
-
-Typical usage:
-
-- A tool can execute only when there is a matching active approval.
-
-#### `active_resources`
-
-Purpose:
-
-- Durable record that an approved resource/action is active and reusable under the exact approved scope.
-
-Written by:
-
-- `SessionRepository.activate_approved_resource()`
-
-Read by:
-
-- `SessionRepository.list_active_approvals()`
-- revocation logic
-
-Typical usage:
-
-- Created or refreshed during approval activation.
-- Revoked when the user revokes the proposal.
-
-### 7.4 Queueing And Scheduling Tables
-
-#### `execution_runs`
-
-Purpose:
-
-- Canonical async work queue for user-visible execution.
-
-Written by:
-
-- `JobsRepository.create_or_get_execution_run()`
-- then updated by `mark_running()`, `complete_run()`, `fail_run()`, `retry_run()`
-
-Read by:
-
-- worker claim loop
-- session and run read APIs
-- diagnostics
-- outbound dispatcher for trace correlation
-- remote execution runtime
-
-Typical usage:
-
-- Created when the gateway accepts a user message.
-- Claimed by workers.
-- Moved through queued, running, retry, or terminal states.
+- append-only runtime-owned artifacts linked to a session
+- used for tool proposals, outbound intents, and other internal runtime records
 
 Important columns:
 
-- `trigger_kind`, `trigger_ref`: idempotent run identity
-- `lane_key`: per-session ordering key
+- `artifact_kind`
+- `correlation_id`
+- `capability_name`
 - `status`
-- `attempt_count`, `max_attempts`
+- `payload_json`
+
+### `tool_audit_events`
+
+Purpose:
+
+- append-only audit trail of tool requests, execution, and outcomes
+
+Important columns:
+
+- `correlation_id`
+- `capability_name`
+- `event_kind`
+- `status`
+- `payload_json`
+
+Key rule from Spec `002`:
+
+- the assistant must not claim a tool result that was never durably recorded
+
+## Governance and Approval State
+
+### `governance_transcript_events`
+
+Purpose:
+
+- append-only governance event log linked to transcript turns
+
+Important columns:
+
+- `event_kind`
+- `proposal_id`
+- `resource_version_id`
+- `approval_id`
+- `approval_prompt_id`
+- `active_resource_id`
+- `event_payload`
+
+Use cases:
+
+- proposal created
+- awaiting approval
+- approval granted or denied
+- activation succeeded or failed
+- revocation recorded
+
+### `resource_proposals`
+
+Purpose:
+
+- one risky or approval-gated action proposal
+
+Important columns:
+
+- `resource_kind`
+- `requested_by`
+- `current_state`
+- `latest_version_id`
+- transition timestamps such as `proposed_at`, `pending_approval_at`, `approved_at`, `denied_at`, `expired_at`
+
+### `resource_versions`
+
+Purpose:
+
+- immutable versioned payload for a proposal
+
+Important columns:
+
+- `proposal_id`
+- `version_number`
+- `content_hash`
+- `resource_payload`
+
+### `resource_approvals`
+
+Purpose:
+
+- exact approval record for a proposal version and action
+
+Important columns:
+
+- `proposal_id`
+- `resource_version_id`
+- `approval_packet_hash`
+- `typed_action_id`
+- `canonical_params_json`
+- `canonical_params_hash`
+- `scope_kind`
+- `approver_id`
+- `approved_at`
+- `expires_at`
+- `revoked_at`
+- `revoked_by`
+
+Key rule:
+
+- approval is exact to resource version, action, and canonicalized parameters
+
+### `active_resources`
+
+Purpose:
+
+- activation lifecycle after approval
+
+Important columns:
+
+- `proposal_id`
+- `resource_version_id`
+- `typed_action_id`
+- `canonical_params_hash`
+- `activation_state`
+- `activated_at`
+- `revoked_at`
+- `revocation_reason`
+
+### `approval_action_prompts`
+
+Purpose:
+
+- durable presentation state for structured approval UX
+
+Introduced by:
+
+- Spec `016`
+
+Important columns:
+
+- `proposal_id`
+- `session_id`
+- `agent_id`
+- `message_id`
+- `channel_kind`
+- `channel_account_id`
+- `transport_address_key`
+- `approve_token_hash`
+- `deny_token_hash`
+- `status`
+- `expires_at`
+- `decided_at`
+- `decided_via`
+- `decider_actor_id`
+- `presentation_payload_json`
+
+Important rule:
+
+- prompt rows are not approval authority by themselves; they are the durable presentation and decision-tracking layer above the exact approval system
+
+## Queueing, Scheduling, and Recovery-Owned Work
+
+### `execution_runs`
+
+Purpose:
+
+- canonical queue record for assistant execution
+
+Important columns:
+
+- `session_id`
+- `message_id`
+- `agent_id`
+- `model_profile_key`
+- `policy_profile_key`
+- `tool_profile_key`
+- `trigger_kind`
+- `trigger_ref`
+- `lane_key`
+- `status`
+- `attempt_count`
+- `max_attempts`
+- `available_at`
+- `claimed_at`
+- `started_at`
+- `finished_at`
 - `worker_id`
-- `trace_id`, `correlation_id`
-- `failure_category`, `degraded_reason`
+- `blocked_reason`
+- `blocked_at`
+- `last_error`
+- `trace_id`
+- `correlation_id`
+- `degraded_reason`
+- `failure_category`
+- `created_at`
+- `updated_at`
 
-#### `session_run_leases`
+Statuses include:
 
-Purpose:
+- `queued`
+- `blocked`
+- `claimed`
+- `running`
+- `retry_wait`
+- `completed`
+- `failed`
+- `dead_letter`
+- `cancelled`
 
-- One active per-session execution lease.
+Key behaviors:
 
-Written by:
+- Spec `005`: queue identity and retry ownership
+- Spec `014`: persisted agent/model/policy/tool binding
+- Spec `016`: blocked runs when collaboration state pauses automation
+- Spec `017`: recovery and retry diagnostics rely on these rows
 
-- `JobsRepository.acquire_session_lease()`
-- refreshed and released through `JobsRepository`
-
-Read by:
-
-- worker claim and stale recovery
-- run diagnostics detail
-
-Typical usage:
-
-- Prevents two runs in the same session lane from running at the same time.
-
-#### `global_run_leases`
-
-Purpose:
-
-- One active slot per global concurrency lane.
-
-Written by:
-
-- `JobsRepository.acquire_global_slot()`
-
-Read by:
-
-- worker claim and stale recovery
-- run diagnostics detail
-
-Typical usage:
-
-- Limits total concurrent graph executions across all sessions.
-
-#### `scheduled_jobs`
+### `session_run_leases`
 
 Purpose:
 
-- Durable scheduler configuration.
+- one active per-lane lease so the same session lane is not processed concurrently
 
-Written by:
-
-- currently read-heavy in the runtime; creation is expected through future/admin setup paths
-
-Read by:
-
-- `SchedulerService.submit_due_job()`
-- `SessionService.submit_scheduler_fire()`
-
-Typical usage:
-
-- Defines a cron-like job and target session or routing tuple.
-
-#### `scheduled_job_fires`
+### `global_run_leases`
 
 Purpose:
 
-- Durable record of each concrete scheduled firing.
+- whole-system concurrency cap
 
-Written by:
-
-- `JobsRepository.create_or_get_scheduled_fire()`
-- `link_fire_to_run()`
-- `mark_fire_terminal()` or `mark_fire_by_key()`
-
-Read by:
-
-- scheduler flow
-
-Typical usage:
-
-- Prevents duplicate scheduler submission for the same scheduled instant.
-
-### 7.5 Continuity Tables
-
-#### `summary_snapshots`
+### `scheduled_jobs`
 
 Purpose:
 
-- Versioned compact summaries for older transcript ranges.
+- durable scheduler definitions
 
-Written by:
+Important columns:
 
-- `SessionRepository.append_summary_snapshot()`
+- `job_key`
+- `agent_id`
+- `target_kind`
+- routing fields
+- `cron_expr`
+- `payload_json`
+- `enabled`
+- `last_fired_at`
 
-Read by:
-
-- `ContextService.assemble()`
-- continuity diagnostics
-
-Typical usage:
-
-- Used only when the full transcript no longer fits the context window.
-
-#### `outbox_jobs`
+### `scheduled_job_fires`
 
 Purpose:
 
-- Derived post-turn background work queue.
+- durable record of a concrete scheduler fire
 
-Written by:
+Important columns:
 
-- `SessionRepository.enqueue_outbox_job()`
-- called by `RunExecutionService._enqueue_after_turn_jobs()`
+- `fire_key`
+- `scheduled_for`
+- `status`
+- `execution_run_id`
+- `last_error`
 
-Read by:
+## Media, Extraction, and Outbound Delivery
 
-- `SessionRepository.claim_outbox_jobs()`
-- continuity diagnostics
-- diagnostics list endpoint
-
-Typical usage:
-
-- Stores summary generation, retrieval indexing, and continuity repair work.
-
-#### `context_manifests`
+### `inbound_message_attachments`
 
 Purpose:
 
-- Per-turn explanation of what context the runtime assembled.
+- canonical accepted attachment inputs attached to a user message
 
-Written by:
+Important columns:
 
-- `ContextService.persist_manifest()`
+- `message_id`
+- `session_id`
+- `ordinal`
+- `external_attachment_id`
+- `source_url`
+- `mime_type`
+- `filename`
+- `byte_size`
+- `provider_metadata_json`
 
-Read by:
-
-- continuity diagnostics
-- debugging and replay analysis
-
-Typical usage:
-
-- One row per executed turn, with bounded retention per session.
-
-### 7.6 Media And Delivery Tables
-
-#### `inbound_message_attachments`
+### `message_attachments`
 
 Purpose:
 
-- Canonical accepted attachment inputs from the gateway request.
+- normalized runtime-owned attachment records after validation and staging
 
-Written by:
+Important columns:
 
-- `SessionRepository.append_inbound_attachments()`
+- `inbound_message_attachment_id`
+- `message_id`
+- `session_id`
+- `ordinal`
+- `source_url`
+- `storage_key`
+- `storage_bucket`
+- `mime_type`
+- `media_kind`
+- `filename`
+- `byte_size`
+- `sha256`
+- `normalization_status`
+- `retention_expires_at`
+- `provider_metadata_json`
+- `error_detail`
 
-Read by:
+Important rule:
 
-- `MediaProcessor.normalize_message_attachments()`
-- replay/re-normalization workflows
+- only normalized attachment records should be used for runtime context or outbound media dispatch
 
-Typical usage:
-
-- Stores what the channel told the gateway before worker-side normalization.
-
-#### `message_attachments`
-
-Purpose:
-
-- Canonical normalized attachment metadata consumed by runtime and delivery code.
-
-Written by:
-
-- `SessionRepository.append_message_attachment()`
-- called by `MediaProcessor`
-
-Read by:
-
-- `ContextService.assemble()`
-- `OutboundDispatcher`
-- diagnostics attachments endpoint
-
-Typical usage:
-
-- Each row represents a normalization outcome such as `stored`, `rejected`, or `failed`.
-
-#### `outbound_deliveries`
+### `attachment_extractions`
 
 Purpose:
 
-- One logical outbound send per chunk or media item.
+- extracted text or structured content from normalized attachments
 
-Written by:
+Important columns:
 
-- `SessionRepository.create_or_get_outbound_delivery()`
-- then updated by `mark_outbound_delivery_sent()` or `mark_outbound_delivery_failed()`
+- `session_id`
+- `attachment_id`
+- `extractor_kind`
+- `derivation_strategy_id`
+- `status`
+- `content_text`
+- `content_metadata_json`
+- `error_detail`
 
-Read by:
-
-- dispatcher retry/idempotency logic
-- diagnostics delivery endpoint
-
-Typical usage:
-
-- Ensures retries reuse the same logical delivery identity.
-
-#### `outbound_delivery_attempts`
+### `outbound_deliveries`
 
 Purpose:
 
-- Append-only attempts for one logical delivery.
+- one logical outbound delivery per outbound intent and chunk
 
-Written by:
+Important columns:
 
-- `SessionRepository.create_outbound_delivery_attempt()`
-- then updated by sent/failed methods
+- `session_id`
+- `execution_run_id`
+- `outbound_intent_id`
+- `channel_kind`
+- `channel_account_id`
+- `delivery_kind`
+- `chunk_index`
+- `chunk_count`
+- `reply_to_external_id`
+- `attachment_id`
+- `provider_message_id`
+- `delivery_payload_json`
+- `provider_metadata_json`
+- `status`
+- `completion_status`
+- `error_code`
+- `error_detail`
+- `trace_id`
+- `failure_category`
 
-Read by:
+Key rule from Specs `007`, `013`, and `017`:
 
-- diagnostics delivery endpoint
+- once a logical delivery row exists, transport retry ownership belongs to the delivery row plus its attempts
 
-Typical usage:
-
-- A failed retry creates a new attempt row under the same delivery row.
-
-### 7.7 Remote Execution And Sandboxing Tables
-
-#### `node_execution_audits`
-
-Purpose:
-
-- Durable audit row for a remote execution attempt handled by the node runner.
-
-Written by:
-
-- `ExecutionAuditRepository.insert_or_get()`
-- `mark_rejected()`
-- `mark_running()`
-- `mark_finished()`
-
-Read by:
-
-- `NodeRunnerPolicy.authorize()`
-- node-runner status API
-- diagnostics node-executions endpoint
-
-Typical usage:
-
-- Tracks request identity, sandbox settings, execution status, stdout/stderr previews, and denial reasons.
-
-#### `agent_sandbox_profiles`
+### `outbound_delivery_attempts`
 
 Purpose:
 
-- Per-agent default sandbox policy.
+- append-only transport attempts for a delivery
 
-Written by:
+Important columns:
 
-- `CapabilitiesRepository.upsert_agent_sandbox_profile()`
+- `outbound_delivery_id`
+- `attempt_number`
+- `provider_idempotency_key`
+- `status`
+- `stream_status`
+- `provider_stream_id`
+- `last_sequence_number`
+- `completion_reason`
+- `provider_message_id`
+- `provider_metadata_json`
+- `retryable`
+- `error_code`
+- `error_detail`
+- `trace_id`
 
-Read by:
+### `outbound_delivery_stream_events`
 
-- `SandboxService.resolve()`
-- `CapabilitiesRepository.get_agent_sandbox_profile()`
+Purpose:
 
-Typical usage:
+- append-only durable streaming events for webchat replay and diagnostics
 
-- Controls whether an agent defaults to `off`, `shared`, or `agent` mode and what timeout/workspace rules apply.
+Introduced by:
 
-## 8. Which Code Calls The Database, And When?
+- Spec `013`
 
-This section is the shortest mental model to keep in your head while reading the code.
+Important columns:
 
-### On inbound HTTP accept
+- `outbound_delivery_id`
+- `outbound_delivery_attempt_id`
+- `sequence_number`
+- `event_kind`
+- `payload_json`
 
-- `SessionService.process_inbound()`
-  - session lookup/create
-  - append user message
-  - append inbound attachment inputs
-  - create or reuse execution run
-- `IdempotencyService`
-  - claim and finalize dedupe row
+## Context Continuity, Memory, and Retrieval
 
-### On worker claim and execution
+### `summary_snapshots`
 
-- `JobsRepository`
-  - claim run
-  - manage leases
-  - mark running/completed/failed/retry
-- `MediaProcessor`
-  - convert accepted attachments into normalized attachment rows
-- `ContextService`
-  - read the history used for the turn
-- `execute_turn()` in `src/graphs/nodes.py`
-  - append assistant message
-  - append tool artifacts and governance records
-  - persist the context manifest
-- `OutboundDispatcher`
-  - create delivery and attempt rows and update statuses
+Purpose:
 
-### On approval-gated actions
+- versioned summary compaction over a message range
 
-- `SessionRepository.create_governance_proposal()`
-  - creates `resource_proposals`, `resource_versions`, and governance history
-- `SessionRepository.approve_proposal()`
-  - creates `resource_approvals` and governance decision history
-- `ActivationController.activate()`
-  - creates or refreshes `active_resources` and writes activation history
+Important columns:
 
-### On diagnostics
+- `session_id`
+- `snapshot_version`
+- `base_message_id`
+- `through_message_id`
+- `source_watermark_message_id`
+- `summary_text`
+- `summary_metadata_json`
 
-- `DiagnosticsService`
-  - reads `execution_runs`, lease tables, `outbox_jobs`, `node_execution_audits`, `outbound_deliveries`, `outbound_delivery_attempts`, `message_attachments`, `summary_snapshots`, and `context_manifests`
+### `session_memories`
 
-## 9. Practical Reading Order For Junior Developers
+Purpose:
 
-If you want to understand the database by following the code, use this order:
+- additive durable memory rows extracted from transcript or summaries
 
-1. Read `src/db/models.py` to see every table.
-2. Read `src/sessions/service.py::process_inbound()` for the gateway write path.
-3. Read `src/sessions/repository.py` for the main persistence methods.
-4. Read `src/jobs/service.py::process_next_run()` for the worker lifecycle.
-5. Read `src/context/service.py` for continuity reads.
-6. Read `src/graphs/nodes.py` for assistant/tool/governance writes.
-7. Read `src/media/processor.py` and `src/channels/dispatch.py` for media and delivery records.
-8. Read `src/observability/diagnostics.py` to see how operators inspect the system from durable state.
+Important columns:
 
-## 10. Final Mental Model
+- `memory_kind`
+- `content_text`
+- `content_hash`
+- `status`
+- `confidence`
+- `source_kind`
+- source references back to messages or summary snapshots
+- `derivation_strategy_id`
+- `payload_json`
 
-If you remember only one thing, remember this:
+### `retrieval_records`
 
-- `messages` is the canonical transcript
-- `execution_runs` is the canonical user-visible async work queue
-- `session_artifacts` and `governance_transcript_events` explain what happened during execution
-- `summary_snapshots`, `outbox_jobs`, and `context_manifests` support continuity and inspection
-- `message_attachments`, `outbound_deliveries`, and `outbound_delivery_attempts` explain media and transport work
-- `node_execution_audits` explains privileged execution attempts
+Purpose:
 
-Everything else in the application is built to read from or append to those durable records rather than relying on in-memory state.
+- chunked retrieval entries derived from summaries, memories, or attachment extractions
+
+Important columns:
+
+- `session_id`
+- `source_kind`
+- `source_id`
+- source references back to messages, summaries, memories, or attachment extractions
+- `chunk_index`
+- `content_text`
+- `content_hash`
+- `ranking_metadata_json`
+- `derivation_strategy_id`
+
+### `outbox_jobs`
+
+Purpose:
+
+- after-turn derived-state work such as summaries, memory extraction, retrieval indexing, and repair
+
+Important columns:
+
+- `session_id`
+- `message_id`
+- `job_kind`
+- `job_dedupe_key`
+- `status`
+- `attempt_count`
+- `available_at`
+- `payload_json`
+- `last_error`
+- `trace_id`
+- `failure_category`
+
+Important rule:
+
+- outbox jobs are post-commit derived work, not the canonical queue for user-visible execution
+
+### `context_manifests`
+
+Purpose:
+
+- durable explanation of which transcript, summaries, retrieval rows, memory rows, governance state, and attachment-derived inputs were used for a run
+
+Important columns:
+
+- `session_id`
+- `message_id`
+- `manifest_json`
+- `degraded`
+
+## Agent Profiles, Delegation, Sandboxing, and Node Execution
+
+### `model_profiles`
+
+Purpose:
+
+- named runtime model configurations
+
+Important columns:
+
+- `profile_key`
+- `runtime_mode`
+- `provider`
+- `model_name`
+- `temperature`
+- `max_output_tokens`
+- `timeout_seconds`
+- `tool_call_mode`
+- `streaming_enabled`
+- `enabled`
+- `base_url`
+
+### `agent_profiles`
+
+Purpose:
+
+- durable agent identity and default profile bindings
+
+Important columns:
+
+- `agent_id`
+- `display_name`
+- `role_kind`
+- `description`
+- `default_model_profile_id`
+- `policy_profile_key`
+- `tool_profile_key`
+- `enabled`
+- `disabled_at`
+
+### `agent_sandbox_profiles`
+
+Purpose:
+
+- per-agent sandbox defaults for node execution
+
+Important columns:
+
+- `agent_id`
+- `default_mode`
+- `shared_profile_key`
+- `allow_off_mode`
+- `max_timeout_seconds`
+
+### `node_execution_audits`
+
+Purpose:
+
+- durable audit trail of remote execution requests and outcomes
+
+Important columns:
+
+- `request_id`
+- `execution_run_id`
+- `tool_call_id`
+- `execution_attempt_number`
+- `message_id`
+- `session_id`
+- `agent_id`
+- `requester_kind`
+- `sandbox_mode`
+- `sandbox_key`
+- `workspace_root`
+- `workspace_mount_mode`
+- `command_fingerprint`
+- `typed_action_id`
+- `approval_id`
+- `resource_version_id`
+- `status`
+- `deny_reason`
+- `exit_code`
+- `stdout_preview`
+- `stderr_preview`
+- truncation flags
+- `started_at`
+- `finished_at`
+- `duration_ms`
+- `trace_id`
+
+Key behaviors:
+
+- signed request correlation
+- approval linkage
+- sandbox identity
+- execution result and denial tracking
+
+### `delegations`
+
+Purpose:
+
+- one durable parent-to-child delegation
+
+Introduced by:
+
+- Spec `015`
+
+Important columns:
+
+- `parent_session_id`
+- `parent_message_id`
+- `parent_run_id`
+- `parent_tool_call_correlation_id`
+- `parent_agent_id`
+- `child_session_id`
+- `child_message_id`
+- `child_run_id`
+- `child_agent_id`
+- `parent_result_message_id`
+- `parent_result_run_id`
+- `status`
+- `depth`
+- `delegation_kind`
+- `task_text`
+- `context_payload_json`
+- `result_payload_json`
+- `failure_detail`
+- `cancel_reason`
+- timestamps for queued/started/completed
+
+### `delegation_events`
+
+Purpose:
+
+- append-only audit history of delegation lifecycle changes
+
+Important columns:
+
+- `delegation_id`
+- `event_kind`
+- `status`
+- `actor_kind`
+- `actor_ref`
+- `payload_json`
+
+## Collaboration and Operator Workflow
+
+### `session_operator_notes`
+
+Purpose:
+
+- append-only internal notes attached to a session
+
+Important columns:
+
+- `session_id`
+- `author_kind`
+- `author_id`
+- `note_kind`
+- `body`
+
+### `session_collaboration_events`
+
+Purpose:
+
+- append-only audit history of takeover, pause, resume, assignment, notes, suppressed dispatch, and operator-driven actions
+
+Important columns:
+
+- `session_id`
+- `event_kind`
+- `actor_kind`
+- `actor_id`
+- `automation_state_before`
+- `automation_state_after`
+- `assigned_operator_before`
+- `assigned_operator_after`
+- `assigned_queue_before`
+- `assigned_queue_after`
+- `related_run_id`
+- `related_note_id`
+- `related_proposal_id`
+- `payload_json`
+
+Key rule:
+
+- mutable collaboration state lives on `sessions`; immutable history lives here
+
+## Production Hardening and Quota State
+
+### `rate_limit_counters`
+
+Purpose:
+
+- bounded durable quota counters for gateway and worker rate limits
+
+Introduced by:
+
+- Spec `017`
+
+Important columns:
+
+- `scope_kind`
+- `scope_key`
+- `window_seconds`
+- `window_start`
+- `count`
+- `last_seen_at`
+
+Used for:
+
+- inbound request limits
+- operator/admin request limits
+- approval callback limits
+- provider request and token budget enforcement
+
+## 6. End-to-End Data Flow
+
+## Normal inbound turn
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Gateway
+    participant DB
+    participant Worker
+    participant Runtime
+    participant Dispatch
+
+    Client->>Gateway: inbound message
+    Gateway->>DB: claim inbound_dedupe
+    Gateway->>DB: get/create sessions
+    Gateway->>DB: append messages
+    Gateway->>DB: append inbound_message_attachments
+    Gateway->>DB: create execution_runs
+    Gateway->>DB: finalize inbound_dedupe
+    Gateway-->>Client: 202 + session_id + run_id
+
+    Worker->>DB: claim execution_runs + leases
+    Worker->>DB: normalize inbound_message_attachments -> message_attachments
+    Worker->>DB: assemble context from messages + summaries + memories + retrieval + governance + extractions
+    Runtime->>DB: append session_artifacts + tool_audit_events
+    Runtime->>DB: append governance rows if needed
+    Runtime->>DB: append assistant messages
+    Runtime->>DB: append context_manifests
+    Dispatch->>DB: create outbound_deliveries + outbound_delivery_attempts
+    Dispatch->>DB: append outbound_delivery_stream_events when streaming
+    Worker->>DB: enqueue outbox_jobs
+    Worker->>DB: mark execution_runs terminal
+```
+
+## Approval-gated turn
+
+When the assistant proposes a governed action:
+
+1. the runtime appends a `resource_proposals` row
+2. it appends a `resource_versions` row
+3. it appends governance transcript events
+4. if structured prompt UX is enabled, it creates `approval_action_prompts`
+5. after approval, it creates `resource_approvals`
+6. activation creates or updates `active_resources`
+7. remote execution, if applicable, writes `node_execution_audits`
+
+## Delegation turn
+
+When a parent agent delegates:
+
+1. the parent run writes a `delegations` row
+2. a child `sessions` row exists or is created with `session_kind=child`
+3. a child trigger `messages` row is appended
+4. a child `execution_runs` row is created
+5. child lifecycle changes append `delegation_events`
+6. the parent continuation later writes `parent_result_message_id` and `parent_result_run_id`
+
+## Collaboration-aware turn
+
+When a session is under takeover or pause:
+
+1. inbound `messages` still append normally
+2. the corresponding `execution_runs` row is created as `blocked`
+3. `blocked_reason` records why automation did not start
+4. session state updates live on `sessions`
+5. immutable history appends to `session_collaboration_events`
+6. operator notes append to `session_operator_notes`
+
+## 7. Important Invariants
+
+- `sessions.session_key` is unique and stable for the same routing tuple
+- `messages` are append-only transcript truth
+- `inbound_dedupe` prevents duplicate external message ingestion
+- each trigger identity maps to at most one `execution_runs` row
+- per-session concurrency is enforced through `session_run_leases`
+- global concurrency is enforced through `global_run_leases`
+- derived context state can be rebuilt from canonical transcript plus attachments and governance records
+- exact approvals are bound to versioned proposal payload plus canonical params hash
+- a logical outbound delivery is unique per outbound intent and chunk
+- stream replay is append-only and sequence ordered
+- delegation identity is unique per parent run and tool-call correlation
+- collaboration history is append-only, while current collaboration state lives on `sessions`
+- quota counters are durable and bounded by window and scope
+
+## 8. Primary Code Paths by Table Family
+
+Conversation and routing:
+
+- [`src/routing/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/routing/service.py)
+- [`src/sessions/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/service.py)
+- [`src/sessions/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/repository.py)
+- [`src/gateway/idempotency.py`](/Users/scottcornell/src/my-projects/python-claw/src/gateway/idempotency.py)
+
+Runs and scheduler:
+
+- [`src/jobs/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/jobs/repository.py)
+- [`src/jobs/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/jobs/service.py)
+- [`apps/worker/jobs.py`](/Users/scottcornell/src/my-projects/python-claw/apps/worker/jobs.py)
+- [`apps/worker/scheduler.py`](/Users/scottcornell/src/my-projects/python-claw/apps/worker/scheduler.py)
+
+Runtime, governance, and approvals:
+
+- [`src/graphs/nodes.py`](/Users/scottcornell/src/my-projects/python-claw/src/graphs/nodes.py)
+- [`src/policies/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/policies/service.py)
+- [`src/policies/approval_actions.py`](/Users/scottcornell/src/my-projects/python-claw/src/policies/approval_actions.py)
+- [`src/capabilities/activation.py`](/Users/scottcornell/src/my-projects/python-claw/src/capabilities/activation.py)
+
+Context, memory, retrieval, media, and delivery:
+
+- [`src/context/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/context/service.py)
+- [`src/context/outbox.py`](/Users/scottcornell/src/my-projects/python-claw/src/context/outbox.py)
+- [`src/memory/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/memory/service.py)
+- [`src/retrieval/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/retrieval/service.py)
+- [`src/media/processor.py`](/Users/scottcornell/src/my-projects/python-claw/src/media/processor.py)
+- [`src/media/extraction.py`](/Users/scottcornell/src/my-projects/python-claw/src/media/extraction.py)
+- [`src/channels/dispatch.py`](/Users/scottcornell/src/my-projects/python-claw/src/channels/dispatch.py)
+
+Agents, delegation, collaboration, and diagnostics:
+
+- [`src/agents/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/agents/service.py)
+- [`src/delegations/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/delegations/service.py)
+- [`src/sessions/collaboration.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/collaboration.py)
+- [`src/observability/diagnostics.py`](/Users/scottcornell/src/my-projects/python-claw/src/observability/diagnostics.py)
+- [`src/execution/audit.py`](/Users/scottcornell/src/my-projects/python-claw/src/execution/audit.py)
+
+## 9. What Changed Compared To The Older Database Doc
+
+The previous version of this document stopped effectively around Spec `008`. The biggest gaps it had were:
+
+- no coverage for `model_profiles` and `agent_profiles`
+- no coverage for `session_memories`, `retrieval_records`, or `attachment_extractions`
+- no coverage for `outbound_delivery_stream_events`
+- no coverage for `delegations` or `delegation_events`
+- no coverage for collaboration state on `sessions`
+- no coverage for `session_operator_notes` or `session_collaboration_events`
+- no coverage for `approval_action_prompts`
+- no coverage for `rate_limit_counters`
+- no explanation of how later specs changed `execution_runs`, `sessions`, and delivery ownership
+
+This version closes those gaps and aligns the database guide with Specs `001` through `017`.

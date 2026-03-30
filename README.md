@@ -1,612 +1,302 @@
-# python-claw Project Guide
+# python-claw
 
-This document translates the current project knowledge into a format that works for both:
+`python-claw` is a gateway-first assistant platform foundation in Python. It accepts inbound channel messages, routes them into durable sessions, persists the transcript, queues execution runs, assembles runtime context, executes tools behind policy and approval controls, and delivers outbound replies through channel adapters.
 
-- technical non-developers who need to understand what the solution is
-- developers who need to run it, inspect it, and extend it
+The codebase now reflects Specs `001` through `017`. This README is intended to help a developer or operator do two things quickly:
 
-This guide is intended to evolve as additional specs are completed. It reflects the project as it exists today and also highlights the next planned areas of growth, including deeper LLM capabilities and future sub-agent support.
+1. understand the current architecture and code structure
+2. configure, run, test, and deploy the system
 
-## 1. Overview
+## What Is Implemented
 
-### What this project is
+The current repository includes these major slices from the spec set:
 
-`python-claw` is a gateway-first assistant platform foundation written in Python. It is designed to receive inbound messages from external channels, route them into durable sessions, store the conversation history, run assistant logic, apply policy and approval checks, and record auditable execution results.
+- `001` gateway ingress, routing, sessions, transcript persistence, idempotent inbound handling
+- `002` assistant runtime, graph assembly, tool registry, append-only tool and assistant artifacts
+- `003` approval-governed capabilities and activation checks
+- `004` context continuity, summaries, memories, retrieval records, outbox scaffolding
+- `005` async execution runs, leases, worker claiming, retry/backoff foundations
+- `006` node-runner boundary, signed remote execution, sandbox resolution
+- `007` channel-aware delivery, media normalization, delivery auditing
+- `008` health, readiness, diagnostics, failure classification, redaction
+- `009` provider-backed LLM runtime behind backend-owned orchestration
+- `010` typed tool schemas and hybrid deterministic approval control
+- `011` retrieval, memory, attachment extraction, context manifests
+- `012` production-style channel ingress for Slack, Telegram, and webchat
+- `013` durable webchat streaming and SSE replay
+- `014` agent profiles, model profiles, durable session ownership, per-run profile binding
+- `015` sub-agent delegation and child-session orchestration
+- `016` human takeover, pause/resume, assignment, operator notes, approval UX
+- `017` production hardening: auth boundaries, quota/rate limits, recovery, retries, safer diagnostics
 
-In simpler terms, this project is the backend skeleton for an AI assistant system that can:
+## System Overview
 
-- receive messages from channels such as Slack-like integrations
-- keep long-lived conversation sessions
-- decide what assistant action should happen next
-- use approved tools in a controlled way
-- queue work for asynchronous processing
-- normalize inbound attachments into safe runtime-owned media records
-- deliver completed outbound replies through channel-aware dispatch paths
-- support remote execution through a separate internal node-runner boundary
-- expose health, readiness, and operator diagnostics for the durable workflows it owns
+At a high level the platform works like this:
 
-### What it does today
+1. A channel or client sends a message to the gateway.
+2. The gateway validates the payload, resolves the canonical session, persists the user turn, and creates an `execution_run`.
+3. A worker claims the run and normalizes any inbound attachments.
+4. The runtime assembles context from transcript plus additive derived state such as summaries, memories, retrieval rows, and attachment extractions.
+5. The assistant graph executes using a rule-based or provider-backed model adapter.
+6. Tool calls are validated through typed schemas and filtered through policy/tool profiles.
+7. Approval-gated actions are persisted as proposals rather than executed immediately.
+8. Outbound replies and media are dispatched through channel adapters and audited as durable delivery records.
+9. Diagnostics, health, quotas, recovery, and collaboration state remain backend-owned and inspectable.
 
-The current implementation focuses on fourteen delivered capability areas:
+## Architecture
 
-1. Gateway sessions and deterministic routing
-2. Runtime tools and typed tool execution
-3. Capability governance and approval-gated actions
-4. Context continuity and summary/outbox scaffolding
-5. Async queueing with worker-owned execution runs
-6. Remote node-runner execution with per-agent sandbox resolution
-7. Channel-aware outbound delivery, chunking, and first-pass media normalization
-8. Observability, diagnostics, health or readiness, and operational hardening
-9. Provider-backed LLM runtime with backend-owned prompt assembly and approval-safe tool routing
-10. Typed tool schemas with shared backend validation and hybrid intent control for approvals or revocations
-11. Retrieval, durable memory, and attachment-content understanding as additive context
-12. Production channel ingress and delivery contracts for Slack, Telegram, and polling-based webchat
-13. Streaming-safe real-time delivery for webchat with durable SSE replay and append-only stream events
-14. Durable agent profiles, session ownership metadata, and per-run execution profile binding
+### Main services
 
-### What it does not do yet
+- `gateway`: FastAPI app for ingress, provider callbacks, admin reads, diagnostics, approvals, and collaboration APIs
+- `worker`: background execution loop that claims runs and processes after-turn work
+- `node-runner`: internal execution boundary for governed shell/process execution
+- `postgres`: primary durable store
+- `redis`: deployment dependency included by Compose for stack parity
 
-The project is still a foundation, not a finished end-user assistant platform. Important planned capabilities are still pending, including:
-
-- richer provider-native channel layouts, interactive actions, and advanced receipt callbacks
-- cross-session retrieval, external vector infrastructure, and more advanced memory policies
-- production-grade sandbox/container enforcement
-- sub-agent orchestration
-- full production telemetry backends and alerting integrations
-
-### Who should read this
-
-- Non-developers: focus on this section, the architecture diagrams, and the Connections section.
-- Developers: use the Architecture, Setup, and Connections sections as your working guide.
-
-## 2. Architecture
-
-### Architecture in plain language
-
-The system is built around one main rule: all important work starts at the gateway.
-
-That means the project keeps routing, session identity, policy decisions, persistence, and auditing centralized. Instead of letting each channel or tool call the assistant directly, the gateway acts as the front door and source of truth.
-
-### Core building blocks
-
-- Gateway API: receives inbound messages and exposes read/admin endpoints
-- Routing service: decides which durable session a message belongs to
-- Session service: orchestrates persistence and run creation
-- Worker: claims queued runs and executes assistant turns
-- Assistant graph/runtime: performs the assistant decision flow
-- Media processor: normalizes accepted attachments before they enter turn context
-- Attachment extraction service: derives usable attachment text or metadata after normalization
-- Memory and retrieval services: build additive durable context from transcript, summaries, memories, and extracted attachments
-- Agent profile service: resolves durable session ownership plus model, policy, and tool profile bindings
-- Tool registry and policy layer: controls which tools are visible and executable
-- Typed tool schema layer: validates tool arguments, exports provider-facing schemas, and canonicalizes approval identity
-- Outbound dispatcher: parses directives, chunks text, applies channel capability rules, records delivery attempts, and owns streaming delivery state
-- Channel adapters: transport-specific send and ingress translation interfaces for `webchat`, `slack`, and `telegram`, including capability-based streaming support
-- Observability layer: emits structured events, redacts sensitive fields, classifies failures, and supports diagnostics queries
-- Database: stores sessions, agent profiles, model profiles, messages, approvals, artifacts, runs, and audits
-- Node runner: isolated internal execution boundary for remote command execution
-- Sandbox service: resolves sandbox profile and workspace rules per agent/run
-
-### High-level system diagram
+### Core runtime flow
 
 ```mermaid
 flowchart LR
-    A[External Channel or Client] --> B[Gateway API]
-    B --> C[Routing Service]
-    C --> D[(Sessions and Messages)]
-    B --> E[Session Service]
-    E --> U[(Agent and Model Profiles)]
-    E --> F[(Execution Runs)]
-    F --> G[Worker]
-    G --> H[Media Processor]
-    H --> D
-    G --> I[Assistant Graph Runtime]
-    I --> U
-    I --> J[Policy Service]
-    I --> K[Tool Registry]
-    I --> L[Context Service]
-    L --> D
-    K --> M[Local Safe Tools]
-    K --> N[Governed Remote Exec Tool]
-    N --> O[Node Runner]
-    O --> P[(Node Execution Audits)]
-    G --> Q[Outbound Dispatcher]
-    Q --> R[Channel Adapters]
-    Q --> S[(Outbound Deliveries)]
-    E --> T[(Governance and Artifacts)]
+    A[Client or Channel] --> B[Gateway API]
+    B --> C[Routing + Session Service]
+    C --> D[(PostgreSQL)]
+    C --> E[(execution_runs)]
+    E --> F[Worker]
+    F --> G[Media Processor]
+    F --> H[Context Service]
+    F --> I[Assistant Graph Runtime]
+    I --> J[Policy + Tool Registry]
+    J --> K[Local Tools]
+    J --> L[Remote Exec Tool]
+    L --> M[Node Runner]
+    F --> N[Dispatch Layer]
+    N --> O[Slack / Telegram / Webchat]
 ```
 
-### Runtime sequence for a normal inbound message
-
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Gateway
-    participant DB
-    participant Worker
-    participant Runtime
-    participant Channel
-
-    Client->>Gateway: POST /inbound/message
-    Gateway->>DB: validate payload, dedupe, resolve/create session
-    Gateway->>DB: resolve durable session owner and execution profile binding
-    Gateway->>DB: append user message
-    Gateway->>DB: append canonical attachment inputs if present
-    Gateway->>DB: create or reuse execution_run with persisted profile keys
-    Gateway-->>Client: 202 Accepted + session_id + run_id + trace_id
-    Worker->>DB: claim queued run
-    Worker->>DB: normalize attachments to terminal states
-    Worker->>Runtime: execute assistant turn
-    Runtime->>DB: prepare final assistant result, artifacts, manifests, audits
-    Worker->>DB: create outbound delivery records, attempts, and optional stream events
-    Worker->>Channel: send streamed text or bounded whole-message/media instructions
-    Worker->>DB: append final assistant message after authoritative completion
-    Worker->>DB: mark run terminal state
-    Note over Gateway,Worker: health, readiness, and diagnostics now expose correlated operational state
-```
-
-### Execution architecture in more detail
-
-#### Gateway
-
-The gateway is the main API service. It currently exposes:
-
-- `GET /health`
-- `GET /health/live`
-- `GET /health/ready`
-- `POST /inbound/message`
-- `POST /providers/slack/events`
-- `POST /providers/telegram/webhook/{channel_account_id}`
-- `POST /providers/webchat/accounts/{channel_account_id}/messages`
-- `GET /providers/webchat/accounts/{channel_account_id}/stream`
-- `GET /providers/webchat/accounts/{channel_account_id}/poll`
-- `GET /sessions/{session_id}`
-- `GET /sessions/{session_id}/messages`
-- `GET /sessions/{session_id}/governance/pending`
-- `GET /runs/{run_id}`
-- `GET /sessions/{session_id}/runs`
-- `GET /agents`
-- `GET /agents/{agent_id}`
-- `GET /agents/{agent_id}/sessions`
-- `GET /model-profiles`
-- `GET /model-profiles/{profile_key}`
-- `GET /diagnostics/runs`
-- `GET /diagnostics/runs/{run_id}`
-- `GET /diagnostics/sessions/{session_id}/continuity`
-- `GET /diagnostics/outbox-jobs`
-- `GET /diagnostics/node-executions`
-- `GET /diagnostics/deliveries`
-- `GET /diagnostics/attachments`
-
-Its responsibilities are:
-
-- validate inbound payloads
-- enforce routing rules
-- resolve durable session ownership from the current session or the bootstrap default agent
-- claim idempotency records
-- persist inbound transcript messages
-- persist canonical inbound attachment references
-- create durable execution runs with stable per-run correlation and persisted execution profile keys
-- return quickly with `202 Accepted`
-
-The gateway now also owns the default operator-facing read boundary for service health and diagnostics. In practical terms, `GET /health/live` is the cheap process check, `GET /health/ready` is the deployment-readiness check, and `/diagnostics/*` routes are authenticated inspection surfaces for operators or internal services.
-
-With Spec 014, the gateway also stops treating `default_agent_id` as the runtime source of truth for existing sessions. New sessions bootstrap from the configured default agent, but once a session exists its durable `owner_agent_id` becomes authoritative for later turns and scheduler-targeted work.
-
-#### Worker and async runs
-
-After the gateway accepts work, the worker becomes responsible for execution. This keeps the request path short and durable. The worker:
-
-- claims queued runs
-- applies lane and global concurrency rules
-- performs first-pass attachment normalization for inbound-triggered runs
-- reloads the persisted execution binding and validates the owning agent plus linked profiles
-- invokes the assistant runtime
-- dispatches outbound text and media after the assistant turn reaches a dispatchable answer phase
-- persists results, errors, and diagnostics
-- preserves the parent run `trace_id` when follow-on work creates additional operational records
-
-#### Assistant runtime
-
-The current runtime is intentionally narrow and deterministic. It can:
-
-- return plain assistant text
-- call a safe local tool such as `echo_text`
-- call approval-governed tools such as `send_message`
-- prepare runtime-owned outbound intents that are dispatched after the turn
-- prepare a remote execution request when governed access exists
-
-The runtime now supports two execution modes behind the same model adapter seam:
+### Architectural rules
+
+- The gateway is the only canonical message ingress path.
+- Transcript state is append-only.
+- Execution is worker-owned, not request-thread owned.
+- Models never execute tools directly; the backend validates and executes them.
+- Approvals, deliveries, node executions, collaboration state, and diagnostics are durable records, not only logs.
+- Session ownership and runtime profile binding are durable, per-session and per-run concepts.
+
+## Code Structure
+
+### App entrypoints
+
+- [`apps/gateway/main.py`](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/main.py) creates the main FastAPI app and wires all gateway routers and services.
+- [`apps/node_runner/main.py`](/Users/scottcornell/src/my-projects/python-claw/apps/node_runner/main.py) creates the internal node-runner service.
+- [`scripts/worker_loop.py`](/Users/scottcornell/src/my-projects/python-claw/scripts/worker_loop.py) runs the continuous worker poll loop.
+
+### API layer
+
+- [`apps/gateway/api/inbound.py`](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/api/inbound.py): canonical `POST /inbound/message`
+- [`apps/gateway/api/slack.py`](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/api/slack.py): Slack provider ingress
+- [`apps/gateway/api/telegram.py`](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/api/telegram.py): Telegram webhook ingress
+- [`apps/gateway/api/webchat.py`](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/api/webchat.py): webchat send, poll, stream, approval interactions
+- [`apps/gateway/api/admin.py`](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/api/admin.py): sessions, runs, agents, profiles, diagnostics, collaboration/operator reads and actions
+- [`apps/gateway/api/health.py`](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/api/health.py): health and readiness
+- [`apps/node_runner/api/internal.py`](/Users/scottcornell/src/my-projects/python-claw/apps/node_runner/api/internal.py): signed internal exec API
+
+### Domain and persistence
+
+- [`src/db/models.py`](/Users/scottcornell/src/my-projects/python-claw/src/db/models.py): SQLAlchemy models for sessions, messages, runs, governance, deliveries, agents, context, collaboration, quotas, and more
+- [`src/db/session.py`](/Users/scottcornell/src/my-projects/python-claw/src/db/session.py): database session manager
+- [`migrations/versions`](/Users/scottcornell/src/my-projects/python-claw/migrations/versions): Alembic migrations
+- [`src/domain/schemas.py`](/Users/scottcornell/src/my-projects/python-claw/src/domain/schemas.py): typed request/response and domain contracts
+
+### Session, routing, and queueing
+
+- [`src/routing/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/routing/service.py): canonical session-key resolution
+- [`src/sessions/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/service.py): inbound persistence, session ownership, run creation
+- [`src/sessions/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/repository.py): session/message persistence
+- [`src/jobs/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/jobs/service.py): run claiming, execution, retries, recovery interactions
+- [`src/jobs/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/jobs/repository.py): `execution_runs`, leases, and queue records
+- [`src/gateway/idempotency.py`](/Users/scottcornell/src/my-projects/python-claw/src/gateway/idempotency.py): inbound dedupe handling
+
+### Runtime, tools, and policies
+
+- [`src/graphs/assistant_graph.py`](/Users/scottcornell/src/my-projects/python-claw/src/graphs/assistant_graph.py): graph assembly
+- [`src/graphs/nodes.py`](/Users/scottcornell/src/my-projects/python-claw/src/graphs/nodes.py): node logic for thinking, tool execution, persistence, approvals, delegation handling
+- [`src/graphs/state.py`](/Users/scottcornell/src/my-projects/python-claw/src/graphs/state.py): assistant state contract
+- [`src/execution/runtime.py`](/Users/scottcornell/src/my-projects/python-claw/src/execution/runtime.py): runtime orchestration
+- [`src/tools/registry.py`](/Users/scottcornell/src/my-projects/python-claw/src/tools/registry.py): tool registry and binding
+- [`src/tools/local_safe.py`](/Users/scottcornell/src/my-projects/python-claw/src/tools/local_safe.py): safe local tools
+- [`src/tools/messaging.py`](/Users/scottcornell/src/my-projects/python-claw/src/tools/messaging.py): outbound message tooling
+- [`src/tools/remote_exec.py`](/Users/scottcornell/src/my-projects/python-claw/src/tools/remote_exec.py): governed remote execution tool
+- [`src/tools/delegation.py`](/Users/scottcornell/src/my-projects/python-claw/src/tools/delegation.py): child-agent delegation tool
+- [`src/tools/typed_actions.py`](/Users/scottcornell/src/my-projects/python-claw/src/tools/typed_actions.py): canonical action identity and schemas
+- [`src/policies/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/policies/service.py): policy checks, approvals, deterministic approve/revoke flows
+- [`src/policies/quota.py`](/Users/scottcornell/src/my-projects/python-claw/src/policies/quota.py): rate limiting and quota service
+
+### Context, media, and delivery
+
+- [`src/context/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/context/service.py): context assembly from transcript and derived records
+- [`src/context/outbox.py`](/Users/scottcornell/src/my-projects/python-claw/src/context/outbox.py): after-turn work orchestration
+- [`src/memory/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/memory/service.py): durable memory extraction/storage
+- [`src/retrieval/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/retrieval/service.py): retrieval rows and selection
+- [`src/media/processor.py`](/Users/scottcornell/src/my-projects/python-claw/src/media/processor.py): attachment normalization and storage
+- [`src/media/extraction.py`](/Users/scottcornell/src/my-projects/python-claw/src/media/extraction.py): attachment text extraction
+- [`src/channels/dispatch.py`](/Users/scottcornell/src/my-projects/python-claw/src/channels/dispatch.py): outbound dispatch and delivery persistence
+- [`src/channels/adapters/webchat.py`](/Users/scottcornell/src/my-projects/python-claw/src/channels/adapters/webchat.py): poll/stream capable adapter
+- [`src/channels/adapters/slack.py`](/Users/scottcornell/src/my-projects/python-claw/src/channels/adapters/slack.py): Slack adapter
+- [`src/channels/adapters/telegram.py`](/Users/scottcornell/src/my-projects/python-claw/src/channels/adapters/telegram.py): Telegram adapter
+
+### Agents, delegation, sandboxing, and security
+
+- [`src/agents/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/agents/service.py): agent/model/tool/policy profile lookup
+- [`src/agents/bootstrap.py`](/Users/scottcornell/src/my-projects/python-claw/src/agents/bootstrap.py): profile bootstrap/seeding
+- [`src/delegations/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/delegations/service.py): child-session orchestration and delegation lifecycle
+- [`src/sandbox/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/sandbox/service.py): sandbox selection and workspace rules
+- [`src/security/signing.py`](/Users/scottcornell/src/my-projects/python-claw/src/security/signing.py): request signing/verification
+- [`apps/node_runner/policy.py`](/Users/scottcornell/src/my-projects/python-claw/apps/node_runner/policy.py): node-runner admission checks
+- [`apps/node_runner/executor.py`](/Users/scottcornell/src/my-projects/python-claw/apps/node_runner/executor.py): command execution and audit recording
+
+### Collaboration and observability
+
+- [`src/sessions/collaboration.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/collaboration.py): takeover, pause/resume, assignment, notes
+- [`src/observability/health.py`](/Users/scottcornell/src/my-projects/python-claw/src/observability/health.py): liveness and readiness helpers
+- [`src/observability/diagnostics.py`](/Users/scottcornell/src/my-projects/python-claw/src/observability/diagnostics.py): operator diagnostics reads
+- [`src/observability/audit.py`](/Users/scottcornell/src/my-projects/python-claw/src/observability/audit.py): structured audit events
+- [`src/observability/redaction.py`](/Users/scottcornell/src/my-projects/python-claw/src/observability/redaction.py): masking/redaction
+- [`src/observability/metrics.py`](/Users/scottcornell/src/my-projects/python-claw/src/observability/metrics.py): metrics facade
+- [`src/observability/tracing.py`](/Users/scottcornell/src/my-projects/python-claw/src/observability/tracing.py): tracing facade
+
+### Tests
+
+- [`tests/test_api.py`](/Users/scottcornell/src/my-projects/python-claw/tests/test_api.py): gateway and route behavior
+- [`tests/test_runtime.py`](/Users/scottcornell/src/my-projects/python-claw/tests/test_runtime.py): graph/runtime behavior
+- [`tests/test_integration.py`](/Users/scottcornell/src/my-projects/python-claw/tests/test_integration.py): end-to-end integration slices
+- [`tests/test_provider_runtime.py`](/Users/scottcornell/src/my-projects/python-claw/tests/test_provider_runtime.py): provider mode
+- [`tests/test_spec_011.py`](/Users/scottcornell/src/my-projects/python-claw/tests/test_spec_011.py) through [`tests/test_spec_017.py`](/Users/scottcornell/src/my-projects/python-claw/tests/test_spec_017.py): later-spec coverage
+
+## Important Persisted Records
+
+The database contains the main durable system state in tables such as:
 
-- a default `rule_based` mode that remains safe for local development and CI
-- an explicit provider-backed mode that uses backend-authored prompt payloads, bounded provider retries, and translation back into the existing `ModelTurnResult` and `ToolRequest` contracts
+- sessions and messages
+- inbound dedupe records
+- execution runs and run leases
+- tool audit events
+- governance proposals, versions, approvals, and active resources
+- outbound deliveries, attempts, and stream events
+- agent profiles and model profiles
+- attachment records and extraction rows
+- summary snapshots, session memories, retrieval records, and context manifests
+- delegation records and child-session links
+- collaboration events and operator notes
+- quota counters and stale-work recovery metadata
+- node execution audits
 
-Even in provider-backed mode, tool execution, approval creation, artifact persistence, context-manifest ownership, and outbound dispatch all remain backend-owned. The model may suggest tools, but it does not execute them directly.
+The exact schema lives in [`src/db/models.py`](/Users/scottcornell/src/my-projects/python-claw/src/db/models.py) and the migration history in [`migrations/versions`](/Users/scottcornell/src/my-projects/python-claw/migrations/versions).
 
-Spec 014 adds another important runtime rule: model selection, tool visibility, and policy behavior are now resolved from a typed per-run execution binding rather than from one process-wide default. In practice, that means two enabled agents can share the same graph topology while still using different model profiles, policy envelopes, or tool allowlists.
+## Configuration
 
-With Spec 010, tool use is also schema-driven rather than guidance-only. In practical terms, the backend now owns one typed schema contract for each exposed tool in this phase, uses that same contract for prompt-visible guidance, provider-native tool definitions, runtime validation, and canonical argument serialization, and fails safely when provider or deterministic tool arguments do not match the schema. High-risk administrative intents such as `approve <proposal_id>` and `revoke <proposal_id>` still bypass model interpretation entirely.
+The application loads environment variables from a project-root `.env` file using the `PYTHON_CLAW_` prefix. The canonical settings model is [`src/config/settings.py`](/Users/scottcornell/src/my-projects/python-claw/src/config/settings.py).
 
-#### Governance and approvals
+### Minimal local `.env`
 
-Some actions are intentionally gated. The system can persist:
+This is enough for local development with the rule-based runtime:
 
-- resource proposals
-- immutable resource versions
-- approvals
-- active resources
-- governance transcript events
+```dotenv
+PYTHON_CLAW_DATABASE_URL=postgresql+psycopg://openassistant:openassistant@localhost:5432/openassistant
+PYTHON_CLAW_DEFAULT_AGENT_ID=default-agent
 
-This means risky or externally impactful actions can require explicit approval before execution.
+PYTHON_CLAW_RUNTIME_MODE=rule_based
 
-#### Context continuity
-
-The platform keeps transcript history as the main source of truth. It also supports additive continuity records such as:
-
-- summary snapshots
-- durable memory rows
-- retrieval records
-- attachment extraction records
-- context manifests
-- outbox jobs
-- normalized attachment references used during a turn
-
-This means the runtime can now assemble one turn from recent transcript, the latest valid summary, retrieved durable memory, and extracted attachment content without treating any of that derived state as canonical truth. If retrieval or extraction is missing or unhealthy, the system degrades safely back to transcript plus summary.
-
-With Spec 008, continuity is also easier to inspect operationally. Developers can now use diagnostics to see whether context assembly degraded, whether outbox follow-up work is pending or failed, and how recent runs for a session behaved without manually reconstructing the state from raw SQL alone.
-
-Spec 011 turns that continuity layer into a more complete context system. In practical terms:
-
-- transcript remains the only canonical conversation record
-- summary snapshots, durable memories, retrieval rows, and attachment extractions remain additive derived state only
-- the worker can use a bounded same-run fast path for small text files and text-extractable PDFs
-- heavier or later-stage enrichment work continues through after-turn jobs instead of blocking the original accepted request
-- context manifests explain which summary, memory, retrieval, and attachment-derived records were used for a given turn
-
-#### Channels, chunking, and media handling
-
-The system now includes a shared outbound delivery layer for three supported channel kinds in this phase:
-
-- `webchat`
-- `slack`
-- `telegram`
-
-This layer is still gateway-owned and worker-driven. That means channel adapters remain thin. They do not invoke the graph, own orchestration, or parse assistant directives themselves.
-
-In practical terms, the platform now supports:
-
-- optional canonical `attachments` on `POST /inbound/message`
-- worker-side normalization of accepted attachments into safe stored media records
-- bounded same-run text and PDF extraction when supported, with later-turn asynchronous extraction for the general case
-- directive parsing for bounded reply and media instructions
-- deterministic post-turn chunking for large outbound text
-- append-only delivery and delivery-attempt auditing
-
-This is an important distinction for both non-developers and developers: the system now accepts verified provider traffic for Slack and Telegram, and production webchat now uses authenticated inbound HTTP, durable polling, and a durable SSE replay surface for streamed assistant text. Streaming is still intentionally bounded in this phase:
-
-- only supported channels use it
-- only plain-text assistant responses are eligible
-- partial output is delivery-side operational state rather than canonical transcript truth
-- richer provider-native layouts are still out of scope
-
-#### Remote node-runner and sandboxing
-
-For privileged or host-execution scenarios, the project introduces a separate internal service boundary called the node runner. The gateway and worker construct signed execution requests; the node runner independently verifies and enforces policy before executing.
-
-This separation is important because it prevents the main application path from being the same process that directly performs privileged execution.
-
-Spec 008 builds on that separation by making node execution easier to trace. Node execution audits now participate in the same broader run-correlation model, so operators can connect a privileged execution attempt back to the parent assistant run more directly.
-
-Spec 014 keeps sandbox identity exact to `agent_id`. The difference is that the `agent_id` now comes from durable session ownership and persisted run bindings rather than from a mutable global default at execution time.
-
-### Internal service diagram
-
-```mermaid
-flowchart TB
-    subgraph Gateway Side
-        A[Gateway API]
-        B[Session Service]
-        C[Jobs Repository]
-        D[Assistant Graph]
-        E[Tool Registry]
-        F[Policy Service]
-        G[RemoteExecutionRuntime]
-    end
-
-    subgraph Data Layer
-        H[(PostgreSQL)]
-    end
-
-    subgraph Execution Side
-        I[Worker]
-        J[Node Runner Policy]
-        K[Node Runner Executor]
-        L[Sandbox Service]
-    end
-
-    A --> B
-    B --> H
-    B --> C
-    C --> H
-    I --> C
-    I --> D
-    D --> E
-    D --> F
-    E --> G
-    G --> J
-    J --> L
-    J --> H
-    J --> K
-    K --> H
-```
-
-### Main persisted records
-
-The database currently stores the system's durable state in tables such as:
-
-- `sessions`
-- `messages`
-- `inbound_dedupe`
-- `inbound_message_attachments`
-- `message_attachments`
-- `session_artifacts`
-- `tool_audit_events`
-- `governance_transcript_events`
-- `resource_proposals`
-- `resource_versions`
-- `resource_approvals`
-- `active_resources`
-- `execution_runs`
-- `session_run_leases`
-- `global_run_leases`
-- `scheduled_jobs`
-- `scheduled_job_fires`
-- `outbound_deliveries`
-- `outbound_delivery_attempts`
-- `outbound_delivery_stream_events`
-- `agent_profiles`
-- `model_profiles`
-- `agent_sandbox_profiles`
-- `node_execution_audits`
-- `summary_snapshots`
-- `session_memories`
-- `attachment_extractions`
-- `retrieval_records`
-- `outbox_jobs`
-- `context_manifests`
-
-Several of these records now also carry observability metadata such as `trace_id`, failure classification, or degraded-state fields. That is important because the platform's diagnostics are built on canonical durable records, not on a separate shadow state system.
-
-### Current implementation boundaries
-
-Implemented now:
-
-- gateway-owned inbound acceptance
-- durable sessions and transcript persistence
-- idempotency and duplicate replay protection
-- worker-owned queued execution
-- approval-gated capability execution
-- typed schema validation and canonical argument handling for backend-exposed tools
-- canonical inbound attachment acceptance
-- worker-owned attachment normalization and safe local media staging
-- additive context assembly from transcript, summaries, retrieval rows, durable memories, and extracted attachment content
-- worker-owned same-run fast-path attachment understanding for bounded text and PDF inputs
-- after-turn enrichment jobs for summary rollover, memory extraction, retrieval indexing, and attachment extraction
-- shared outbound dispatch with directive stripping and deterministic chunking
-- append-only outbound delivery auditing for `webchat`, `slack`, and `telegram`
-- durable streaming event persistence and SSE replay for eligible `webchat` responses
-- signed internal node-runner requests
-- audit persistence for remote execution
-- durable session ownership through `owner_agent_id`, `session_kind`, and `parent_session_id`
-- durable `agent_profiles` and `model_profiles`
-- settings-backed policy and tool profile registries resolved per agent
-- persisted run-level execution profile identity for deterministic worker replay
-- operator read surfaces for agents, model profiles, and agent-owned sessions
-- stable run correlation with `trace_id`
-- authenticated diagnostics for runs, continuity, outbox jobs, node executions, deliveries, and attachments
-- structured health and readiness surfaces
-- structured operator-facing failure visibility and redaction
-
-Planned or partial:
-
-- cross-session or externally backed retrieval
-- richer transport behavior beyond the current verified Slack and Telegram ingress plus webchat polling and bounded SSE streaming
-- stronger production sandbox isolation
-- richer metrics exporters, tracing backends, and alerting integrations
-- presence or real-time end-user activity surfaces
-
-## 3. Setup
-
-### Prerequisites
-
-You need:
-
-- Python `3.11+`
-- `uv`
-- Docker Desktop or another Docker runtime
-
-Optional but useful:
-
-- `curl`
-- PostgreSQL client tools
-- Redis client tools
-
-### Step 1: Install Python and dependencies
-
-```bash
-uv python install 3.11
-uv sync --group dev
-```
-
-If Python `3.11+` is already installed, this is enough:
-
-```bash
-uv sync --group dev
-```
-
-### Step 2: Review the environment configuration
-
-The application loads configuration from a project-root `.env` file using environment variables prefixed with `PYTHON_CLAW_`.
-
-Key variables include:
-
-- `PYTHON_CLAW_DATABASE_URL`
-- `PYTHON_CLAW_DEFAULT_AGENT_ID`
-- `PYTHON_CLAW_POLICY_PROFILES`
-- `PYTHON_CLAW_TOOL_PROFILES`
-- `PYTHON_CLAW_HISTORICAL_AGENT_PROFILE_OVERRIDES`
-- `PYTHON_CLAW_DEDUPE_RETENTION_DAYS`
-- `PYTHON_CLAW_DEDUPE_STALE_AFTER_SECONDS`
-- `PYTHON_CLAW_RUNTIME_TRANSCRIPT_CONTEXT_LIMIT`
-- `PYTHON_CLAW_RUNTIME_MODE`
-- `PYTHON_CLAW_RUNTIME_STREAMING_ENABLED`
-- `PYTHON_CLAW_RUNTIME_STREAMING_CHUNK_CHARS`
-- `PYTHON_CLAW_WEBCHAT_SSE_ENABLED`
-- `PYTHON_CLAW_WEBCHAT_SSE_REPLAY_LIMIT`
-- `PYTHON_CLAW_LLM_PROVIDER`
-- `PYTHON_CLAW_LLM_API_KEY`
-- `PYTHON_CLAW_LLM_BASE_URL`
-- `PYTHON_CLAW_LLM_MODEL`
-- `PYTHON_CLAW_LLM_TIMEOUT_SECONDS`
-- `PYTHON_CLAW_LLM_MAX_RETRIES`
-- `PYTHON_CLAW_LLM_TEMPERATURE`
-- `PYTHON_CLAW_LLM_MAX_OUTPUT_TOKENS`
-- `PYTHON_CLAW_LLM_TOOL_CALL_MODE`
-- `PYTHON_CLAW_LLM_MAX_TOOL_REQUESTS_PER_TURN`
-- `PYTHON_CLAW_LLM_DISABLE_TOOLS`
-- `PYTHON_CLAW_EXECUTION_RUN_GLOBAL_CONCURRENCY`
-- `PYTHON_CLAW_MEDIA_STORAGE_ROOT`
-- `PYTHON_CLAW_MEDIA_STORAGE_BUCKET`
-- `PYTHON_CLAW_MEDIA_RETENTION_DAYS`
-- `PYTHON_CLAW_MEDIA_ALLOWED_SCHEMES`
-- `PYTHON_CLAW_MEDIA_ALLOWED_MIME_PREFIXES`
-- `PYTHON_CLAW_MEDIA_MAX_BYTES`
-- `PYTHON_CLAW_RETRIEVAL_ENABLED`
-- `PYTHON_CLAW_RETRIEVAL_STRATEGY_ID`
-- `PYTHON_CLAW_RETRIEVAL_TOTAL_ITEMS`
-- `PYTHON_CLAW_RETRIEVAL_MEMORY_ITEMS`
-- `PYTHON_CLAW_RETRIEVAL_ATTACHMENT_ITEMS`
-- `PYTHON_CLAW_RETRIEVAL_OTHER_ITEMS`
-- `PYTHON_CLAW_RETRIEVAL_CHUNK_CHARS`
-- `PYTHON_CLAW_RETRIEVAL_MIN_SCORE`
-- `PYTHON_CLAW_MEMORY_ENABLED`
-- `PYTHON_CLAW_MEMORY_STRATEGY_ID`
-- `PYTHON_CLAW_ATTACHMENT_EXTRACTION_ENABLED`
-- `PYTHON_CLAW_ATTACHMENT_EXTRACTION_STRATEGY_ID`
-- `PYTHON_CLAW_ATTACHMENT_SAME_RUN_FAST_PATH_ENABLED`
-- `PYTHON_CLAW_ATTACHMENT_SAME_RUN_MAX_BYTES`
-- `PYTHON_CLAW_ATTACHMENT_SAME_RUN_PDF_PAGE_LIMIT`
-- `PYTHON_CLAW_ATTACHMENT_SAME_RUN_TIMEOUT_SECONDS`
-- `PYTHON_CLAW_CHANNEL_ACCOUNTS`
-- `PYTHON_CLAW_REMOTE_EXECUTION_ENABLED`
-- `PYTHON_CLAW_NODE_RUNNER_SIGNING_KEY_ID`
-- `PYTHON_CLAW_NODE_RUNNER_SIGNING_SECRET`
-- `PYTHON_CLAW_NODE_RUNNER_ALLOWED_EXECUTABLES`
-- `PYTHON_CLAW_DIAGNOSTICS_ADMIN_BEARER_TOKEN`
-- `PYTHON_CLAW_DIAGNOSTICS_INTERNAL_SERVICE_TOKEN`
-- `PYTHON_CLAW_HEALTH_READY_REQUIRES_AUTH`
-- `PYTHON_CLAW_OBSERVABILITY_LOG_CONTENT_PREVIEW`
-- `PYTHON_CLAW_OBSERVABILITY_LOG_CONTENT_PREVIEW_CHARS`
-- `PYTHON_CLAW_DIAGNOSTICS_PAGE_DEFAULT_LIMIT`
-- `PYTHON_CLAW_DIAGNOSTICS_PAGE_MAX_LIMIT`
-- `PYTHON_CLAW_EXECUTION_RUN_STALE_AFTER_SECONDS`
-- `PYTHON_CLAW_OUTBOX_JOB_STALE_AFTER_SECONDS`
-- `PYTHON_CLAW_OUTBOUND_DELIVERY_STALE_AFTER_SECONDS`
-- `PYTHON_CLAW_NODE_EXECUTION_STALE_AFTER_SECONDS`
-
-Docker-related variables include:
-
-- `PYTHON_CLAW_POSTGRES_DB`
-- `PYTHON_CLAW_POSTGRES_USER`
-- `PYTHON_CLAW_POSTGRES_PASSWORD`
-- `PYTHON_CLAW_POSTGRES_PORT`
-- `PYTHON_CLAW_REDIS_PORT`
-
-The default local database URL is:
-
-```text
-postgresql+psycopg://openassistant:openassistant@localhost:5432/openassistant
-```
-
-For local diagnostics and readiness testing, you will usually also want to set explicit tokens in `.env`, for example:
-
-```text
+PYTHON_CLAW_ADMIN_READS_REQUIRE_AUTH=true
+PYTHON_CLAW_DIAGNOSTICS_REQUIRE_AUTH=true
+PYTHON_CLAW_HEALTH_READY_REQUIRES_AUTH=true
+PYTHON_CLAW_OPERATOR_AUTH_BEARER_TOKEN=change-me
+PYTHON_CLAW_INTERNAL_SERVICE_AUTH_TOKEN=change-me-internal
 PYTHON_CLAW_DIAGNOSTICS_ADMIN_BEARER_TOKEN=change-me
 PYTHON_CLAW_DIAGNOSTICS_INTERNAL_SERVICE_TOKEN=change-me-internal
-PYTHON_CLAW_HEALTH_READY_REQUIRES_AUTH=true
+
+PYTHON_CLAW_CHANNEL_ACCOUNTS=[{"channel_account_id":"acct","channel_kind":"slack","mode":"fake"},{"channel_account_id":"acct","channel_kind":"telegram","mode":"fake"},{"channel_account_id":"acct","channel_kind":"webchat","mode":"fake"}]
 ```
 
-For channel transport configuration, Spec 012 adds one typed channel-account registry:
+### Provider-backed runtime
 
-```text
-PYTHON_CLAW_CHANNEL_ACCOUNTS=[
-  {"channel_account_id":"acct","channel_kind":"slack","mode":"fake"},
-  {"channel_account_id":"acct","channel_kind":"telegram","mode":"fake"},
-  {"channel_account_id":"acct","channel_kind":"webchat","mode":"fake"}
-]
+To switch from the deterministic local runtime to an LLM-backed runtime:
+
+```dotenv
+PYTHON_CLAW_RUNTIME_MODE=provider
+PYTHON_CLAW_LLM_PROVIDER=openai
+PYTHON_CLAW_LLM_API_KEY=YOUR_KEY
+PYTHON_CLAW_LLM_MODEL=gpt-4o-mini
+PYTHON_CLAW_LLM_TIMEOUT_SECONDS=30
+PYTHON_CLAW_LLM_MAX_RETRIES=1
+PYTHON_CLAW_LLM_TEMPERATURE=0.2
+PYTHON_CLAW_LLM_MAX_OUTPUT_TOKENS=700
+PYTHON_CLAW_LLM_TOOL_CALL_MODE=auto
+PYTHON_CLAW_LLM_MAX_TOOL_REQUESTS_PER_TURN=4
+PYTHON_CLAW_LLM_DISABLE_TOOLS=false
 ```
 
-This registry is now the main runtime source for:
+If `provider` mode is selected without the required credentials, startup is expected to fail closed.
 
-- selecting fake versus real channel mode
-- outbound channel credentials
-- inbound verification settings
-- bounded per-account transport settings
+### Agent, policy, and tool profile binding
 
-In practical terms:
+These settings became important once agent profiles and delegation landed:
 
-- use `mode=fake` for local development and CI
-- switch an entry to `mode=real` only when you have the required provider credentials for that channel kind
-- startup fails closed if a real account is missing required settings such as Slack signing secrets, Telegram webhook secrets, or webchat client tokens
-
-For local scaffold mode, leave `PYTHON_CLAW_RUNTIME_MODE=rule_based`.
-
-For local Spec 014 agent-profile behavior, the most important optional settings are:
-
-```text
+```dotenv
 PYTHON_CLAW_DEFAULT_AGENT_ID=default-agent
 PYTHON_CLAW_POLICY_PROFILES=[{"key":"default","remote_execution_enabled":false,"denied_capability_names":[],"delegation_enabled":false}]
 PYTHON_CLAW_TOOL_PROFILES=[{"key":"default","allowed_capability_names":["echo_text","remote_exec","send_message"]}]
 PYTHON_CLAW_HISTORICAL_AGENT_PROFILE_OVERRIDES=[]
 ```
 
-These control whether the system:
+What they control:
 
-- bootstraps a new canonical session with a specific default agent id
-- resolves per-agent policy flags from a stable settings-backed profile registry
-- resolves per-agent tool allowlists from a stable settings-backed profile registry
-- maps historical `agent_id` values to explicit profile bindings during bootstrap or migration-oriented seeding
+- which agent owns newly created sessions
+- whether remote execution is allowed
+- whether delegation is allowed
+- which tools are exposed to a given agent
+- how historical agent IDs are mapped onto explicit runtime profiles
 
-For local Spec 013 streaming demos, the most important optional settings are:
+### Channel accounts
 
-```text
-PYTHON_CLAW_RUNTIME_STREAMING_ENABLED=true
-PYTHON_CLAW_RUNTIME_STREAMING_CHUNK_CHARS=24
-PYTHON_CLAW_WEBCHAT_SSE_ENABLED=true
-PYTHON_CLAW_WEBCHAT_SSE_REPLAY_LIMIT=100
+`PYTHON_CLAW_CHANNEL_ACCOUNTS` is a JSON array of typed account definitions:
+
+```dotenv
+PYTHON_CLAW_CHANNEL_ACCOUNTS=[
+  {"channel_account_id":"webchat-demo","channel_kind":"webchat","mode":"fake"},
+  {"channel_account_id":"slack-demo","channel_kind":"slack","mode":"fake"},
+  {"channel_account_id":"telegram-demo","channel_kind":"telegram","mode":"fake"}
+]
 ```
 
-These control whether the system:
+Rules:
 
-- enables the delivery-side streaming path for eligible assistant text responses
-- breaks streamed text into bounded partial chunks
-- exposes the authenticated webchat SSE replay endpoint
-- keeps replay reads bounded instead of unbounded
+- `mode=fake` is intended for local development and CI.
+- `mode=real` requires channel-specific credentials.
+- real Slack accounts require `outbound_token` and `signing_secret`
+- real Telegram accounts require `outbound_token` and `webhook_secret`
+- real webchat accounts require `webchat_client_token`
 
-To enable provider-backed turns, set at minimum:
+### Remote execution and node-runner
 
-```text
-PYTHON_CLAW_RUNTIME_MODE=provider
-PYTHON_CLAW_LLM_PROVIDER=openai
-PYTHON_CLAW_LLM_API_KEY=your-key
-PYTHON_CLAW_LLM_MODEL=gpt-4o-mini
+For local in-process behavior the defaults are enough. For the separate `node-runner` service used by Docker examples and production-style deployment, set:
+
+```dotenv
+PYTHON_CLAW_REMOTE_EXECUTION_ENABLED=true
+PYTHON_CLAW_NODE_RUNNER_MODE=http
+PYTHON_CLAW_NODE_RUNNER_BASE_URL=http://node-runner:8010
+PYTHON_CLAW_NODE_RUNNER_SIGNING_KEY_ID=local-demo-key
+PYTHON_CLAW_NODE_RUNNER_SIGNING_SECRET=local-demo-signing-secret
+PYTHON_CLAW_NODE_RUNNER_INTERNAL_BEARER_TOKEN=local-demo-node-token
+PYTHON_CLAW_NODE_RUNNER_REQUEST_TTL_SECONDS=30
+PYTHON_CLAW_NODE_RUNNER_TIMEOUT_CEILING_SECONDS=30
+PYTHON_CLAW_NODE_RUNNER_ALLOWED_EXECUTABLES=/usr/bin/curl,/bin/echo,/usr/bin/env,/usr/local/bin/python3
 ```
 
-If provider mode is selected without the required credentials, startup fails closed rather than silently falling back to the rule-based adapter.
+Key point: local development can use `in_process`, but the Compose-based deployment example uses `http` mode with a dedicated node-runner service.
 
-To make the Spec 011 context features easy to understand locally, the most important optional settings are:
+### Retrieval, memory, and attachment understanding
 
-```text
+```dotenv
 PYTHON_CLAW_RETRIEVAL_ENABLED=true
 PYTHON_CLAW_RETRIEVAL_STRATEGY_ID=lexical-v1
 PYTHON_CLAW_RETRIEVAL_TOTAL_ITEMS=4
@@ -620,84 +310,110 @@ PYTHON_CLAW_ATTACHMENT_EXTRACTION_STRATEGY_ID=attachment-v1
 PYTHON_CLAW_ATTACHMENT_SAME_RUN_FAST_PATH_ENABLED=true
 ```
 
-These control whether the system:
+### Streaming and webchat
 
-- builds durable memory rows after turns
-- creates retrieval rows from supported source artifacts
-- extracts usable attachment-derived content
-- makes bounded same-run attachment understanding available for supported file types
+```dotenv
+PYTHON_CLAW_RUNTIME_STREAMING_ENABLED=true
+PYTHON_CLAW_RUNTIME_STREAMING_CHUNK_CHARS=24
+PYTHON_CLAW_WEBCHAT_SSE_ENABLED=true
+PYTHON_CLAW_WEBCHAT_SSE_REPLAY_LIMIT=100
+```
 
-### Step 3: Start local infrastructure
+### Collaboration, auth, and production hardening
 
-This repository includes a `docker-compose.yml` that starts:
+The later specs added important fail-closed settings:
 
-- PostgreSQL 17
-- Redis 7
+```dotenv
+PYTHON_CLAW_ADMIN_READS_REQUIRE_AUTH=true
+PYTHON_CLAW_DIAGNOSTICS_REQUIRE_AUTH=true
+PYTHON_CLAW_HEALTH_READY_REQUIRES_AUTH=true
+PYTHON_CLAW_AUTH_FAIL_CLOSED_IN_PRODUCTION=true
+PYTHON_CLAW_OPERATOR_AUTH_BEARER_TOKEN=operator-token
+PYTHON_CLAW_INTERNAL_SERVICE_AUTH_TOKEN=internal-token
+PYTHON_CLAW_OPERATOR_PRINCIPAL_HEADER_NAME=X-Operator-Id
+PYTHON_CLAW_INTERNAL_SERVICE_PRINCIPAL_HEADER_NAME=X-Internal-Service-Principal
 
-Start them with:
+PYTHON_CLAW_RATE_LIMITS_ENABLED=true
+PYTHON_CLAW_INBOUND_REQUESTS_PER_MINUTE_PER_CHANNEL_ACCOUNT=20
+PYTHON_CLAW_ADMIN_REQUESTS_PER_MINUTE_PER_OPERATOR=30
+PYTHON_CLAW_APPROVAL_ACTION_REQUESTS_PER_MINUTE_PER_SESSION=20
+PYTHON_CLAW_PROVIDER_TOKENS_PER_HOUR_PER_AGENT=200000
+PYTHON_CLAW_PROVIDER_REQUESTS_PER_MINUTE_PER_MODEL=120
+```
+
+## Local Development Setup
+
+### Prerequisites
+
+- Python `3.11+`
+- `uv`
+- Docker / Docker Compose
+
+### 1. Install dependencies
+
+```bash
+uv sync --group dev
+```
+
+### 2. Create `.env`
+
+If the repository includes an example env file, start from it. Otherwise create `.env` manually using the minimal local settings above.
+
+### 3. Start infrastructure
+
+[`docker-compose.yml`](/Users/scottcornell/src/my-projects/python-claw/docker-compose.yml) starts only PostgreSQL and Redis:
 
 ```bash
 docker compose --env-file .env up -d
 ```
 
-Useful checks:
+It defines:
 
-```bash
-docker compose ps
-docker compose logs postgres
-docker compose logs redis
-```
+- `postgres` on `${PYTHON_CLAW_POSTGRES_PORT:-5432}`
+- `redis` on `${PYTHON_CLAW_REDIS_PORT:-6379}`
 
-### Step 4: Run database migrations
-
-Apply the schema with:
+### 4. Run migrations
 
 ```bash
 uv run alembic upgrade head
 ```
 
-This creates the currently migrated database tables needed by the gateway, queueing, governance, media normalization, outbound delivery auditing, node-runner flows, and observability metadata used by diagnostics.
-
-Spec 014 adds the durable profile and ownership records needed for future specialist assistants without adding delegation orchestration yet:
-
-- `agent_profiles`
-- `model_profiles`
-- durable owner and session-kind fields on `sessions`
-- persisted execution profile keys on `execution_runs`
-
-Spec 012 also adds additive transport-facing persistence for:
-
-- durable session transport addresses
-- bounded outbound provider metadata
-- richer outbound attempt metadata for retryability and correlation
-
-Spec 013 extends that delivery model with additive streaming persistence for:
-
-- streaming-aware delivery completion metadata
-- streaming-aware attempt lifecycle fields
-- append-only `outbound_delivery_stream_events` rows used for replay, diagnostics, and recovery
-
-Spec 011 added the additive context tables and records that make retrieval, memory, and attachment understanding inspectable and rebuildable:
-
-- `session_memories`
-- `attachment_extractions`
-- `retrieval_records`
-- enriched `outbox_jobs` payloads for source-specific after-turn work
-- richer `context_manifests` explaining what context was assembled
-
-### Step 5: Start the gateway API
+### 5. Start the gateway
 
 ```bash
 uv run uvicorn apps.gateway.main:app --reload
 ```
 
-The gateway will be available at:
+Gateway URL:
 
 ```text
 http://127.0.0.1:8000
 ```
 
-Once the gateway is running, the most useful operator checks are:
+### 6. Start the node-runner if you are testing remote execution
+
+```bash
+uv run uvicorn apps.node_runner.main:app --reload --port 8010
+```
+
+### 7. Process queued runs
+
+Single-pass worker execution:
+
+```bash
+uv run python - <<'PY'
+from apps.worker.jobs import run_once
+print(run_once())
+PY
+```
+
+Continuous worker loop:
+
+```bash
+uv run python scripts/worker_loop.py
+```
+
+### 8. Smoke-check the service
 
 ```bash
 curl http://127.0.0.1:8000/health/live
@@ -705,104 +421,103 @@ curl http://127.0.0.1:8000/health/ready -H 'Authorization: Bearer change-me'
 curl http://127.0.0.1:8000/diagnostics/runs -H 'Authorization: Bearer change-me'
 ```
 
-### Step 6: Start the node runner when working on remote execution
+## Docker Deployment Setup
 
-If you are testing the remote execution path from Spec 006, start the node runner separately:
+There are two Compose files and they are meant to be used together.
 
-```bash
-uv run uvicorn apps.node_runner.main:app --reload --port 8010
-```
+### `docker-compose.yml`
 
-### Step 7: Process queued runs
+[`docker-compose.yml`](/Users/scottcornell/src/my-projects/python-claw/docker-compose.yml) defines infrastructure only:
 
-Inbound requests create queued runs. To execute one worker pass locally, use:
+- `postgres`
+- `redis`
 
-```bash
-uv run python - <<'PY'
-from apps.worker.jobs import run_once
+### `docker-compose.app.yml`
 
-print(run_once())
-PY
-```
+[`docker-compose.app.yml`](/Users/scottcornell/src/my-projects/python-claw/docker-compose.app.yml) defines application services:
 
-For local development, the usual flow is:
+- `gateway` on port `8000`
+- `worker`
+- `node-runner` on port `8010`
 
-1. Send an inbound message to the gateway
-2. Receive a `run_id` and `trace_id`
-3. Run the worker pass
-4. Inspect the session messages, attachment state, run state, and diagnostics routes
-5. If relevant, inspect outbound delivery or node execution records in the database
+All three app services build from the repository `Dockerfile`, load `.env`, and override `PYTHON_CLAW_DATABASE_URL` to point at the Compose `postgres` service.
 
-### Step 8: Run tests
-
-Run the full suite with:
+### Bring up the full stack
 
 ```bash
-uv run pytest
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.app.yml up -d --build
 ```
 
-Useful targeted commands:
+Run migrations inside the app image:
 
 ```bash
-uv run pytest tests/test_api.py
-uv run pytest tests/test_runtime.py
-uv run pytest tests/test_integration.py
-uv run pytest tests/test_provider_runtime.py
-uv run pytest tests/test_typed_tool_schemas.py
-uv run pytest tests/test_async_queueing_coverage.py
-uv run pytest tests/test_node_sandbox.py
-uv run pytest tests/test_channels_media.py
-uv run pytest tests/test_spec_012.py
-uv run pytest tests/test_repository.py
-uv run pytest tests/test_api.py -k webchat
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.app.yml \
+  run --rm gateway uv run alembic upgrade head
 ```
 
-Note: the tests primarily use temporary SQLite fixtures and provider fakes, so they do not require local PostgreSQL, Redis, or live provider credentials to pass.
+Inspect containers:
 
-### Setup checklist
-
-```text
-[ ] uv sync --group dev
-[ ] docker compose --env-file .env up -d
-[ ] uv run alembic upgrade head
-[ ] uv run uvicorn apps.gateway.main:app --reload
-[ ] optional: uv run uvicorn apps.node_runner.main:app --reload --port 8010
-[ ] send a test inbound message
-[ ] run one worker pass
-[ ] inspect session and run state
+```bash
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.app.yml ps
+docker logs -f python-claw-worker
 ```
 
-## 4. Connections
+This is the correct deployment flow to reference when running the app stack in Docker.
 
-### How to connect to the system today
+## Running a Test Solution
 
-Today, the main way to interact with the system is through the gateway HTTP API.
+For the most complete example, use [`example/examplev5.md`](/Users/scottcornell/src/my-projects/python-claw/example/examplev5.md). That document demonstrates a full local Docker-based scenario with:
 
-The primary canonical write entrypoint is:
+- webchat UI
+- provider-backed agents
+- delegation
+- approval-gated remote execution
+- node-runner execution
+- callback continuation
+- generated artifacts
+- email notification
+
+The short version of that flow is:
+
+1. configure `.env` for `provider` mode and `NODE_RUNNER_MODE=http`
+2. start MailDev and the local webhook receiver on the host
+3. start the combined Compose stack
+4. run migrations in the gateway container
+5. open the browser webchat UI
+6. send a deployment-style request
+7. approve the proposed `remote_exec`
+8. send the callback
+9. request the generated report and follow-up notification
+
+Reference commands from the example:
+
+```bash
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.app.yml up -d --build
+docker compose --env-file .env -f docker-compose.yml -f docker-compose.app.yml run --rm gateway uv run alembic upgrade head
+docker logs -f python-claw-worker
+```
+
+If you want the exact end-to-end walkthrough, including the sample `.env`, chat prompts, and callback steps, use [`example/examplev5.md`](/Users/scottcornell/src/my-projects/python-claw/example/examplev5.md) directly.
+
+## Main HTTP Surfaces
+
+### Core ingress
 
 - `POST /inbound/message`
 
-For understanding Spec 011, it is useful to remember that `POST /inbound/message` still only accepts and persists canonical inbound state. It does not synchronously generate summaries, perform retrieval indexing, or run general attachment extraction inline. Those remain worker-owned and after-turn responsibilities.
-
-Spec 012 also adds provider-facing write entrypoints:
+### Provider ingress
 
 - `POST /providers/slack/events`
 - `POST /providers/telegram/webhook/{channel_account_id}`
 - `POST /providers/webchat/accounts/{channel_account_id}/messages`
 
-Spec 013 adds one client-facing webchat real-time read surface for durable streamed delivery replay:
+### Webchat reads
 
 - `GET /providers/webchat/accounts/{channel_account_id}/stream`
-
-Spec 012 and Spec 013 together leave webchat with one durable completed-message replay surface:
-
 - `GET /providers/webchat/accounts/{channel_account_id}/poll`
 
-The main read/inspection entrypoints are:
+### Session, run, and operator reads
 
-- `GET /health`
-- `GET /health/live`
-- `GET /health/ready`
 - `GET /sessions/{session_id}`
 - `GET /sessions/{session_id}/messages`
 - `GET /sessions/{session_id}/governance/pending`
@@ -813,6 +528,12 @@ The main read/inspection entrypoints are:
 - `GET /agents/{agent_id}/sessions`
 - `GET /model-profiles`
 - `GET /model-profiles/{profile_key}`
+
+### Diagnostics and health
+
+- `GET /health`
+- `GET /health/live`
+- `GET /health/ready`
 - `GET /diagnostics/runs`
 - `GET /diagnostics/runs/{run_id}`
 - `GET /diagnostics/sessions/{session_id}/continuity`
@@ -821,418 +542,45 @@ The main read/inspection entrypoints are:
 - `GET /diagnostics/deliveries`
 - `GET /diagnostics/attachments`
 
-The internal execution boundary for remote execution is:
+### Internal node-runner
 
 - `POST /internal/node/exec`
 - `GET /internal/node/exec/{request_id}`
 
-These node-runner endpoints are internal system endpoints, not general external client APIs.
+## Running Tests
 
-The practical distinction between these surfaces is:
-
-- `/inbound/message` remains the canonical backend-owned message-ingress contract and test seam
-- provider-facing channel routes verify and translate transport payloads, then call the same session service path in-process
-- webchat SSE reads already-persisted stream-event state and does not depend on worker-local memory
-- webchat polling reads already-persisted delivery state and remains the completed-message replay and fallback surface
-- session and run routes are narrower product-facing read APIs
-- agent and model-profile routes are operator-facing read APIs for ownership and runtime-profile inspection
-- health routes are service-supervision endpoints
-- diagnostics routes are operator-facing inspection endpoints with explicit authorization
-
-### Example: connect through the gateway
-
-Health check:
+Run the full suite:
 
 ```bash
-curl http://127.0.0.1:8000/health
+uv run pytest
 ```
 
-Send a direct-message style inbound event:
+Useful targeted runs:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/inbound/message \
-  -H "Content-Type: application/json" \
-  -d '{
-    "channel_kind": "slack",
-    "channel_account_id": "acct-1",
-    "external_message_id": "msg-1",
-    "sender_id": "sender-1",
-    "content": "hello",
-    "peer_id": "peer-1"
-  }'
+uv run pytest tests/test_api.py
+uv run pytest tests/test_runtime.py
+uv run pytest tests/test_integration.py
+uv run pytest tests/test_provider_runtime.py
+uv run pytest tests/test_typed_tool_schemas.py
+uv run pytest tests/test_spec_011.py
+uv run pytest tests/test_spec_014.py
+uv run pytest tests/test_spec_015.py
+uv run pytest tests/test_spec_016.py
+uv run pytest tests/test_spec_017.py
 ```
 
-Send an inbound event with a canonical attachment:
+The tests primarily rely on local fixtures, SQLite-style temporary state, and fakes, so they do not require a live provider account.
 
-```bash
-curl -X POST http://127.0.0.1:8000/inbound/message \
-  -H "Content-Type: application/json" \
-  -d '{
-    "channel_kind": "telegram",
-    "channel_account_id": "acct-1",
-    "external_message_id": "msg-attachment-1",
-    "sender_id": "sender-1",
-    "content": "please review this file",
-    "peer_id": "peer-1",
-    "attachments": [
-      {
-        "source_url": "file:///absolute/path/to/example.pdf",
-        "mime_type": "application/pdf",
-        "filename": "example.pdf",
-        "provider_metadata": {
-          "provider": "manual-test"
-        }
-      }
-    ]
-  }'
-```
+## Spec Reference
 
-Important behavior note:
+The repository specs are in [`specs`](/Users/scottcornell/src/my-projects/python-claw/specs). The current code structure maps broadly like this:
 
-- the gateway accepts and persists the attachment reference immediately
-- the worker performs normalization after the request has already returned `202 Accepted`
-- only normalized `stored` attachments are exposed back into turn context or outbound media sends
+- `001-005`: ingress, sessions, runtime, governance, queueing
+- `006-008`: node-runner, channels/media, observability
+- `009-011`: provider runtime, typed tools, retrieval/memory/attachments
+- `012-013`: production channel integration and streaming
+- `014-015`: agent profiles and delegation
+- `016-017`: human handoff, auth hardening, quotas, retries, recovery
 
-Expected response shape:
-
-```json
-{
-  "session_id": "session-uuid",
-  "message_id": 1,
-  "run_id": "run-uuid",
-  "trace_id": "run-trace-id",
-  "status": "queued",
-  "dedupe_status": "accepted"
-}
-```
-
-Inspect the created session:
-
-```bash
-curl http://127.0.0.1:8000/sessions/<session_id>
-```
-
-Read transcript history:
-
-```bash
-curl "http://127.0.0.1:8000/sessions/<session_id>/messages?limit=50"
-```
-
-Read run diagnostics:
-
-```bash
-curl http://127.0.0.1:8000/runs/<run_id>
-curl http://127.0.0.1:8000/sessions/<session_id>/runs
-```
-
-Read operator diagnostics:
-
-```bash
-curl http://127.0.0.1:8000/health/live
-curl http://127.0.0.1:8000/health/ready -H "Authorization: Bearer change-me"
-curl http://127.0.0.1:8000/diagnostics/runs -H "Authorization: Bearer change-me"
-curl http://127.0.0.1:8000/diagnostics/runs/<run_id> -H "Authorization: Bearer change-me"
-```
-
-### Example: use production-style `webchat`
-
-Specs 012 and 013 change `webchat` from a local-only channel kind into a production-style transport contract with:
-
-- authenticated HTTP inbound submission
-- durable whole-message outbound polling
-- durable SSE replay for streamed assistant text
-- the same gateway, session, run, and dispatcher ownership model as the other channels
-
-If you want a full guided walkthrough instead of ad hoc commands, use [Demo013.md](/Users/scottcornell/src/my-projects/python-claw/docs/demo/Demo013.md).
-
-Send a basic `webchat` message:
-
-```bash
-curl -X POST http://127.0.0.1:8000/providers/webchat/accounts/acct/messages \
-  -H "Content-Type: application/json" \
-  -H "X-Webchat-Client-Token: fake-webchat-token" \
-  -d '{
-    "actor_id": "browser-user-1",
-    "content": "hello from webchat",
-    "peer_id": "browser-user-1",
-    "stream_id": "stream-browser-user-1",
-    "message_id": "web-msg-1"
-  }'
-```
-
-Then poll for completed outbound replies:
-
-```bash
-curl "http://127.0.0.1:8000/providers/webchat/accounts/acct/poll?stream_id=stream-browser-user-1" \
-  -H "X-Webchat-Client-Token: fake-webchat-token"
-```
-
-If streaming is enabled and the response is eligible, you can also replay streamed events:
-
-```bash
-curl -N "http://127.0.0.1:8000/providers/webchat/accounts/acct/stream?stream_id=stream-browser-user-1" \
-  -H "X-Webchat-Client-Token: fake-webchat-token"
-```
-
-Expected local flow:
-
-1. The gateway authenticates the webchat client request.
-2. It translates the message into the canonical inbound contract and queues a run.
-3. The worker later claims the queued run and executes the assistant turn.
-4. For eligible plain-text replies, the dispatcher records one logical streamed delivery, append-only attempts, and append-only stream events before fan-out.
-5. The worker persists the final assistant transcript row after authoritative completion.
-6. The SSE route replays persisted stream events, and the polling route still returns the completed delivery row.
-
-Important ownership note:
-
-- partial streamed output is operational delivery state
-- the canonical conversation transcript still lives in `messages`
-- if a stream never reaches durable completion, the system does not fabricate a completed transcript message from partial output
-
-### Webchat transport flow
-
-```mermaid
-sequenceDiagram
-    participant Browser as Browser or Web Client
-    participant Gateway
-    participant DB
-    participant Worker
-    participant Runtime
-    participant Dispatcher
-    participant Webchat as Webchat Adapter
-
-    Browser->>Gateway: POST /providers/webchat/accounts/{id}/messages
-    Gateway->>DB: persist inbound message and queued run
-    Gateway-->>Browser: 202 Accepted + session_id + run_id
-    Worker->>DB: claim queued run
-    Worker->>Runtime: execute assistant turn
-    Runtime->>DB: persist outbound intent and turn artifacts
-    Worker->>Dispatcher: dispatch answer-phase output
-    Dispatcher->>DB: persist delivery, attempt, and stream-event rows
-    Dispatcher->>Webchat: fan out streamed text or whole-message/media instruction
-    Worker->>DB: persist final assistant message after completion
-    Browser->>Gateway: GET /providers/webchat/accounts/{id}/stream
-    Gateway-->>Browser: replayable SSE event rows
-    Browser->>Gateway: GET /providers/webchat/accounts/{id}/poll
-    Gateway-->>Browser: completed whole-message delivery rows
-```
-
-### Example: use the Slack provider ingress route
-
-Slack traffic now has a provider-facing ingress route that verifies the request before transcript writes.
-
-Example flow:
-
-1. send a signed Slack webhook payload to `POST /providers/slack/events`
-2. the gateway verifies the Slack signature
-3. the payload is translated into canonical inbound fields
-4. the existing session and dedupe flow runs
-5. the worker later dispatches outbound delivery through the Slack adapter
-
-The important architectural point is that Slack-specific routes are translation-only boundaries. They do not bypass the existing gateway-owned session service.
-
-### Example: use the Telegram provider ingress route
-
-Telegram traffic now has a provider-facing webhook route:
-
-- `POST /providers/telegram/webhook/{channel_account_id}`
-
-The local fake-mode version expects:
-
-- header `X-Telegram-Bot-Api-Secret-Token: fake-telegram-secret`
-
-This route:
-
-1. verifies the Telegram webhook secret
-2. translates supported Telegram message updates into canonical inbound fields
-3. ignores unsupported update types such as edited messages or callback queries in this phase
-4. passes accepted traffic into the same gateway-owned session flow as every other channel
-
-### Example interaction patterns
-
-Safe local tool example:
-
-```bash
-curl -X POST http://127.0.0.1:8000/inbound/message \
-  -H "Content-Type: application/json" \
-  -d '{
-    "channel_kind": "slack",
-    "channel_account_id": "acct-1",
-    "external_message_id": "msg-echo-1",
-    "sender_id": "sender-1",
-    "content": "echo hello runtime",
-    "peer_id": "peer-1"
-  }'
-```
-
-Governed action example:
-
-```bash
-curl -X POST http://127.0.0.1:8000/inbound/message \
-  -H "Content-Type: application/json" \
-  -d '{
-    "channel_kind": "slack",
-    "channel_account_id": "acct-1",
-    "external_message_id": "msg-send-1",
-    "sender_id": "sender-1",
-    "content": "send hello channel",
-    "peer_id": "peer-1"
-  }'
-```
-
-In the governed case, the system may require approval before the action can be used or completed.
-
-For provider-backed tool use, argument handling is now stricter than earlier phases:
-
-- `echo_text` and `send_message` use fixed-shape typed schemas and reject unknown fields
-- `remote_exec` uses a flat open-key schema that only allows scalar JSON values
-- provider adapters may reject obviously malformed tool envelopes, but backend validation remains authoritative before execution, proposal creation, or approval matching
-- governed approval identity now includes the tool schema name and schema version alongside canonical validated arguments
-
-Large outbound responses are now sent through the shared dispatcher after the assistant turn completes. If the text exceeds a channel's configured limit, it is split into deterministic chunks before send. The current phase supports bounded reply and media directives internally, but those directives are parsed and stripped by shared runtime code rather than being passed through as visible adapter commands.
-
-If you want to test this specifically with `webchat`, send the same kinds of inbound messages shown above, but use `"channel_kind": "webchat"` and then inspect the resulting transcript, run status, and outbound delivery rows after the worker executes.
-
-### How sessions are determined
-
-The platform uses deterministic routing rules:
-
-- direct conversations map to scope `direct` with scope name `main`
-- group conversations map to scope `group` with scope name equal to `group_id`
-- a canonical session key is derived from channel identity plus peer/group scope
-
-This means repeated messages for the same routing identity land in the same durable session.
-
-### How idempotency works
-
-Inbound duplicates are tracked using:
-
-- `channel_kind`
-- `channel_account_id`
-- `external_message_id`
-
-If the same external message is delivered more than once, the system can:
-
-- return the original accepted result when already completed
-- reject in-progress duplicates with `409`
-- recover stale claims after the configured timeout
-
-This behavior is important for webhook-style or retry-prone integrations.
-
-### How to interact as a non-developer
-
-If you are not writing code, the simplest way to understand system behavior is:
-
-1. Send a test message to `POST /inbound/message`
-2. Capture the returned `session_id` and `run_id`
-3. Ask a developer or operator to run the worker pass if needed
-4. Use the read endpoints to inspect the session history and run outcome
-
-### How developers should interact
-
-Developers will usually interact at three levels:
-
-- API level: send inbound requests and inspect sessions/runs
-- code level: modify routing, runtime, policies, tools, media processing, or channel dispatch components
-- persistence level: inspect durable state in PostgreSQL when debugging, including attachment and outbound delivery records
-
-Recommended starting files for developers:
-
-- `apps/gateway/main.py`
-- `apps/gateway/api/inbound.py`
-- `apps/gateway/api/admin.py`
-- `src/sessions/service.py`
-- `src/jobs/service.py`
-- `src/graphs/assistant_graph.py`
-- `src/graphs/nodes.py`
-- `src/media/processor.py`
-- `src/channels/dispatch.py`
-- `src/channels/adapters/`
-- `src/policies/service.py`
-- `src/tools/registry.py`
-- `apps/node_runner/main.py`
-
-If you are specifically working on adapter behavior, start with:
-
-- `src/channels/adapters/webchat.py`
-- `src/channels/adapters/slack.py`
-- `src/channels/adapters/telegram.py`
-- `src/channels/adapters/base.py`
-
-## Additional Useful Information
-
-### Current limitations
-
-The current repository is intentionally narrow. A few important limitations to keep in mind:
-
-- the default assistant behavior remains `rule_based` unless configuration explicitly selects provider mode
-- the first provider-backed path is intentionally bounded: no provider-native planning stream exposure, no multi-provider orchestration yet
-- Redis is provisioned but not yet central to the request path
-- outbound delivery is channel-aware and audited, but current adapters are still thin local implementations rather than production provider clients
-- media handling is limited to normalization, classification, safe storage references, and bounded outbound media dispatch
-- streaming in this phase is bounded to delivery-side webchat text replay rather than a full multi-channel token-streaming platform
-- Slack and Telegram still use the whole-message path in this phase
-- remote execution policy and auditing are implemented more fully than sandbox enforcement
-
-### Future specs and planned growth
-
-The roadmap already points toward several next-stage capabilities.
-
-#### LLM integration
-
-The project now has a provider-backed model path behind the existing adapter contract in `src/providers/models.py`.
-
-Today that LLM layer includes:
-
-- explicit runtime selection between `rule_based` and provider-backed execution
-- backend-owned typed prompt assembly in `src/graphs/prompts.py`
-- backend-owned typed tool schemas shared across prompt guidance, provider tool export, runtime validation, and approval identity
-- bounded provider execution metadata persisted through context manifests and observability surfaces
-- provider-suggested tool requests translated back into backend-owned contracts
-- approval-safe handling where governed model-suggested tools create proposals instead of executing without exact approval
-- deterministic bypass for administrative approval or revocation commands instead of routing those intents through model interpretation
-
-Future work is still expected in areas such as:
-
-- richer retrieval and memory-aware prompt assembly
-- richer multi-channel streaming behavior and transport-specific finalize or receipt semantics
-- additional provider support and auth-profile management
-- attachment-content understanding and multimodal reasoning
-
-#### Observability and operational hardening
-
-Spec 008 is aimed at operator needs, including:
-
-- presence/status surfaces
-- structured logging and tracing
-- auth profile failover
-- diagnostics for stuck work and failed runs
-
-#### Sub-agents
-
-Sub-agents are not a current committed feature, but the architecture is compatible with them. The recommended future approach is:
-
-- keep delegation gateway-managed
-- create child sessions for specialist agents
-- give each sub-agent bounded context and controlled tools
-- persist child runs and results as first-class durable records
-
-In practical terms, a likely future spec would add:
-
-- parent/child session links
-- delegation records and statuses
-- specialist-agent graphs
-- delegation policy, depth, timeout, and retry rules
-- read APIs for child-agent inspection
-
-### Document maintenance guidance
-
-This document should be updated whenever:
-
-- a new spec is completed
-- a new API surface is added
-- the setup flow changes
-- LLM runtime behavior, settings, or provider support changes materially
-- sub-agent orchestration becomes part of the committed scope
-
-Until then, treat this guide as the human-readable companion to the evolving specs and codebase.
+When in doubt, the code is authoritative, the migrations describe durable shape, and the specs explain why the system is structured that way.
