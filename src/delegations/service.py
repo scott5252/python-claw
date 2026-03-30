@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -288,6 +288,92 @@ class DelegationService:
             payload={"parent_result_run_id": run.id},
         )
         return payload
+
+    def handle_child_run_paused_for_approval(self, db: Session, *, child_run_id: str) -> None:
+        """Called when a child run completes but is waiting for human approval.
+
+        Marks the delegation as awaiting_approval and queues a lightweight notification
+        run on the parent session so the user sees the pending approval prompt.
+        Unlike handle_child_run_completed, this does NOT mark the delegation as
+        completed or create a delegation_result run — the lifecycle continues after
+        the user approves and the continuation run finishes.
+        """
+        delegation = self.repository.get_by_child_run(db, child_run_id=child_run_id)
+        if delegation is None or delegation.status == DelegationStatus.CANCELLED.value:
+            return
+
+        pending_approvals = [
+            self._json_safe_value(item)
+            for item in self.session_repository.list_pending_approvals(db, session_id=delegation.child_session_id)
+        ]
+
+        parent_session = self.session_repository.get_session(db, delegation.parent_session_id)
+        if parent_session is None:
+            raise RuntimeError("parent session missing")
+        parent_binding = self.agent_profile_service.resolve_binding_for_session(db, session=parent_session)
+
+        content = json.dumps(
+            {
+                "kind": "delegation_result",
+                "delegation_id": delegation.id,
+                "child_agent_id": delegation.child_agent_id,
+                "status": DelegationStatus.AWAITING_APPROVAL.value,
+                "summary_text": "",
+                "pending_approvals": pending_approvals,
+            },
+            sort_keys=True,
+        )
+        notification_message = self.session_repository.append_message(
+            db,
+            parent_session,
+            role="system",
+            content=content,
+            external_message_id=None,
+            sender_id=f"system:delegation_approval:{delegation.child_agent_id}",
+            last_activity_at=datetime.now(timezone.utc),
+        )
+
+        run_status = (
+            "blocked"
+            if self.collaboration_service is not None
+            and self.collaboration_service.should_block_new_automation(session=parent_session)
+            else "queued"
+        )
+        blocked_reason = (
+            None
+            if self.collaboration_service is None
+            else self.collaboration_service.blocked_reason_for_session(session=parent_session)
+        )
+        notification_run = self.jobs_repository.create_or_get_execution_run(
+            db,
+            session_id=delegation.parent_session_id,
+            message_id=notification_message.id,
+            agent_id=parent_binding.agent_id,
+            model_profile_key=parent_binding.model_profile_key,
+            policy_profile_key=parent_binding.policy_profile_key,
+            tool_profile_key=parent_binding.tool_profile_key,
+            trigger_kind="delegation_approval_prompt",
+            trigger_ref=f"{delegation.id}:{child_run_id}",
+            lane_key=delegation.parent_session_id,
+            max_attempts=self.settings.execution_run_max_attempts,
+            status=run_status,
+            blocked_reason=blocked_reason,
+        )
+
+        self.repository.mark_awaiting_approval(db, delegation_id=delegation.id)
+        self.repository.append_event(
+            db,
+            delegation_id=delegation.id,
+            event_kind="awaiting_approval",
+            status=DelegationStatus.AWAITING_APPROVAL.value,
+            actor_kind="child_run",
+            actor_ref=child_run_id,
+            payload={
+                "pending_approval_count": len(pending_approvals),
+                "notification_run_id": notification_run.id,
+                "notification_message_id": notification_message.id,
+            },
+        )
 
     def cancel_delegation(self, db: Session, *, delegation_id: str, cancel_reason: str) -> None:
         delegation = self.repository.get_delegation(db, delegation_id=delegation_id)

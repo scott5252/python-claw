@@ -5,8 +5,9 @@ from sqlalchemy.orm import Session
 
 from src.agents.repository import AgentRepository
 from src.agents.service import AgentProfileService
+from src.capabilities.repository import CapabilitiesRepository
 from src.config.settings import Settings
-from src.db.models import AgentProfileRecord, ExecutionRunRecord, ModelProfileRecord, SessionKind, SessionRecord
+from src.db.models import AgentProfileRecord, ExecutionRunRecord, MessageRecord, ModelProfileRecord, ResourceProposalRecord, SessionKind, SessionRecord
 
 
 DEFAULT_MODEL_PROFILE_KEY = "default"
@@ -63,3 +64,78 @@ def bootstrap_agent_profiles(db: Session, *, settings: Settings) -> None:
     binding = bootstrap_service.resolve_bootstrap_binding(db, session_kind=SessionKind.PRIMARY.value)
     if binding.agent_id != settings.default_agent_id:
         raise RuntimeError("bootstrap default agent binding mismatch")
+
+    _bootstrap_remote_exec_templates(db, settings=settings)
+
+
+def _bootstrap_remote_exec_templates(db: Session, *, settings: Settings) -> None:
+    if not settings.remote_exec_agent_templates:
+        return
+
+    capabilities_repository = CapabilitiesRepository()
+
+    for template in settings.remote_exec_agent_templates:
+        session_key = f"__bootstrap_remote_exec__:{template.agent_id}"
+
+        # Get or create bootstrap session for this agent
+        bootstrap_session = db.scalar(select(SessionRecord).where(SessionRecord.session_key == session_key))
+        if bootstrap_session is None:
+            bootstrap_session = SessionRecord(
+                session_key=session_key,
+                channel_kind="system",
+                channel_account_id="bootstrap",
+                scope_kind="peer",
+                peer_id=f"bootstrap:{template.agent_id}",
+                group_id=None,
+                scope_name="",
+                owner_agent_id=template.agent_id,
+                session_kind=SessionKind.SYSTEM.value,
+            )
+            db.add(bootstrap_session)
+            db.flush()
+
+        # Check if a NodeCommandTemplate already exists for this agent (approved, from bootstrap session)
+        existing_proposal = db.scalar(
+            select(ResourceProposalRecord).where(
+                ResourceProposalRecord.session_id == bootstrap_session.id,
+                ResourceProposalRecord.resource_kind == "node_command_template",
+                ResourceProposalRecord.agent_id == template.agent_id,
+            )
+        )
+        if existing_proposal is not None:
+            continue
+
+        # Create a bootstrap system message to satisfy the FK constraint on message_id
+        bootstrap_message = MessageRecord(
+            session_id=bootstrap_session.id,
+            role="system",
+            content="system:bootstrap node_command_template",
+            external_message_id=None,
+            sender_id="system:bootstrap",
+        )
+        db.add(bootstrap_message)
+        db.flush()
+
+        template_payload = {
+            "executable": template.executable,
+            "argv_template": template.argv_template,
+            "env_allowlist": template.env_allowlist,
+            "working_dir": template.working_dir,
+            "workspace_binding_kind": template.workspace_binding_kind,
+            "fixed_workspace_key": template.fixed_workspace_key,
+            "workspace_mount_mode": template.workspace_mount_mode,
+            "typed_action_id": "tool.remote_exec",
+            "sandbox_profile_key": template.sandbox_profile_key,
+            "timeout_seconds": template.timeout_seconds,
+        }
+
+        capabilities_repository.create_remote_exec_capability(
+            db,
+            session_id=bootstrap_session.id,
+            message_id=bootstrap_message.id,
+            agent_id=template.agent_id,
+            requested_by="system:bootstrap",
+            approver_id="system:bootstrap",
+            template_payload=template_payload,
+            invocation_arguments={},
+        )

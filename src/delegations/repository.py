@@ -83,7 +83,11 @@ class DelegationRepository:
                 select(func.count()).select_from(DelegationRecord).where(
                     DelegationRecord.parent_run_id == parent_run_id,
                     DelegationRecord.status.in_(
-                        [DelegationStatus.QUEUED.value, DelegationStatus.RUNNING.value]
+                        [
+                            DelegationStatus.QUEUED.value,
+                            DelegationStatus.RUNNING.value,
+                            DelegationStatus.AWAITING_APPROVAL.value,
+                        ]
                     ),
                 )
             )
@@ -96,7 +100,11 @@ class DelegationRepository:
                 select(func.count()).select_from(DelegationRecord).where(
                     DelegationRecord.parent_session_id == parent_session_id,
                     DelegationRecord.status.in_(
-                        [DelegationStatus.QUEUED.value, DelegationStatus.RUNNING.value]
+                        [
+                            DelegationStatus.QUEUED.value,
+                            DelegationStatus.RUNNING.value,
+                            DelegationStatus.AWAITING_APPROVAL.value,
+                        ]
                     ),
                 )
             )
@@ -191,6 +199,19 @@ class DelegationRepository:
         record.status = DelegationStatus.RUNNING.value
         record.started_at = started_at or utc_now()
         record.updated_at = record.started_at
+        db.flush()
+        return record
+
+    def mark_awaiting_approval(
+        self,
+        db: Session,
+        *,
+        delegation_id: str,
+        awaiting_at: datetime | None = None,
+    ) -> DelegationRecord:
+        record = self._require(db, delegation_id=delegation_id)
+        record.status = DelegationStatus.AWAITING_APPROVAL.value
+        record.updated_at = awaiting_at or utc_now()
         db.flush()
         return record
 

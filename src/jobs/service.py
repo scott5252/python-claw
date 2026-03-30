@@ -184,7 +184,10 @@ class RunExecutionService:
                     assistant_message_id=state.assistant_message_id,
                 )
             if self.delegation_service is not None and run.trigger_kind == "delegation_child":
-                self.delegation_service.handle_child_run_completed(db, child_run_id=run.id)
+                if state.awaiting_approval:
+                    self.delegation_service.handle_child_run_paused_for_approval(db, child_run_id=run.id)
+                else:
+                    self.delegation_service.handle_child_run_completed(db, child_run_id=run.id)
             self._enqueue_after_turn_jobs(
                 db,
                 session_id=run.session_id,

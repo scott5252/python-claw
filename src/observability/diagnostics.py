@@ -149,6 +149,9 @@ class DiagnosticsService:
                 delegation = self.delegation_service.repository.get_by_child_run(db, child_run_id=run.id)
             elif run.trigger_kind == "delegation_result":
                 delegation = self.delegation_service.repository.get_delegation(db, delegation_id=run.trigger_ref)
+            elif run.trigger_kind == "delegation_approval_prompt":
+                delegation_id = run.trigger_ref.split(":")[0]
+                delegation = self.delegation_service.repository.get_delegation(db, delegation_id=delegation_id)
             else:
                 delegation = None
             if delegation is not None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
@@ -8,6 +9,15 @@ from src.graphs.state import ToolResultPayload, ToolRuntimeContext
 from src.tools.registry import ToolDefinition, validation_error_from_pydantic
 
 RESERVED_REMOTE_EXEC_KEYS = frozenset({"tool_call_id", "execution_attempt_number"})
+
+
+def _extract_template_vars(argv_template: list[str]) -> list[str]:
+    seen: list[str] = []
+    for item in argv_template:
+        for var in re.findall(r'\{(\w+)\}', item):
+            if var not in seen:
+                seen.append(var)
+    return seen
 
 
 class RemoteExecRequest(BaseModel):
@@ -76,19 +86,34 @@ def create_remote_exec_tool(context: ToolRuntimeContext) -> ToolDefinition:
             },
         )
 
-    return ToolDefinition(
-        capability_name="remote_exec",
-        description="Run an approved command on the node runner.",
-        input_schema=RemoteExecRequest,
-        tool_schema_name="remote_exec.invocation",
-        schema_version="1.0",
-        usage_guidance=(
-            "Use when the user wants an approved command or external action to run. "
-            "If approval is still needed, call this tool anyway so the backend can create the proposal. "
-            "Do not ask in plain text whether a proposal should be created. "
-            "Provide a flat JSON object with scalar values only."
-        ),
-        provider_input_schema={
+    # Build dynamic schema from agent's argv_template variable placeholders
+    template_vars: list[str] = []
+    runtime = context.runtime_services.remote_execution_runtime
+    if runtime is not None and hasattr(runtime, "settings"):
+        agent_template = runtime.settings.get_remote_exec_template_for_agent(context.agent_id)
+        if agent_template is not None:
+            template_vars = _extract_template_vars(agent_template.argv_template)
+
+    if template_vars:
+        provider_input_schema: dict[str, object] = {
+            "type": "object",
+            "description": "Arguments for the remote command template. Provide all required parameters.",
+            "properties": {
+                var: {"type": "string", "description": f"Value for the `{var}` template parameter"}
+                for var in template_vars
+            },
+            "required": template_vars,
+            "additionalProperties": {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "number"},
+                    {"type": "boolean"},
+                    {"type": "null"},
+                ]
+            },
+        }
+    else:
+        provider_input_schema = {
             "type": "object",
             "description": "Flat invocation arguments for an approved remote command template.",
             "additionalProperties": {
@@ -100,7 +125,22 @@ def create_remote_exec_tool(context: ToolRuntimeContext) -> ToolDefinition:
                 ]
             },
             "properties": {},
-        },
+        }
+
+    return ToolDefinition(
+        capability_name="remote_exec",
+        description="Run an approved command on the node runner.",
+        input_schema=RemoteExecRequest,
+        tool_schema_name="remote_exec.invocation",
+        schema_version="1.0",
+        usage_guidance=(
+            "Use when the user wants an approved command or external action to run. "
+            "If approval is still needed, call this tool anyway so the backend can create the proposal. "
+            "Do not ask in plain text whether a proposal should be created. "
+            "Provide a flat JSON object with scalar values matching the command template parameters. "
+            "The argument keys must match the template variable names defined for this agent."
+        ),
+        provider_input_schema=provider_input_schema,
         validate=validate,
         canonicalize=canonicalize,
         invoke=invoke,

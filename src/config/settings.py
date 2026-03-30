@@ -99,6 +99,19 @@ class HistoricalAgentProfileOverrideConfig(BaseModel):
         return self
 
 
+class RemoteExecAgentTemplateConfig(BaseModel):
+    agent_id: str
+    executable: str
+    argv_template: list[str] = Field(default_factory=list)
+    env_allowlist: list[str] = Field(default_factory=list)
+    working_dir: str | None = None
+    workspace_binding_kind: str = "agent"
+    fixed_workspace_key: str | None = None
+    workspace_mount_mode: str = "rw"
+    timeout_seconds: int = 30
+    sandbox_profile_key: str = "shared-default"
+
+
 def _default_channel_accounts() -> list[ChannelAccountConfig]:
     account_ids = ("acct", "acct-1")
     channel_kinds = ("slack", "telegram", "webchat")
@@ -249,6 +262,7 @@ class Settings(BaseSettings):
     policy_profiles: list[PolicyProfileConfig] = Field(default_factory=_default_policy_profiles)
     tool_profiles: list[ToolProfileConfig] = Field(default_factory=_default_tool_profiles)
     historical_agent_profile_overrides: list[HistoricalAgentProfileOverrideConfig] = Field(default_factory=list)
+    remote_exec_agent_templates: list[RemoteExecAgentTemplateConfig] = Field(default_factory=list)
 
     model_config = SettingsConfigDict(
         env_prefix="PYTHON_CLAW_",
@@ -449,6 +463,12 @@ class Settings(BaseSettings):
 
     def get_historical_agent_override(self, agent_id: str) -> HistoricalAgentProfileOverrideConfig | None:
         return self._historical_agent_override_lookup.get(agent_id.strip())
+
+    def get_remote_exec_template_for_agent(self, agent_id: str) -> "RemoteExecAgentTemplateConfig | None":
+        for t in self.remote_exec_agent_templates:
+            if t.agent_id == agent_id:
+                return t
+        return None
 
 
 @lru_cache

@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from src.db.models import (
@@ -20,6 +21,29 @@ from src.policies.service import build_approval_identity_hash, canonicalize_para
 class CapabilitiesRepository:
     def get_resource_version(self, db: Session, *, resource_version_id: str) -> ResourceVersionRecord | None:
         return db.get(ResourceVersionRecord, resource_version_id)
+
+    def find_active_node_command_template_version(
+        self, db: Session, *, agent_id: str
+    ) -> ResourceVersionRecord | None:
+        stmt = (
+            select(ResourceVersionRecord)
+            .join(ResourceProposalRecord, ResourceVersionRecord.proposal_id == ResourceProposalRecord.id)
+            .join(
+                ActiveResourceRecord,
+                and_(
+                    ActiveResourceRecord.resource_version_id == ResourceVersionRecord.id,
+                    ActiveResourceRecord.activation_state == "active",
+                ),
+            )
+            .where(
+                ResourceProposalRecord.agent_id == agent_id,
+                ResourceProposalRecord.resource_kind == "node_command_template",
+                ResourceProposalRecord.current_state == "approved",
+            )
+            .order_by(ResourceProposalRecord.created_at.desc())
+            .limit(1)
+        )
+        return db.scalar(stmt)
 
     def get_agent_sandbox_profile(self, db: Session, *, agent_id: str) -> AgentSandboxProfileRecord | None:
         return db.query(AgentSandboxProfileRecord).filter(AgentSandboxProfileRecord.agent_id == agent_id).one_or_none()

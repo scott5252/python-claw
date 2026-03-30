@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run:*)",
+      "Bash(PYTHON_CLAW_DATABASE_URL=\"sqlite://:memory:\" uv run pytest tests/test_spec_015.py tests/test_spec_016.py -x -q)",
+      "Bash(PYTHON_CLAW_DATABASE_URL=\"sqlite:///tmp/test_claw.db\" uv run pytest tests/test_spec_015.py tests/test_spec_016.py -x -q)",
+      "Bash(PYTHON_CLAW_DATABASE_URL=\"sqlite:////tmp/test_claw.db\" uv run pytest tests/test_spec_015.py -x -q)"
+    ]
+  }
+}

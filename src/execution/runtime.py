@@ -46,14 +46,29 @@ class RemoteExecutionRuntime:
         version = self.capabilities_repository.get_resource_version(db, resource_version_id=approval.resource_version_id)
         if version is None:
             raise RuntimeError("approved resource version not found")
-        template = NodeCommandTemplate.from_payload(json.loads(version.resource_payload))
+
+        version_payload = json.loads(version.resource_payload)
+
+        # If the version is a governance proposal payload (no 'executable'), look up the agent's NodeCommandTemplate
+        if "executable" not in version_payload:
+            template_version = self.capabilities_repository.find_active_node_command_template_version(db, agent_id=agent_id)
+            if template_version is None:
+                raise RuntimeError(
+                    f"no NodeCommandTemplate registered for agent {agent_id!r}; "
+                    "configure PYTHON_CLAW_REMOTE_EXEC_AGENT_TEMPLATES"
+                )
+            template = NodeCommandTemplate.from_payload(json.loads(template_version.resource_payload))
+            effective_version = template_version
+        else:
+            template = NodeCommandTemplate.from_payload(version_payload)
+            effective_version = version
+
         invocation = RemoteInvocation(
             arguments=arguments,
             env={},
             working_dir=template.working_dir,
             timeout_seconds=template.timeout_seconds,
         )
-        version_payload = json.loads(version.resource_payload)
         tool_schema_name = version_payload.get("tool_schema_name", default_tool_schema_identity("remote_exec")[0])
         tool_schema_version = version_payload.get("tool_schema_version", default_tool_schema_identity("remote_exec")[1])
         if build_approval_identity_hash(
@@ -77,8 +92,8 @@ class RemoteExecutionRuntime:
             message_id=message_id,
             agent_id=agent_id,
             approval_id=approval.approval_id,
-            resource_version_id=approval.resource_version_id,
-            resource_payload_hash=version.content_hash,
+            resource_version_id=effective_version.id,
+            resource_payload_hash=effective_version.content_hash,
             invocation=invocation,
             argv=derive_argv(template=template, arguments=arguments),
             sandbox_mode=sandbox.sandbox_mode,

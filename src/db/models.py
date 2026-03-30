@@ -80,6 +80,7 @@ class ModelRuntimeMode(str, Enum):
 class DelegationStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
+    AWAITING_APPROVAL = "awaiting_approval"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"

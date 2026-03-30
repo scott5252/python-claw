@@ -21,13 +21,13 @@ It showcases:
 2. The parent LLM (`default-agent`) calls `delegate_to_agent` targeting `deploy-agent` (no approval needed).
 3. `deploy-agent` proposes a `remote_exec` to POST to the local webhook receiver. An approval prompt appears in the chat.
 4. You type `approve <proposal_id>` in the chat.
-5. The `curl` command runs on the node-runner. The webhook receiver logs the POST.
+5. The system automatically continues — the `curl` command runs on the node-runner without you resending anything. The webhook receiver logs the POST.
 6. You send a deployment callback via `curl` (the one machine-to-machine step).
 7. You ask for a deploy report in the chat. The parent LLM delegates to `code-agent`.
-8. `code-agent` proposes `python3 -c` code. You approve in the chat.
+8. `code-agent` proposes `python3 -c` code. You approve in the chat. The code runs automatically.
 9. Python generates `deploy_report.py` and `deploy_report.json` in an isolated workspace.
 10. You ask for email notification. The parent LLM delegates to `notify-agent`.
-11. `notify-agent` proposes `python3 -c` with `smtplib`. You approve.
+11. `notify-agent` proposes `python3 -c` with `smtplib`. You approve. The email sends automatically.
 12. The email arrives in the MailDev web UI.
 
 ## Architecture
@@ -158,6 +158,8 @@ PYTHON_CLAW_CHANNEL_ACCOUNTS=[{"channel_account_id":"webchat-demo","channel_kind
 
 PYTHON_CLAW_WORKER_POLL_SECONDS=2
 PYTHON_CLAW_WORKER_IDLE_LOG_EVERY=30
+
+PYTHON_CLAW_REMOTE_EXEC_AGENT_TEMPLATES=[{"agent_id":"deploy-agent","executable":"/usr/bin/curl","argv_template":["-s","-X","POST","-H","Content-Type: application/json","-d","{json_payload}","{url}"],"timeout_seconds":15,"sandbox_profile_key":"shared-default","workspace_binding_kind":"none","workspace_mount_mode":"none"},{"agent_id":"code-agent","executable":"/usr/local/bin/python3","argv_template":["-c","{script}"],"timeout_seconds":30,"sandbox_profile_key":"shared-default","workspace_binding_kind":"agent","workspace_mount_mode":"rw"},{"agent_id":"notify-agent","executable":"/usr/local/bin/python3","argv_template":["-c","{script}"],"timeout_seconds":30,"sandbox_profile_key":"shared-default","workspace_binding_kind":"none","workspace_mount_mode":"none"}]
 ```
 
 After editing `.env.demo`, copy it to `.env` again before running any Docker commands:
@@ -172,6 +174,7 @@ cp .env.demo .env
 - **`/usr/local/bin/python3`** in allowed executables — this is the path inside the `python:3.11-slim` Docker image.
 - **`default-agent`** can delegate to `deploy-agent`, `code-agent`, and `notify-agent`.
 - **`default-agent`** sees `echo_text` and `delegate_to_agent`. Child agents see `echo_text` and `remote_exec`.
+- **`PYTHON_CLAW_REMOTE_EXEC_AGENT_TEMPLATES`** — registers a pre-approved `NodeCommandTemplate` for each child agent at startup. This tells the node-runner exactly which executable and argument template to use (e.g. `/usr/bin/curl` with `{url}` and `{json_payload}` placeholders for `deploy-agent`), and allows the LLM to discover the required argument names automatically.
 
 ## Step 3: Start Everything
 
@@ -265,16 +268,13 @@ The chat UI will automatically connect to the gateway. You should see a green "c
 
 In the browser chat, type:
 
-```  
+```
 Deploy the app northwind-api to staging.
 Delegate this to deploy-agent.
-The deploy-agent should use remote_exec to POST a JSON payload to
-http://host.docker.internal:3001/deploy-events with curl.
-The payload should include:
-- correlation_id=northwind-api-staging-001
-- event=deployment_started
-- app=northwind-api
-- environment=staging
+The deploy-agent should use remote_exec to POST to the webhook.
+Call remote_exec with these exact arguments:
+- url: http://host.docker.internal:3001/deploy-events
+- json_payload: {"correlation_id":"northwind-api-staging-001","event":"deployment_started","app":"northwind-api","environment":"staging"}
 ```
 
 Press Enter (or click Send).
@@ -290,7 +290,6 @@ Press Enter (or click Send).
      - the action name `remote_exec`
      - the proposal ID on its own line
      - the exact approval command to type
-     - a note telling you to resend the original request after approval
    - If you only see `Received: ...`, the app is still using the rule-based profile from older database state. Go back to Step 3 and run the `down -v` reset before starting the stack again.
 
 ## Step 5: Chat — Approve The Deployment Action
@@ -303,38 +302,10 @@ approve <paste-proposal-id-here>
 
 ### What happens
 
-1. The approval is recorded.
-2. The approval activates the proposed `remote_exec` action for an exact retry of the same request.
-3. The assistant should respond with a clearer confirmation message such as:
-
-```text
-Approval recorded for proposal `<proposal_id>`.
-
-You have authorized the system to run the deployment command.
-Next step: resend your original request so the authorized action can run.
-```
-
-## Step 6: Chat — Retry The Deployment Request
-
-Send the same deployment request again:
-
-```
-Deploy the app northwind-api to staging.
-Delegate this to deploy-agent.
-The deploy-agent should use remote_exec to POST a JSON payload to
-http://host.docker.internal:3001/deploy-events with curl.
-The payload should include:
-- correlation_id=northwind-api-staging-001
-- event=deployment_started
-- app=northwind-api
-- environment=staging
-```
-
-### What happens
-
-1. The child run reuses the approved `remote_exec` action.
-2. The `curl` command executes on the node-runner.
-3. Check **Terminal 2** (webhook receiver) — you should see:
+1. The approval is recorded and the `remote_exec` action is activated.
+2. The system automatically enqueues a continuation run for `deploy-agent` — **you do not need to resend the original message**.
+3. Within a few seconds the worker picks up the continuation, the `curl` command executes on the node-runner, and the parent agent receives the delegation result.
+4. Check **Terminal 2** (webhook receiver) — you should see:
 
 ```
 --- Webhook #1 received at 2026-03-29T... ---
@@ -343,9 +314,9 @@ Body: {"correlation_id":"northwind-api-staging-001","event":"deployment_started"
 ---
 ```
 
-4. The child run completes. The parent receives the delegation result.
+5. The parent agent responds in the chat confirming the deployment command ran.
 
-## Step 7: Send The Deployment Callback
+## Step 6: Send The Deployment Callback
 
 This is the one step done outside the chat UI, because it simulates an external system calling back. Run in any terminal:
 
@@ -364,7 +335,7 @@ curl -X POST http://localhost:8000/inbound/message \
 
 The callback uses `peer_id: "demo-user"` to route into the **same session**. The parent LLM will see it in the chat transcript.
 
-## Step 8: Chat — Request A Deploy Report
+## Step 7: Chat — Request A Deploy Report
 
 Back in the browser chat, type:
 
@@ -385,7 +356,7 @@ docker exec python-claw-node-runner find /app/.claw-sandboxes/sessions/code-agen
 docker exec python-claw-node-runner cat /app/.claw-sandboxes/sessions/code-agent/*/deploy_report.json 2>/dev/null
 ```
 
-## Step 9: Chat — Request Email Notification
+## Step 8: Chat — Request Email Notification
 
 In the browser chat, type:
 
@@ -403,7 +374,7 @@ approve <paste-proposal-id-here>
 
 Open [http://localhost:1080](http://localhost:1080). You should see the email in MailDev.
 
-## Step 10: Inspect The Audit Trail
+## Step 9: Inspect The Audit Trail
 
 Use the admin APIs to inspect everything that happened:
 
