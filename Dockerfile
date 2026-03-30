@@ -1,19 +1,24 @@
 FROM python:3.11-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    UV_LINK_MODE=copy
-
 WORKDIR /app
 
-RUN pip install --no-cache-dir uv
+# Install uv for fast dependency resolution
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-COPY pyproject.toml uv.lock alembic.ini README.md ./
-COPY apps ./apps
-COPY src ./src
-COPY migrations ./migrations
-COPY scripts ./scripts
+# Install curl for remote_exec commands
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
-RUN uv sync --no-dev
+# Copy dependency files first for layer caching
+COPY pyproject.toml uv.lock* ./
 
-EXPOSE 8000 8010
+# Install dependencies
+RUN uv sync --no-dev --no-editable
+
+# Copy application code
+COPY src/ src/
+COPY apps/ apps/
+COPY migrations/ migrations/
+COPY alembic.ini ./
+
+# Default command (overridden by docker-compose per service)
+CMD ["uv", "run", "uvicorn", "apps.gateway.main:app", "--host", "0.0.0.0", "--port", "8000"]
