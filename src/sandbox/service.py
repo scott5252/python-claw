@@ -69,6 +69,8 @@ class SandboxService:
         session_id: str,
         template: NodeCommandTemplate,
     ) -> str:
+        if template.workspace_binding_kind == "none":
+            return ""
         base = Path(self.settings.sandbox_workspace_root)
         if template.workspace_binding_kind == "agent":
             return str((base / "agents" / agent_id).resolve())
