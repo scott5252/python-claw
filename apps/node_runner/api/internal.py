@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
 
+from src.db.models import NodeExecutionStatus
 from src.execution.contracts import SignedNodeExecRequest
 
 router = APIRouter()
@@ -26,11 +27,31 @@ def post_exec(payload: dict, request: Request) -> dict:
     with request.app.state.session_manager.session() as db:
         decision = request.app.state.node_runner_policy.authorize(db, signed_request=signed)
         if decision.should_execute:
-            result = request.app.state.node_runner_executor.execute(
-                db,
-                record=decision.record,
-                request=signed.request,
-            )
+            try:
+                result = request.app.state.node_runner_executor.execute(
+                    db,
+                    record=decision.record,
+                    request=signed.request,
+                )
+            except Exception as exc:
+                record = request.app.state.audit_repository.mark_finished(
+                    db,
+                    record=decision.record,
+                    status=NodeExecutionStatus.FAILED.value,
+                    exit_code=None,
+                    stdout="",
+                    stderr=str(exc),
+                )
+                result = {
+                    "request_id": record.request_id,
+                    "status": record.status,
+                    "exit_code": record.exit_code,
+                    "stdout_preview": record.stdout_preview,
+                    "stderr_preview": record.stderr_preview,
+                    "stdout_truncated": record.stdout_truncated,
+                    "stderr_truncated": record.stderr_truncated,
+                    "deny_reason": str(exc),
+                }
         else:
             record = decision.record
             result = {

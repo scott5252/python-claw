@@ -8,6 +8,7 @@ import pytest
 
 from apps.node_runner.executor import NodeRunnerExecutor
 from apps.node_runner.main import create_app as create_node_runner_app
+from apps.node_runner.policy import PolicyDecision
 from src.capabilities.repository import CapabilitiesRepository
 from src.config.settings import Settings
 from src.execution.audit import ExecutionAuditRepository
@@ -435,6 +436,79 @@ def test_node_runner_executor_supports_empty_workspace_root() -> None:
 
     assert result.status == "completed"
     assert result.stdout_preview.strip() == "hello"
+
+
+def test_node_runner_internal_exec_returns_structured_failure_when_executor_raises(session_manager, tmp_path) -> None:
+    settings = Settings(
+        database_url=str(session_manager.engine.url),
+        node_runner_mode="http",
+        node_runner_signing_key_id="kid-1",
+        node_runner_signing_secret="secret",
+        node_runner_internal_bearer_token="token-1",
+        sandbox_workspace_root=str(tmp_path / "sandboxes"),
+    )
+    app = create_node_runner_app(settings=settings, session_manager=session_manager)
+    client = TestClient(app)
+
+    request = build_exec_request(
+        execution_run_id="run-1",
+        tool_call_id="tool-1",
+        execution_attempt_number=1,
+        session_id="session-1",
+        message_id=1,
+        agent_id="deploy-agent",
+        approval_id="approval-1",
+        resource_version_id="version-1",
+        resource_payload_hash="hash-1",
+        invocation=RemoteInvocation(arguments={}, env={}, working_dir=None, timeout_seconds=5),
+        argv=["/bin/echo", "hello"],
+        sandbox_mode="agent",
+        sandbox_key="sandbox-1",
+        workspace_root="",
+        workspace_mount_mode="none",
+        typed_action_id="tool.remote_exec",
+        ttl_seconds=30,
+    )
+    signed = SigningService({"kid-1": "secret"}).build_signed_request(
+        key_id="kid-1",
+        request_payload=request.to_payload(),
+    )
+
+    class FakeRecord:
+        request_id = request.request_id
+        status = "running"
+        exit_code = None
+        stdout_preview = ""
+        stderr_preview = "boom"
+        stdout_truncated = False
+        stderr_truncated = False
+        deny_reason = "boom"
+
+    fake_record = FakeRecord()
+
+    app.state.node_runner_policy.authorize = lambda db, signed_request: PolicyDecision(
+        record=fake_record,
+        should_execute=True,
+    )
+    app.state.node_runner_executor.execute = lambda db, record, request: (_ for _ in ()).throw(RuntimeError("boom"))
+    app.state.audit_repository.mark_finished = lambda db, record, status, exit_code, stdout, stderr: (
+        setattr(record, "status", status)
+        or setattr(record, "exit_code", exit_code)
+        or setattr(record, "stdout_preview", stdout)
+        or setattr(record, "stderr_preview", stderr)
+        or setattr(record, "deny_reason", stderr)
+        or record
+    )
+
+    response = client.post(
+        "/internal/node/exec",
+        json=signed.signed_payload(),
+        headers={"Authorization": "Bearer token-1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["deny_reason"] == "boom"
 
 
 def test_repository_finds_real_node_command_template_when_newer_invocation_payload_exists(session_manager) -> None:

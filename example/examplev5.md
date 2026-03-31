@@ -337,13 +337,28 @@ The callback uses `peer_id: "demo-user"` to route into the **same session**. The
 
 ## Step 7: Chat — Request A Deploy Report
 
-Back in the browser chat, type:
+Back in the browser chat, copy and paste:
 
 ```
-The deployment completed. Now delegate to code-agent to generate a Python deployment report. The code-agent should use remote_exec with python3 -c to write a deploy_report.json with app=northwind-api, environment=staging, status=completed, correlation_id=northwind-api-staging-001, and a generated_at timestamp. Also write a deploy_report.py script that reads and prints the JSON. Execute the script and show the output.
+The deployment completed.
+Delegate to code-agent.
+
+Use exactly one remote_exec call with one python3 -c script payload.
+Do not split this into multiple remote_exec calls.
+
+In that single script:
+- write deploy_report.json with:
+- app: northwind-api
+- environment: staging
+- status: completed
+- correlation_id: northwind-api-staging-001
+- generated_at: current timestamp
+- write deploy_report.py that reads and prints the JSON
+- execute deploy_report.py
+- show the script output
 ```
 
-Wait for the approval message with the proposal ID, then type:
+You should normally see a single approval message with one proposal ID. Then type:
 
 ```
 approve <paste-proposal-id-here>
@@ -358,10 +373,20 @@ docker exec python-claw-node-runner cat /app/.claw-sandboxes/sessions/code-agent
 
 ## Step 8: Chat — Request Email Notification
 
-In the browser chat, type:
+In the browser chat, copy and paste:
 
 ```
-Now delegate to notify-agent to send a deployment-complete email. The notify-agent should use remote_exec with python3 -c to send an email using smtplib to host.docker.internal port 1025. From: python-claw@localhost, To: ops-team@localhost, Subject: Deployment complete northwind-api staging, Body: The deployment for northwind-api completed successfully. Correlation id: northwind-api-staging-001.
+Delegate to notify-agent to send a deployment-complete email.
+
+Use remote_exec with python3 -c and smtplib.
+
+Send the email to host.docker.internal on port 1025.
+
+Use these fields:
+- From: python-claw@localhost
+- To: ops-team@localhost
+- Subject: Deployment complete northwind-api staging
+- Body: The deployment for northwind-api completed successfully. Correlation id: northwind-api-staging-001.
 ```
 
 Wait for the approval message with the proposal ID, then type:
