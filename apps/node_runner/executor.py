@@ -24,12 +24,15 @@ class NodeRunnerExecutor:
         request: NodeExecRequest,
     ) -> NodeExecutionResult:
         self.audit_repository.mark_running(db, record=record)
-        workspace_root = Path(request.workspace_root)
-        workspace_root.mkdir(parents=True, exist_ok=True)
+        cwd: str | None = None
+        if request.workspace_root:
+            workspace_root = Path(request.workspace_root)
+            workspace_root.mkdir(parents=True, exist_ok=True)
+            cwd = request.workspace_root
         try:
             completed = subprocess.run(
                 request.argv,
-                cwd=request.workspace_root,
+                cwd=cwd,
                 capture_output=True,
                 text=True,
                 shell=False,
@@ -53,6 +56,25 @@ class NodeRunnerExecutor:
                 stdout_truncated=record.stdout_truncated,
                 stderr_truncated=record.stderr_truncated,
                 deny_reason="execution timed out",
+            )
+        except OSError as exc:
+            record = self.audit_repository.mark_finished(
+                db,
+                record=record,
+                status=NodeExecutionStatus.FAILED.value,
+                exit_code=None,
+                stdout="",
+                stderr=str(exc),
+            )
+            return NodeExecutionResult(
+                request_id=request.request_id,
+                status=record.status,
+                exit_code=record.exit_code,
+                stdout_preview=record.stdout_preview,
+                stderr_preview=record.stderr_preview,
+                stdout_truncated=record.stdout_truncated,
+                stderr_truncated=record.stderr_truncated,
+                deny_reason=str(exc),
             )
 
         status = NodeExecutionStatus.COMPLETED.value if completed.returncode == 0 else NodeExecutionStatus.FAILED.value

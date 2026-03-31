@@ -57,7 +57,13 @@ class RemoteExecutionRuntime:
                     f"no NodeCommandTemplate registered for agent {agent_id!r}; "
                     "configure PYTHON_CLAW_REMOTE_EXEC_AGENT_TEMPLATES"
                 )
-            template = NodeCommandTemplate.from_payload(json.loads(template_version.resource_payload))
+            template_payload = json.loads(template_version.resource_payload)
+            if "executable" not in template_payload:
+                raise RuntimeError(
+                    f"active NodeCommandTemplate for agent {agent_id!r} is malformed: "
+                    "missing executable"
+                )
+            template = NodeCommandTemplate.from_payload(template_payload)
             effective_version = template_version
         else:
             template = NodeCommandTemplate.from_payload(version_payload)

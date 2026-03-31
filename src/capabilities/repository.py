@@ -41,9 +41,15 @@ class CapabilitiesRepository:
                 ResourceProposalRecord.current_state == "approved",
             )
             .order_by(ResourceProposalRecord.created_at.desc())
-            .limit(1)
         )
-        return db.scalar(stmt)
+        for version in db.scalars(stmt):
+            try:
+                payload = json.loads(version.resource_payload)
+            except Exception:
+                continue
+            if isinstance(payload, dict) and isinstance(payload.get("executable"), str) and payload["executable"].strip():
+                return version
+        return None
 
     def get_agent_sandbox_profile(self, db: Session, *, agent_id: str) -> AgentSandboxProfileRecord | None:
         return db.query(AgentSandboxProfileRecord).filter(AgentSandboxProfileRecord.agent_id == agent_id).one_or_none()

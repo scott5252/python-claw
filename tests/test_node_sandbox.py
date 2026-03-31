@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 
 from fastapi.testclient import TestClient
+import pytest
 
+from apps.node_runner.executor import NodeRunnerExecutor
 from apps.node_runner.main import create_app as create_node_runner_app
 from src.capabilities.repository import CapabilitiesRepository
 from src.config.settings import Settings
+from src.execution.audit import ExecutionAuditRepository
 from src.execution.contracts import (
     NodeCommandTemplate,
     NodeExecutionResult,
@@ -386,3 +390,210 @@ def test_sandbox_resolves_empty_workspace_for_none_binding(session_manager, tmp_
 
     assert sandbox.workspace_root == ""
     assert sandbox.workspace_mount_mode == "none"
+
+
+def test_node_runner_executor_supports_empty_workspace_root() -> None:
+    repository = ExecutionAuditRepository()
+    fake_db = type("FakeDb", (), {"flush": lambda self: None})()
+
+    class Record:
+        status = "received"
+        exit_code = None
+        stdout_preview = ""
+        stderr_preview = ""
+        stdout_truncated = False
+        stderr_truncated = False
+        deny_reason = None
+        started_at = None
+        updated_at = None
+        finished_at = None
+        duration_ms = None
+
+    record = Record()
+    request = build_exec_request(
+        execution_run_id="run-1",
+        tool_call_id="tool-1",
+        execution_attempt_number=1,
+        session_id="session-1",
+        message_id=1,
+        agent_id="deploy-agent",
+        approval_id="approval-1",
+        resource_version_id="version-1",
+        resource_payload_hash="hash-1",
+        invocation=RemoteInvocation(arguments={}, env={}, working_dir=None, timeout_seconds=5),
+        argv=["/bin/echo", "hello"],
+        sandbox_mode="agent",
+        sandbox_key="sandbox-1",
+        workspace_root="",
+        workspace_mount_mode="none",
+        typed_action_id="tool.remote_exec",
+        ttl_seconds=30,
+    )
+
+    executor = NodeRunnerExecutor(audit_repository=repository)
+    result = executor.execute(db=fake_db, record=record, request=request)
+
+    assert result.status == "completed"
+    assert result.stdout_preview.strip() == "hello"
+
+
+def test_repository_finds_real_node_command_template_when_newer_invocation_payload_exists(session_manager) -> None:
+    session_id, message_id = _create_session_and_message(session_manager)
+    capabilities_repository = CapabilitiesRepository()
+
+    template = NodeCommandTemplate.from_payload(
+        {
+            "executable": "/usr/bin/curl",
+            "argv_template": ["-s", "{url}"],
+            "env_allowlist": [],
+            "working_dir": None,
+            "workspace_binding_kind": "none",
+            "fixed_workspace_key": None,
+            "workspace_mount_mode": "none",
+            "typed_action_id": "tool.remote_exec",
+            "sandbox_profile_key": "default",
+            "timeout_seconds": 5,
+            "capability_name": "remote_exec",
+        }
+    )
+
+    with session_manager.session() as db:
+        capabilities_repository.create_remote_exec_capability(
+            db,
+            session_id=session_id,
+            message_id=message_id,
+            agent_id="deploy-agent",
+            requested_by="system:bootstrap",
+            approver_id="system:bootstrap",
+            template_payload=template.to_payload() | {"capability_name": "remote_exec"},
+            invocation_arguments={},
+        )
+        capabilities_repository.create_remote_exec_capability(
+            db,
+            session_id=session_id,
+            message_id=message_id,
+            agent_id="deploy-agent",
+            requested_by="sender",
+            approver_id="sender",
+            template_payload={
+                "capability_name": "remote_exec",
+                "typed_action_id": "tool.remote_exec",
+                "tool_schema_name": "remote_exec.invocation",
+                "tool_schema_version": "1.0",
+            },
+            invocation_arguments={"url": "http://example.test"},
+        )
+        version = capabilities_repository.find_active_node_command_template_version(
+            db,
+            agent_id="deploy-agent",
+        )
+
+    assert version is not None
+    payload = json.loads(version.resource_payload)
+    assert payload["executable"] == "/usr/bin/curl"
+
+
+def test_remote_execution_runtime_reports_clear_error_for_malformed_template_fallback(session_manager, tmp_path) -> None:
+    session_id, message_id = _create_session_and_message(session_manager)
+    settings = Settings(
+        database_url=str(session_manager.engine.url),
+        remote_execution_enabled=True,
+        node_runner_signing_key_id="kid-1",
+        node_runner_signing_secret="secret",
+        sandbox_workspace_root=str(tmp_path / "sandboxes"),
+    )
+    capabilities_repository = CapabilitiesRepository()
+    policy = PolicyService(remote_execution_enabled=True)
+
+    with session_manager.session() as db:
+        proposal, version, approval, active = capabilities_repository.create_remote_exec_capability(
+            db,
+            session_id=session_id,
+            message_id=message_id,
+            agent_id="deploy-agent",
+            requested_by="sender",
+            approver_id="sender",
+            template_payload={
+                "capability_name": "remote_exec",
+                "typed_action_id": "tool.remote_exec",
+                "tool_schema_name": "remote_exec.invocation",
+                "tool_schema_version": "1.0",
+            },
+            invocation_arguments={"url": "http://example.test"},
+        )
+        approval_match = policy.get_matching_approval(
+            context=ToolRuntimeContext(
+                session_id=session_id,
+                message_id=message_id,
+                agent_id="deploy-agent",
+                channel_kind="web",
+                sender_id="sender",
+                policy_context={
+                    "classification": TurnClassification(
+                        request_class="execute_action",
+                        capability_name="remote_exec",
+                        typed_action_id="tool.remote_exec",
+                        arguments={"url": "http://example.test"},
+                    ),
+                    "approval_map": {
+                        ("remote_exec", "tool.remote_exec", approval.canonical_params_hash): {
+                            "proposal_id": proposal.id,
+                            "resource_version_id": version.id,
+                            "content_hash": version.content_hash,
+                            "typed_action_id": approval.typed_action_id,
+                            "canonical_params_json": approval.canonical_params_json,
+                            "canonical_params_hash": approval.canonical_params_hash,
+                            "approval_id": approval.id,
+                            "active_resource_id": active.id,
+                        }
+                    },
+                },
+                runtime_services=ToolRuntimeServices(),
+            ),
+            capability_name="remote_exec",
+            arguments={"url": "http://example.test"},
+        )
+        malformed_version = type(
+            "MalformedVersion",
+            (),
+            {
+                "id": "malformed-version-1",
+                "content_hash": "malformed-hash-1",
+                "resource_payload": json.dumps(
+                    {
+                        "capability_name": "remote_exec",
+                        "tool_schema_name": "remote_exec.invocation",
+                        "tool_schema_version": "1.0",
+                        "typed_action_id": "tool.remote_exec",
+                    },
+                    sort_keys=True,
+                ),
+            },
+        )()
+        original_find = capabilities_repository.find_active_node_command_template_version
+        capabilities_repository.find_active_node_command_template_version = lambda _db, agent_id: malformed_version
+
+        runtime = RemoteExecutionRuntime(
+            settings=settings,
+            capabilities_repository=capabilities_repository,
+            sandbox_service=SandboxService(settings=settings, capabilities_repository=capabilities_repository),
+            signing_service=SigningService({"kid-1": "secret"}),
+            runner_client=lambda _db, signed_request: (_ for _ in ()).throw(AssertionError("runner should not be called")),
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match="active NodeCommandTemplate for agent 'deploy-agent' is malformed: missing executable",
+        ):
+            runtime.execute(
+                db,
+                approval=approval_match,
+                session_id=session_id,
+                message_id=message_id,
+                agent_id="deploy-agent",
+                execution_run_id="run-1",
+                    tool_call_id="tool-1",
+                    execution_attempt_number=1,
+                    arguments={"url": "http://example.test"},
+                )
+        capabilities_repository.find_active_node_command_template_version = original_find
