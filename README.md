@@ -7,6 +7,34 @@ The codebase now reflects Specs `001` through `017`. This README is intended to 
 1. understand the current architecture and code structure
 2. configure, run, test, and deploy the system
 
+## Example Guides
+
+If you want the fastest path to seeing the system work end-to-end, start with [`example/example.md`](/Users/scottcornell/src/my-projects/python-claw/example/example.md). It walks through the full local demo: browser-based webchat, Dockerized gateway/worker/node-runner services, OpenAI-backed execution, approval-gated `remote_exec`, child-agent delegation, webhook callbacks, generated deployment artifacts, and MailDev-based email delivery. The guide is scenario-driven, so it is the best fit when you want to understand what the example is demonstrating and run the complete workflow in order.
+
+Pair that with [`example/quick_start.md`](/Users/scottcornell/src/my-projects/python-claw/example/quick_start.md), which focuses on the exact configuration needed to make the example succeed. In practice, the normal starting path is: copy `.env.demo` to `.env`, set `PYTHON_CLAW_LLM_API_KEY`, keep the provider/webchat/node-runner/delegation settings from `.env.demo`, then launch the stack with fresh volumes if you previously ran a different mode. If you are new to the repo, read `quick_start.md` first for the critical setup guardrails, then use `example.md` for the full walkthrough.
+
+## Documentation Guide
+
+### [`docs/Database.md`](/Users/scottcornell/src/my-projects/python-claw/docs/Database.md)
+
+This document maps the durable database schema to the feature set delivered through Specs `001` to `017`. It explains which tables exist, why they exist, how canonical and derived records differ, and how runtime features like approvals, delivery, delegation, collaboration, and recovery are represented in persisted state.
+
+### [`docs/env_settings.md`](/Users/scottcornell/src/my-projects/python-claw/docs/env_settings.md)
+
+This is the detailed configuration reference for the `PYTHON_CLAW_` environment model. It explains how settings are loaded, the expected format for each value type, and how important options such as policy profiles, tool profiles, agent overrides, runtime mode, and other operational controls affect startup and runtime behavior.
+
+### [`docs/initial_design.md`](/Users/scottcornell/src/my-projects/python-claw/docs/initial_design.md)
+
+This document captures the original architectural translation from OpenClaw concepts into a Python-first design using FastAPI, LangChain, LangGraph, PostgreSQL, Redis, and a separate node-runner layer. It is the best high-level reference if you want to understand the intended service boundaries, why the gateway owns routing, and how the major subsystems were meant to fit together.
+
+### [`docs/agents_sub_agents_v2.md`](/Users/scottcornell/src/my-projects/python-claw/docs/agents_sub_agents_v2.md)
+
+This guide explains how agents and delegated child agents work in the current codebase, including bootstrap, runtime profile binding, delegation packaging, child-session creation, and parent/child run coordination. It also compares the implemented behavior to OpenClaw concepts so you can see which multi-agent features are already present, which are partial, and where the current design is intentionally narrower.
+
+### [`docs/architecture_change.md`](/Users/scottcornell/src/my-projects/python-claw/docs/architecture_change.md)
+
+This document describes a specific architecture fix for the approval-continuation bug in delegated child runs. It explains the original deduplication collision, the introduction of an `AWAITING_APPROVAL` delegation state plus a separate `delegation_approval_prompt` trigger, and the tests that verify the parent now receives both the approval prompt and the final child result correctly.
+
 ## What Is Implemented
 
 The current repository includes these major slices from the spec set:
