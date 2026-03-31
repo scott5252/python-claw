@@ -11,6 +11,14 @@ It is written to answer four practical questions:
 
 The schema authority is the code in [`src/db/models.py`](/Users/scottcornell/src/my-projects/python-claw/src/db/models.py) plus the migration history in [`migrations/versions`](/Users/scottcornell/src/my-projects/python-claw/migrations/versions).
 
+For day-to-day behavior, the main database write paths live in:
+
+- [`src/sessions/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/repository.py)
+- [`src/jobs/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/jobs/repository.py)
+- [`src/delegations/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/delegations/repository.py)
+- [`src/capabilities/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/capabilities/repository.py)
+- [`src/execution/audit.py`](/Users/scottcornell/src/my-projects/python-claw/src/execution/audit.py)
+
 ## 1. Big Picture
 
 The database is the durable source of truth for the system.
@@ -36,6 +44,20 @@ At a high level, the tables fall into these groups:
 - delegation and child-session orchestration
 - collaboration and operator workflow
 - rate limiting and production hardening
+
+## 1.1 Project Structure for Database Ownership
+
+The repository is structured so database concerns are concentrated in a small set of modules:
+
+- [`src/db`](/Users/scottcornell/src/my-projects/python-claw/src/db) defines SQLAlchemy base/session wiring and the schema models
+- [`migrations`](/Users/scottcornell/src/my-projects/python-claw/migrations) is the schema change history and deployment authority
+- [`src/sessions`](/Users/scottcornell/src/my-projects/python-claw/src/sessions) owns conversation-core records plus a large share of derived-state, approval, and delivery persistence
+- [`src/jobs`](/Users/scottcornell/src/my-projects/python-claw/src/jobs) owns queue rows, leases, retries, and scheduler persistence
+- [`src/delegations`](/Users/scottcornell/src/my-projects/python-claw/src/delegations) owns parent/child delegation rows and event history
+- [`src/capabilities`](/Users/scottcornell/src/my-projects/python-claw/src/capabilities) owns governed activation lookups and agent sandbox profile persistence
+- [`src/execution`](/Users/scottcornell/src/my-projects/python-claw/src/execution) owns durable node execution auditing
+
+That structure matches the current codebase: most services orchestrate behavior, while repositories and audit modules perform the durable writes.
 
 ## 2. Spec-to-Schema Map
 
@@ -104,12 +126,15 @@ Some tables track current state and therefore update in place:
 - `execution_runs`
 - `scheduled_jobs`
 - `scheduled_job_fires`
+- `model_profiles`
+- `agent_profiles`
 - `resource_proposals`
 - `active_resources`
 - `outbox_jobs`
 - `outbound_deliveries`
 - `approval_action_prompts`
 - `node_execution_audits`
+- `agent_sandbox_profiles`
 - `rate_limit_counters`
 
 ### Durable identity boundaries
@@ -120,12 +145,16 @@ Important durable identities in the schema:
 - inbound dedupe identity: `channel_kind + channel_account_id + external_message_id`
 - run identity: `execution_runs(trigger_kind, trigger_ref)`
 - summary identity: `summary_snapshots(session_id, snapshot_version)`
+- retrieval chunk identity: `retrieval_records(session_id, source_kind, source_id, chunk_index, content_hash, derivation_strategy_id)`
+- attachment extraction identity: `attachment_extractions(attachment_id, extractor_kind, derivation_strategy_id)`
 - outbox identity: `outbox_jobs.job_dedupe_key`
 - delivery identity: `outbound_deliveries(outbound_intent_id, chunk_index)`
 - delivery attempt identity: `outbound_delivery_attempts(outbound_delivery_id, attempt_number)`
 - stream event identity: `outbound_delivery_stream_events(outbound_delivery_attempt_id, sequence_number)`
 - exact approval identity: proposal + version + typed action + canonical params hash
 - delegation identity: `delegations(parent_run_id, parent_tool_call_correlation_id)`
+- scheduled fire identity: `scheduled_job_fires.fire_key`
+- rate-limit identity: `rate_limit_counters(scope_kind, scope_key, window_seconds, window_start)`
 - collaboration concurrency identity: `sessions.collaboration_version`
 
 ## 4. Main Runtime Relationships
@@ -408,6 +437,7 @@ Key rule:
 Purpose:
 
 - activation lifecycle after approval
+- current activation state for an exact approved action identity
 
 Important columns:
 
@@ -1102,6 +1132,7 @@ Runtime, governance, and approvals:
 - [`src/graphs/nodes.py`](/Users/scottcornell/src/my-projects/python-claw/src/graphs/nodes.py)
 - [`src/policies/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/policies/service.py)
 - [`src/policies/approval_actions.py`](/Users/scottcornell/src/my-projects/python-claw/src/policies/approval_actions.py)
+- [`src/capabilities/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/capabilities/repository.py)
 - [`src/capabilities/activation.py`](/Users/scottcornell/src/my-projects/python-claw/src/capabilities/activation.py)
 
 Context, memory, retrieval, media, and delivery:
@@ -1116,7 +1147,9 @@ Context, memory, retrieval, media, and delivery:
 
 Agents, delegation, collaboration, and diagnostics:
 
+- [`src/agents/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/agents/repository.py)
 - [`src/agents/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/agents/service.py)
+- [`src/delegations/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/delegations/repository.py)
 - [`src/delegations/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/delegations/service.py)
 - [`src/sessions/collaboration.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/collaboration.py)
 - [`src/observability/diagnostics.py`](/Users/scottcornell/src/my-projects/python-claw/src/observability/diagnostics.py)
