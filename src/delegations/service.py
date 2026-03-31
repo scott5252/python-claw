@@ -228,7 +228,11 @@ class DelegationService:
         delegation = self.repository.get_by_child_run(db, child_run_id=child_run_id)
         if delegation is None or delegation.status == DelegationStatus.CANCELLED.value:
             return None
-        payload = self.build_result_payload(db, delegation_id=delegation.id)
+        payload = self.build_result_payload(
+            db,
+            delegation_id=delegation.id,
+            status_override=DelegationStatus.COMPLETED.value,
+        )
         parent_session = self.session_repository.get_session(db, delegation.parent_session_id)
         if parent_session is None:
             raise RuntimeError("parent session missing")
@@ -396,7 +400,13 @@ class DelegationService:
             payload={"reason": cancel_reason},
         )
 
-    def build_result_payload(self, db: Session, *, delegation_id: str) -> DelegationResultPayload:
+    def build_result_payload(
+        self,
+        db: Session,
+        *,
+        delegation_id: str,
+        status_override: str | None = None,
+    ) -> DelegationResultPayload:
         delegation = self.repository.get_delegation(db, delegation_id=delegation_id)
         if delegation is None:
             raise RuntimeError("delegation not found")
@@ -429,7 +439,10 @@ class DelegationService:
             child_session_id=delegation.child_session_id,
             child_run_id=delegation.child_run_id,
             child_agent_id=delegation.child_agent_id,
-            status=delegation.status if delegation.status != DelegationStatus.QUEUED.value else "completed",
+            status=(
+                status_override
+                or (delegation.status if delegation.status != DelegationStatus.QUEUED.value else "completed")
+            ),
             summary_text=summary_text,
             pending_approvals=pending_approvals,
             tool_event_count=len([item for item in artifacts if item.artifact_kind == "tool_result"]),
@@ -468,6 +481,17 @@ class DelegationService:
             limit=self.settings.delegation_package_transcript_turns,
             before_message_id=None,
         )
+        filtered_transcript = [
+            row
+            for row in transcript
+            if not (
+                row.role == "system"
+                and (
+                    row.sender_id.startswith("system:delegation_result:")
+                    or row.sender_id.startswith("system:delegation_approval:")
+                )
+            )
+        ]
         payload: dict[str, object] = {
             "parent_session_id": parent_session_id,
             "parent_message_id": parent_message_id,
@@ -482,7 +506,7 @@ class DelegationService:
             "summary_text": None if summary is None else summary.summary_text,
             "recent_transcript": [
                 {"role": row.role, "sender_id": row.sender_id, "content": row.content}
-                for row in transcript
+                for row in filtered_transcript
             ],
         }
         content = self._build_child_instruction(
@@ -494,7 +518,7 @@ class DelegationService:
             notes=notes,
             transcript=[
                 {"role": row.role, "sender_id": row.sender_id, "content": row.content}
-                for row in transcript
+                for row in filtered_transcript
             ],
             summary_text=None if summary is None else summary.summary_text,
         )

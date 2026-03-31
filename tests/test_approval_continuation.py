@@ -490,6 +490,7 @@ def test_approval_continuation_completes_without_deduplication_collision(session
         db.commit()
 
     assert payload is not None
+    assert payload.status == DelegationStatus.COMPLETED.value
     assert "successfully" in payload.summary_text
 
     # -----------------------------------------------------------------------
@@ -508,6 +509,11 @@ def test_approval_continuation_completes_without_deduplication_collision(session
         assert parent_result_run.trigger_kind == "delegation_result"
         assert parent_result_run.trigger_ref == delegation_result.delegation_id
         assert parent_result_run.status == "queued"
+        parent_result_message = repository.get_message(db, message_id=delegation.parent_result_message_id)
+        assert parent_result_message is not None
+        parent_payload = json.loads(parent_result_message.content)
+        assert parent_payload["status"] == DelegationStatus.COMPLETED.value
+        assert parent_payload["summary_text"] == "Deployment curl command executed successfully."
 
         # The approval-prompt notification run is a separate run.
         notification_run = jobs.get_execution_run_by_trigger(
@@ -528,3 +534,92 @@ def test_approval_continuation_completes_without_deduplication_collision(session
         assert len(parent_delegation_runs) == 2
         trigger_kinds = {run.trigger_kind for run in parent_delegation_runs}
         assert trigger_kinds == {"delegation_approval_prompt", "delegation_result"}
+
+
+def test_context_package_filters_internal_delegation_system_messages(session_manager) -> None:
+    settings = _settings(str(session_manager.engine.url))
+    app = create_app(settings=settings, session_manager=session_manager)
+    repository = SessionRepository()
+    jobs = JobsRepository()
+    delegation_service = app.state.delegation_service
+
+    with session_manager.session() as db:
+        parent_session = repository.get_or_create_session(
+            db,
+            normalize_routing_input(
+                RoutingInput(
+                    channel_kind="webchat",
+                    channel_account_id="acct",
+                    sender_id="user-4",
+                    peer_id="user-4",
+                )
+            ),
+            owner_agent_id="default-agent",
+        )
+        user_message = repository.append_message(
+            db,
+            parent_session,
+            role=MessageRole.USER.value,
+            content="Deploy northwind-api to staging.",
+            external_message_id="approval-cont-test4-user",
+            sender_id="user-4",
+            last_activity_at=datetime.now(timezone.utc),
+        )
+        repository.append_message(
+            db,
+            parent_session,
+            role=MessageRole.SYSTEM.value,
+            content='{"kind":"delegation_result","status":"completed"}',
+            external_message_id=None,
+            sender_id="system:delegation_result:deploy-agent",
+            last_activity_at=datetime.now(timezone.utc),
+        )
+        repository.append_message(
+            db,
+            parent_session,
+            role=MessageRole.SYSTEM.value,
+            content='{"kind":"delegation_result","status":"awaiting_approval"}',
+            external_message_id=None,
+            sender_id="system:delegation_approval:deploy-agent",
+            last_activity_at=datetime.now(timezone.utc),
+        )
+        run = jobs.create_or_get_execution_run(
+            db,
+            session_id=parent_session.id,
+            message_id=user_message.id,
+            agent_id="default-agent",
+            trigger_kind="inbound_message",
+            trigger_ref=f"test4-{user_message.id}",
+            lane_key=parent_session.id,
+            max_attempts=2,
+        )
+        result = delegation_service.create_delegation(
+            db,
+            policy_service=PolicyService(
+                allowed_capabilities={"echo_text", "delegate_to_agent", "remote_exec"},
+                delegation_enabled=True,
+                max_delegation_depth=2,
+                allowed_child_agent_ids={"deploy-agent"},
+                remote_execution_enabled=True,
+            ),
+            parent_session_id=parent_session.id,
+            parent_message_id=user_message.id,
+            parent_run_id=run.id,
+            parent_agent_id="default-agent",
+            parent_policy_profile_key="default",
+            parent_tool_profile_key="default",
+            correlation_id="tool-call-test4",
+            child_agent_id="deploy-agent",
+            task_text="POST to the webhook with curl.",
+            delegation_kind="deployment",
+        )
+        delegation = delegation_service.repository.get_delegation(db, delegation_id=result.delegation_id)
+        assert delegation is not None
+        context_payload = json.loads(delegation.context_payload_json)
+        recent_transcript = context_payload["recent_transcript"]
+        db.commit()
+
+    sender_ids = [item["sender_id"] for item in recent_transcript]
+    assert "system:delegation_result:deploy-agent" not in sender_ids
+    assert "system:delegation_approval:deploy-agent" not in sender_ids
+    assert "user-4" in sender_ids

@@ -31,6 +31,21 @@ class StubModel(ModelAdapter):
         return self.result
 
 
+@dataclass
+class CountingModel(ModelAdapter):
+    calls: int = 0
+
+    def complete_turn(self, *, state: AssistantState, available_tools: list[str]) -> ModelTurnResult:
+        _ = state
+        _ = available_tools
+        self.calls += 1
+        return ModelTurnResult(
+            needs_tools=False,
+            tool_requests=[],
+            response_text="model should not run",
+        )
+
+
 def _create_session(session_manager) -> tuple[str, int]:
     repository = SessionRepository()
     routing = normalize_routing_input(
@@ -100,6 +115,64 @@ def test_graph_branches_deterministically_without_tools(session_manager) -> None
 
     assert state.needs_tools is False
     assert state.response_text == "plain response"
+
+
+def test_graph_consumes_terminal_delegation_result_without_reinvoking_model(session_manager) -> None:
+    repository = SessionRepository()
+    routing = normalize_routing_input(
+        RoutingInput(
+            channel_kind="web",
+            channel_account_id="acct",
+            sender_id="sender",
+            peer_id="peer",
+        )
+    )
+    terminal_payload = json.dumps(
+        {
+            "kind": "delegation_result",
+            "delegation_id": "delegation-1",
+            "child_agent_id": "deploy-agent",
+            "status": "completed",
+            "summary_text": "Deployment event posted successfully.",
+            "pending_approvals": [],
+        },
+        sort_keys=True,
+    )
+    with session_manager.session() as db:
+        session = repository.get_or_create_session(db, routing)
+        message = repository.append_message(
+            db,
+            session,
+            role="system",
+            content=terminal_payload,
+            external_message_id=None,
+            sender_id="system:delegation_result:deploy-agent",
+            last_activity_at=session.created_at,
+        )
+        db.commit()
+
+    model = CountingModel()
+    graph = _build_graph(
+        repository=repository,
+        policy_service=PolicyService(),
+        model=model,
+        registry=ToolRegistry(factories={}),
+    )
+
+    with session_manager.session() as db:
+        state = graph.invoke(
+            db=db,
+            session_id=session.id,
+            message_id=message.id,
+            agent_id="default-agent",
+            channel_kind="web",
+            sender_id="system:delegation_result:deploy-agent",
+            user_text=terminal_payload,
+        )
+        db.commit()
+
+    assert model.calls == 0
+    assert state.response_text == "Deployment event posted successfully."
 
 
 def test_registry_filters_tools_by_policy_and_context() -> None:

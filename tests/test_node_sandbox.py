@@ -344,3 +344,45 @@ def test_remote_execution_runtime_dispatches_one_signed_request(session_manager,
 
     assert result.status == "completed"
     assert len(captured) == 1
+
+
+def test_sandbox_resolves_empty_workspace_for_none_binding(session_manager, tmp_path) -> None:
+    settings = Settings(
+        database_url=str(session_manager.engine.url),
+        sandbox_workspace_root=str(tmp_path / "sandboxes"),
+    )
+    capabilities_repository = CapabilitiesRepository()
+    template = NodeCommandTemplate.from_payload(
+        {
+            "executable": "/bin/echo",
+            "argv_template": ["hello"],
+            "env_allowlist": [],
+            "working_dir": None,
+            "workspace_binding_kind": "none",
+            "fixed_workspace_key": None,
+            "workspace_mount_mode": "none",
+            "typed_action_id": "tool.remote_exec",
+            "sandbox_profile_key": "default",
+            "timeout_seconds": 5,
+            "capability_name": "remote_exec",
+        }
+    )
+
+    with session_manager.session() as db:
+        capabilities_repository.upsert_agent_sandbox_profile(
+            db,
+            agent_id="deploy-agent",
+            default_mode="agent",
+            shared_profile_key="shared-default",
+            allow_off_mode=False,
+            max_timeout_seconds=5,
+        )
+        sandbox = SandboxService(settings=settings, capabilities_repository=capabilities_repository).resolve(
+            db,
+            agent_id="deploy-agent",
+            session_id="session-1",
+            template=template,
+        )
+
+    assert sandbox.workspace_root == ""
+    assert sandbox.workspace_mount_mode == "none"

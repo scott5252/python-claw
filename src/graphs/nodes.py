@@ -122,11 +122,8 @@ def _record_governance_audit(
 
 
 def _build_delegation_approval_response(*, user_text: str) -> str | None:
-    try:
-        payload = json.loads(user_text)
-    except Exception:
-        return None
-    if not isinstance(payload, dict) or payload.get("kind") != "delegation_result":
+    payload = _parse_delegation_result_payload(user_text=user_text)
+    if payload is None:
         return None
     pending_approvals = payload.get("pending_approvals")
     if not isinstance(pending_approvals, list) or not pending_approvals:
@@ -159,6 +156,37 @@ def _build_delegation_approval_response(*, user_text: str) -> str | None:
         ]
     )
     return "\n".join(lines)
+
+
+def _parse_delegation_result_payload(*, user_text: str) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(user_text)
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or payload.get("kind") != "delegation_result":
+        return None
+    return payload
+
+
+def _build_terminal_delegation_result_response(*, user_text: str) -> str | None:
+    payload = _parse_delegation_result_payload(user_text=user_text)
+    if payload is None:
+        return None
+    pending_approvals = payload.get("pending_approvals")
+    if isinstance(pending_approvals, list) and pending_approvals:
+        return None
+    status = str(payload.get("status") or "").strip().lower()
+    if status not in {"completed", "failed"}:
+        return None
+    child_agent_id = str(payload.get("child_agent_id") or "child-agent")
+    summary_text = str(payload.get("summary_text") or "").strip()
+    if status == "failed":
+        if summary_text:
+            return f"`{child_agent_id}` could not complete the delegated work.\n\n{summary_text}"
+        return f"`{child_agent_id}` could not complete the delegated work."
+    if summary_text:
+        return summary_text
+    return f"`{child_agent_id}` completed the delegated work."
 
 
 def _friendly_capability_label(*, capability_name: str) -> str:
@@ -719,6 +747,12 @@ def execute_turn_with_options(
     delegation_approval_response = _build_delegation_approval_response(user_text=state.user_text)
     if delegation_approval_response is not None:
         state.response_text = delegation_approval_response
+        if persist_final_message:
+            persist_final_state(db=db, state=state, dependencies=dependencies)
+        return state
+    terminal_delegation_result_response = _build_terminal_delegation_result_response(user_text=state.user_text)
+    if terminal_delegation_result_response is not None:
+        state.response_text = terminal_delegation_result_response
         if persist_final_message:
             persist_final_state(db=db, state=state, dependencies=dependencies)
         return state
