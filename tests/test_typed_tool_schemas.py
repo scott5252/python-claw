@@ -15,6 +15,7 @@ from src.providers.models import ModelAdapter, ProviderBackedModelAdapter, Provi
 from src.sessions.repository import SessionRepository
 from src.tools.local_safe import EchoTextRequest, create_echo_text_tool
 from src.tools.messaging import SendMessageRequest, create_send_message_tool
+from src.tools.delegation import _format_delegation_queued_message
 from src.tools.registry import ToolRegistry, ToolSchemaValidationError
 from src.tools.remote_exec import RemoteExecRequest, create_remote_exec_tool
 from src.tools.typed_actions import get_typed_action
@@ -108,6 +109,21 @@ def test_schema_version_changes_approval_identity_without_typed_action_drift() -
     assert typed_action is not None
     assert typed_action.typed_action_id == "tool.send_message"
     assert hash_v1 != hash_v2
+
+
+def test_delegation_queued_message_includes_requested_work_and_expected_output() -> None:
+    message = _format_delegation_queued_message(
+        child_agent_id="notify-agent",
+        delegation_id="delegation-1",
+        task_text="Send a deployment-complete email for northwind-api staging.",
+        expected_output="Email queued successfully.",
+    )
+
+    assert "Queued bounded delegation to `notify-agent` as `delegation-1`." in message
+    assert "Requested work:" in message
+    assert "Send a deployment-complete email for northwind-api staging." in message
+    assert "Expected output:" in message
+    assert "Email queued successfully." in message
 
 
 def test_provider_tool_export_uses_bound_tool_schema_and_graph_keeps_validation_authority() -> None:

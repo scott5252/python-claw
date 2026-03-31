@@ -129,11 +129,13 @@ def _build_delegation_approval_response(*, user_text: str) -> str | None:
     if not isinstance(pending_approvals, list) or not pending_approvals:
         return None
     child_agent_id = str(payload.get("child_agent_id") or "child-agent")
+    task_text = str(payload.get("task_text") or "").strip()
     lines = [
         f"`{child_agent_id}` prepared the next step, but it needs your approval before it can continue.",
-        "",
-        "Pending approvals:",
     ]
+    if task_text:
+        lines.extend(["", "Requested work:", task_text])
+    lines.extend(["", "Pending approvals:"])
     for index, item in enumerate(pending_approvals, start=1):
         if not isinstance(item, dict):
             continue
@@ -143,10 +145,13 @@ def _build_delegation_approval_response(*, user_text: str) -> str | None:
         if not proposal_id:
             continue
         lines.append(f"{index}. Action: `{capability_name}`")
+        detail = _describe_pending_approval(item=item)
+        if detail:
+            lines.append(f"   Purpose: {detail}")
         lines.append(f"   Proposal ID: `{proposal_id}`")
         if next_action:
             lines.append(f"   To approve: `{next_action}`")
-    if len(lines) == 3:
+    if len(lines) <= (5 if task_text else 3):
         return None
     lines.extend(
         [
@@ -156,6 +161,37 @@ def _build_delegation_approval_response(*, user_text: str) -> str | None:
         ]
     )
     return "\n".join(lines)
+
+
+def _describe_pending_approval(*, item: dict[str, Any]) -> str:
+    capability_name = str(item.get("capability_name") or "").strip()
+    canonical_params = item.get("canonical_params")
+    if not isinstance(canonical_params, dict):
+        return ""
+    if capability_name == "remote_exec":
+        url = str(canonical_params.get("url") or "").strip()
+        if url:
+            return f"POST to `{url}`."
+        script = str(canonical_params.get("script") or "").strip()
+        if script:
+            return _describe_remote_exec_script(script=script)
+    return ""
+
+
+def _describe_remote_exec_script(*, script: str) -> str:
+    lowered = script.lower()
+    if "deploy_report.py" in script and "deploy_report.json" in script:
+        return "Generate `deploy_report.json`, write `deploy_report.py`, and run the report script."
+    if "deploy_report.json" in script:
+        return "Generate `deploy_report.json`."
+    if "smtplib" in lowered:
+        return "Send an email notification."
+    if "open(" in script and "print(" in script:
+        return "Run a Python script that reads a file and prints the result."
+    compact = " ".join(line.strip() for line in script.splitlines() if line.strip())
+    if len(compact) > 120:
+        compact = compact[:117] + "..."
+    return f"Run Python code: `{compact}`"
 
 
 def _parse_delegation_result_payload(*, user_text: str) -> dict[str, Any] | None:
@@ -179,14 +215,21 @@ def _build_terminal_delegation_result_response(*, user_text: str) -> str | None:
     if status not in {"completed", "failed"}:
         return None
     child_agent_id = str(payload.get("child_agent_id") or "child-agent")
+    task_text = str(payload.get("task_text") or "").strip()
     summary_text = str(payload.get("summary_text") or "").strip()
     if status == "failed":
+        lines = [f"`{child_agent_id}` could not complete the delegated work."]
+        if task_text:
+            lines.extend(["", "Requested work:", task_text])
         if summary_text:
-            return f"`{child_agent_id}` could not complete the delegated work.\n\n{summary_text}"
-        return f"`{child_agent_id}` could not complete the delegated work."
+            lines.extend(["", "Result:", summary_text])
+        return "\n".join(lines)
+    lines = [f"`{child_agent_id}` completed the delegated work."]
+    if task_text:
+        lines.extend(["", "Requested work:", task_text])
     if summary_text:
-        return summary_text
-    return f"`{child_agent_id}` completed the delegated work."
+        lines.extend(["", "Result:", summary_text])
+    return "\n".join(lines)
 
 
 def _friendly_capability_label(*, capability_name: str) -> str:
@@ -223,28 +266,41 @@ def _format_approval_confirmed_message(
     *,
     capability_name: str,
     proposal_id: str,
+    canonical_params: dict[str, Any] | None = None,
     continuation_enqueued: bool = False,
     continuation_agent_id: str | None = None,
 ) -> str:
     action_label = _friendly_capability_label(capability_name=capability_name)
+    detail = _describe_pending_approval(
+        item={
+            "capability_name": capability_name,
+            "canonical_params": canonical_params or {},
+        }
+    )
     if continuation_enqueued:
         agent_label = f"`{continuation_agent_id}`" if continuation_agent_id else "The delegated agent"
-        return "\n".join(
-            [
-                f"Approval recorded for proposal `{proposal_id}`.",
-                "",
-                f"You have authorized the system to {action_label}.",
-                f"{agent_label} is continuing automatically now, so you do not need to resend your original request.",
-            ]
-        )
-    return "\n".join(
-        [
+        lines = [
             f"Approval recorded for proposal `{proposal_id}`.",
             "",
-            f"You have authorized the system to {action_label}.",
-            "Next step: resend your original request so the authorized action can run.",
         ]
-    )
+        if detail:
+            lines.append(f"You have authorized the system to: {detail}")
+        else:
+            lines.append(f"You have authorized the system to {action_label}.")
+        lines.append(
+            f"{agent_label} is continuing automatically now, so you do not need to resend your original request."
+        )
+        return "\n".join(lines)
+    lines = [
+        f"Approval recorded for proposal `{proposal_id}`.",
+        "",
+    ]
+    if detail:
+        lines.append(f"You have authorized the system to: {detail}")
+    else:
+        lines.append(f"You have authorized the system to {action_label}.")
+    lines.append("Next step: resend your original request so the authorized action can run.")
+    return "\n".join(lines)
 
 
 def _format_approval_denied_message(*, proposal_id: str) -> str:
@@ -319,6 +375,7 @@ def _handle_approval_decision(
         state.response_text = _format_approval_confirmed_message(
             capability_name=packet["capability_name"],
             proposal_id=proposal_id,
+            canonical_params=packet.get("canonical_params"),
             continuation_enqueued=result.continuation_enqueued,
             continuation_agent_id=result.continuation_agent_id,
         )
@@ -362,6 +419,7 @@ def _handle_approval_decision(
     state.response_text = _format_approval_confirmed_message(
         capability_name=packet["capability_name"],
         proposal_id=proposal_id,
+        canonical_params=packet.get("canonical_params"),
     )
     return state
 

@@ -201,6 +201,7 @@ def test_paused_for_approval_marks_delegation_awaiting_and_queues_notification(s
         assert payload["status"] == DelegationStatus.AWAITING_APPROVAL.value
         assert payload["delegation_id"] == delegation_result.delegation_id
         assert payload["child_agent_id"] == "deploy-agent"
+        assert payload["task_text"] == "POST to the webhook with curl."
 
         # NO delegation_result run should exist yet.
         delegation_result_run = jobs.get_execution_run_by_trigger(

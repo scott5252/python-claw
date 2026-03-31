@@ -218,12 +218,26 @@ Wait until both are healthy:
 docker compose --env-file .env -f docker-compose.yml ps
 ```
 
+Verify that the `openassistant` database exists:
+
+```bash
+docker exec -it python-claw-postgres psql -U openassistant -d postgres -c '\l'
+```
+
+You should see `openassistant` in the database list. If it is missing, create it manually:
+
+```bash
+docker exec -it python-claw-postgres psql -U openassistant -d postgres -c 'CREATE DATABASE openassistant;'
+```
+
 Run database migrations:
 
 ```bash
 docker compose --env-file .env -f docker-compose.yml -f docker-compose.app.yml \
   run --rm gateway uv run alembic upgrade head
 ```
+
+The migration command creates the schema and tables inside the database. It does not create the PostgreSQL database itself.
 
 Then build and start the application services:
 
@@ -284,12 +298,36 @@ Press Enter (or click Send).
 1. Your message appears on the right (blue bubble).
 2. The session ID appears as a system message.
 3. Within a few seconds, assistant responses appear on the left:
-   - The parent agent confirms it is delegating to `deploy-agent`.
-   - A user-friendly approval message appears explaining that `deploy-agent` is ready to run the deployment command, but needs approval first.
-   - The message includes:
-     - the action name `remote_exec`
-     - the proposal ID on its own line
-     - the exact approval command to type
+   - The parent agent first shows a queued delegation message such as:
+
+```text
+Queued bounded delegation to `deploy-agent` as `<delegation-id>`.
+
+Requested work:
+Deploy the app northwind-api to staging using remote_exec to POST to the webhook.
+
+Expected output:
+Deployment initiated
+```
+
+   - Then a user-friendly approval message appears showing what `deploy-agent` is trying to do, for example:
+
+```text
+`deploy-agent` prepared the next step, but it needs your approval before it can continue.
+
+Requested work:
+Deploy the app northwind-api to staging using remote_exec to POST to the webhook.
+
+Pending approvals:
+1. Action: `remote_exec`
+   Purpose: POST to `http://host.docker.internal:3001/deploy-events`.
+   Proposal ID: `<proposal-id>`
+   To approve: `approve <proposal-id>`
+
+Reply with the approval command for the proposal you want to activate.
+After approval, the delegated agent will continue automatically.
+```
+
    - If you only see `Received: ...`, the app is still using the rule-based profile from older database state. Go back to Step 3 and run the `down -v` reset before starting the stack again.
 
 ## Step 5: Chat — Approve The Deployment Action
@@ -302,7 +340,15 @@ approve <paste-proposal-id-here>
 
 ### What happens
 
-1. The approval is recorded and the `remote_exec` action is activated.
+1. The approval is recorded and the `remote_exec` action is activated. The chat confirms what you approved, for example:
+
+```text
+Approval recorded for proposal `<proposal-id>`.
+
+You have authorized the system to: POST to `http://host.docker.internal:3001/deploy-events`.
+`deploy-agent` is continuing automatically now, so you do not need to resend your original request.
+```
+
 2. The system automatically enqueues a continuation run for `deploy-agent` — **you do not need to resend the original message**.
 3. Within a few seconds the worker picks up the continuation, the `curl` command executes on the node-runner, and the parent agent receives the delegation result.
 4. Check **Terminal 2** (webhook receiver) — you should see:
@@ -314,7 +360,17 @@ Body: {"correlation_id":"northwind-api-staging-001","event":"deployment_started"
 ---
 ```
 
-5. The parent agent responds in the chat confirming the deployment command ran.
+5. The parent agent responds in the chat with a completion message that includes the original requested work and the result, for example:
+
+```text
+`deploy-agent` completed the delegated work.
+
+Requested work:
+Deploy the app northwind-api to staging using remote_exec to POST to the webhook.
+
+Result:
+Deployment curl command executed successfully.
+```
 
 ## Step 6: Send The Deployment Callback
 
@@ -332,6 +388,36 @@ curl -X POST http://localhost:8000/inbound/message \
     "content": "deployment_callback status=completed app=northwind-api environment=staging correlation_id=northwind-api-staging-001"
   }'
 ```
+
+What this command accomplishes:
+
+- It simulates the external deployment system calling back into `python-claw`
+- It creates a new inbound message on the same `webchat` session
+- It lets the parent agent continue the workflow using the callback data
+
+Example output:
+
+```json
+{
+  "session_id": "3d0d8f26-7eb5-4bd9-b93d-4fe3c5b3794e",
+  "message_id": 117,
+  "run_id": "run-callback-001",
+  "status": "queued",
+  "dedupe_status": "accepted",
+  "trace_id": "trace-callback-001"
+}
+```
+
+Important output attributes:
+
+- `session_id`: the session the callback was routed into; it should match the existing chat session
+- `message_id`: the stored inbound callback message ID
+- `run_id`: the execution run queued to process the callback
+- `status`: the run state at acceptance time; typically `queued`
+- `dedupe_status`: whether the callback was newly accepted or treated as a duplicate
+- `trace_id`: the trace identifier you can use to correlate logs and diagnostics
+
+If you send the exact same callback again with the same `external_message_id`, the response will usually show `dedupe_status: "duplicate"` and point to the original session/message/run instead of creating a new one.
 
 The callback uses `peer_id: "demo-user"` to route into the **same session**. The parent LLM will see it in the chat transcript.
 
@@ -362,6 +448,53 @@ You should normally see a single approval message with one proposal ID. Then typ
 
 ```
 approve <paste-proposal-id-here>
+```
+
+You should see the same message pattern as in Steps 4 and 5:
+
+- A queued delegation message, for example:
+
+```text
+Queued bounded delegation to `code-agent` as `<delegation-id>`.
+
+Requested work:
+The deployment completed. Delegate to code-agent to generate a Python deployment report.
+```
+
+- An approval message, for example:
+
+```text
+`code-agent` prepared the next step, but it needs your approval before it can continue.
+
+Requested work:
+The deployment completed. Delegate to code-agent to generate a Python deployment report.
+
+Pending approvals:
+1. Action: `remote_exec`
+   Purpose: Generate `deploy_report.json`, write `deploy_report.py`, and run the report script.
+   Proposal ID: `<proposal-id>`
+   To approve: `approve <proposal-id>`
+```
+
+- After you approve, a confirmation message such as:
+
+```text
+Approval recorded for proposal `<proposal-id>`.
+
+You have authorized the system to: Generate `deploy_report.json`, write `deploy_report.py`, and run the report script.
+`code-agent` is continuing automatically now, so you do not need to resend your original request.
+```
+
+- Then a completion message such as:
+
+```text
+`code-agent` completed the delegated work.
+
+Requested work:
+The deployment completed. Delegate to code-agent to generate a Python deployment report.
+
+Result:
+Python deployment report generated successfully.
 ```
 
 ### Verify the generated files
@@ -395,6 +528,53 @@ Wait for the approval message with the proposal ID, then type:
 approve <paste-proposal-id-here>
 ```
 
+You should see the same message flow here as well:
+
+- A queued delegation message, for example:
+
+```text
+Queued bounded delegation to `notify-agent` as `<delegation-id>`.
+
+Requested work:
+Delegate to notify-agent to send a deployment-complete email.
+```
+
+- An approval message, for example:
+
+```text
+`notify-agent` prepared the next step, but it needs your approval before it can continue.
+
+Requested work:
+Delegate to notify-agent to send a deployment-complete email.
+
+Pending approvals:
+1. Action: `remote_exec`
+   Purpose: Send an email notification.
+   Proposal ID: `<proposal-id>`
+   To approve: `approve <proposal-id>`
+```
+
+- After approval, a confirmation message such as:
+
+```text
+Approval recorded for proposal `<proposal-id>`.
+
+You have authorized the system to: Send an email notification.
+`notify-agent` is continuing automatically now, so you do not need to resend your original request.
+```
+
+- Then a completion message such as:
+
+```text
+`notify-agent` completed the delegated work.
+
+Requested work:
+Delegate to notify-agent to send a deployment-complete email.
+
+Result:
+Email sent to ops-team@localhost.
+```
+
 ### Verify the email
 
 Open [http://localhost:1080](http://localhost:1080). You should see the email in MailDev.
@@ -406,25 +586,199 @@ Use the admin APIs to inspect everything that happened:
 ```bash
 BASE=http://localhost:8000
 AUTH='Authorization: Bearer demo-operator-token'
+```
 
-# Session
+### 9.1 List sessions for `default-agent`
+
+This command lists the sessions owned by `default-agent`. Use it to find the session ID for the chat you just ran.
+
+```bash
 curl -s "$BASE/agents/default-agent/sessions" -H "$AUTH" | python3 -m json.tool
+```
 
-# Messages (full transcript)
+Example output:
+
+```json
+[
+  {
+    "id": "3d0d8f26-7eb5-4bd9-b93d-4fe3c5b3794e",
+    "channel_kind": "webchat",
+    "channel_account_id": "webchat-demo",
+    "owner_agent_id": "default-agent",
+    "created_at": "2026-03-31T13:42:11.120Z",
+    "updated_at": "2026-03-31T13:45:02.901Z"
+  }
+]
+```
+
+Important attributes:
+
+- `id`: the session ID you will use in the next commands
+- `channel_kind`: the transport type; this demo uses `webchat`
+- `channel_account_id`: the configured webchat account; this demo uses `webchat-demo`
+- `owner_agent_id`: the top-level agent for the session
+- `created_at` / `updated_at`: when the session started and when it was last active
+
+### 9.2 Fetch the full message transcript
+
+This command shows every message in the session, including user messages, assistant responses, system messages, approvals, and delegated results.
+
+```bash
 curl -s "$BASE/sessions/<SESSION_ID>/messages" -H "$AUTH" | python3 -m json.tool
+```
 
-# Delegations
+Example output:
+
+```json
+[
+  {
+    "id": 101,
+    "role": "user",
+    "sender_id": "demo-user",
+    "content": "Deploy the app northwind-api to staging.",
+    "created_at": "2026-03-31T13:42:18.004Z"
+  },
+  {
+    "id": 102,
+    "role": "assistant",
+    "sender_id": "default-agent",
+    "content": "Queued bounded delegation to `deploy-agent` as `74f276be-c7fc-479c-a299-d446596ef257`.",
+    "created_at": "2026-03-31T13:42:19.337Z"
+  }
+]
+```
+
+Important attributes:
+
+- `id`: the message ID inside the session
+- `role`: who the message is from, such as `user`, `assistant`, or `system`
+- `sender_id`: the specific sender, such as `demo-user`, `default-agent`, or a system sender
+- `content`: the actual text shown in the chat or emitted by the system
+- `created_at`: when the message was stored
+
+### 9.3 List delegations for the session
+
+This command shows each child-agent delegation created from the parent session, including which specialist agent handled the task and its final status.
+
+```bash
 curl -s "$BASE/sessions/<SESSION_ID>/delegations" -H "$AUTH" | python3 -m json.tool
+```
 
-# All runs
+Example output:
+
+```json
+[
+  {
+    "id": "74f276be-c7fc-479c-a299-d446596ef257",
+    "child_agent_id": "deploy-agent",
+    "delegation_kind": "bounded",
+    "status": "completed",
+    "task_text": "Deploy the app northwind-api to staging using remote_exec to POST to the webhook.",
+    "created_at": "2026-03-31T13:42:19.331Z"
+  }
+]
+```
+
+Important attributes:
+
+- `id`: the delegation ID shown in the queued delegation message
+- `child_agent_id`: the specialist agent that received the work
+- `delegation_kind`: the delegation type; in this example it is bounded delegated work
+- `status`: the current lifecycle state such as `queued`, `awaiting_approval`, `completed`, or `failed`
+- `task_text`: the exact delegated task description
+- `created_at`: when the delegation was created
+
+### 9.4 List all execution runs
+
+This command shows the orchestration runs processed by the worker, including inbound message handling, approval continuations, and delegation result handling.
+
+```bash
 curl -s "$BASE/diagnostics/runs" -H "$AUTH" | python3 -m json.tool
+```
 
-# Node execution audits
+Example output:
+
+```json
+[
+  {
+    "id": "run-001",
+    "session_id": "3d0d8f26-7eb5-4bd9-b93d-4fe3c5b3794e",
+    "agent_id": "default-agent",
+    "trigger_kind": "inbound_message",
+    "status": "completed",
+    "created_at": "2026-03-31T13:42:18.010Z"
+  }
+]
+```
+
+Important attributes:
+
+- `id`: the execution run ID
+- `session_id`: the session this run belongs to
+- `agent_id`: which agent executed the run
+- `trigger_kind`: what started the run, such as `inbound_message`, `delegation_approval_prompt`, or `delegation_result`
+- `status`: the run state, such as `queued`, `running`, `completed`, or `failed`
+- `created_at`: when the run was created
+
+### 9.5 Inspect node execution audits
+
+This command shows the audited remote executions sent to the node-runner, including the child agent, tool capability, and execution outcome.
+
+```bash
 curl -s "$BASE/diagnostics/node-executions" -H "$AUTH" | python3 -m json.tool
+```
 
-# Outbound deliveries
+Example output:
+
+```json
+[
+  {
+    "correlation_id": "9347d7c7-ff72-49d7-b327-3984b22cb387",
+    "agent_id": "notify-agent",
+    "capability_name": "remote_exec",
+    "status": "completed",
+    "created_at": "2026-03-31T13:44:41.551Z"
+  }
+]
+```
+
+Important attributes:
+
+- `correlation_id`: the audit correlation ID, often aligned with the approval/delegation flow
+- `agent_id`: the child agent that requested the remote execution
+- `capability_name`: the governed capability; here it is `remote_exec`
+- `status`: whether the remote execution completed or failed
+- `created_at`: when the audit event was recorded
+
+### 9.6 Inspect outbound deliveries
+
+This command shows outbound delivery attempts created by the system, which is useful for understanding how assistant/system responses were delivered back to the chat channel.
+
+```bash
 curl -s "$BASE/diagnostics/deliveries" -H "$AUTH" | python3 -m json.tool
 ```
+
+Example output:
+
+```json
+[
+  {
+    "delivery_id": "delivery-001",
+    "session_id": "3d0d8f26-7eb5-4bd9-b93d-4fe3c5b3794e",
+    "delivery_kind": "chat_message",
+    "status": "sent",
+    "created_at": "2026-03-31T13:44:42.102Z"
+  }
+]
+```
+
+Important attributes:
+
+- `delivery_id`: the outbound delivery record ID
+- `session_id`: the related session
+- `delivery_kind`: the kind of outbound event, such as a chat message delivery
+- `status`: the delivery state, such as `pending`, `sent`, or `failed`
+- `created_at`: when the delivery record was created
 
 ## Webchat UI Features
 

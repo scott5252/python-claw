@@ -6,6 +6,13 @@ from src.graphs.state import ToolResultPayload, ToolRuntimeContext
 from src.tools.registry import ToolDefinition, ToolExecutionError, validation_error_from_pydantic
 
 
+def _format_delegation_queued_message(*, child_agent_id: str, delegation_id: str, task_text: str, expected_output: str | None) -> str:
+    lines = [f"Queued bounded delegation to `{child_agent_id}` as `{delegation_id}`.", "", "Requested work:", task_text]
+    if expected_output and expected_output.strip():
+        lines.extend(["", "Expected output:", expected_output.strip()])
+    return "\n".join(lines)
+
+
 class DelegateToAgentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -61,9 +68,11 @@ def create_delegate_to_agent_tool(context: ToolRuntimeContext) -> ToolDefinition
             notes=request.notes,
         )
         return ToolResultPayload(
-            content=(
-                f"Queued {request.delegation_kind} delegation to `{request.child_agent_id}` "
-                f"as `{result.delegation_id}`."
+            content=_format_delegation_queued_message(
+                child_agent_id=request.child_agent_id,
+                delegation_id=result.delegation_id,
+                task_text=request.task_text,
+                expected_output=request.expected_output,
             ),
             metadata={
                 "delegation_id": result.delegation_id,

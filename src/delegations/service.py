@@ -439,6 +439,7 @@ class DelegationService:
             child_session_id=delegation.child_session_id,
             child_run_id=delegation.child_run_id,
             child_agent_id=delegation.child_agent_id,
+            task_text=delegation.task_text,
             status=(
                 status_override
                 or (delegation.status if delegation.status != DelegationStatus.QUEUED.value else "completed")

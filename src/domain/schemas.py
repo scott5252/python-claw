@@ -116,6 +116,7 @@ class DelegationResultPayload(BaseModel):
     child_session_id: str
     child_run_id: str
     child_agent_id: str
+    task_text: str = ""
     status: str
     summary_text: str
     pending_approvals: list[dict[str, Any]] = Field(default_factory=list)

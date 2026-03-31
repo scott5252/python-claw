@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from src.capabilities.activation import ActivationController
 from src.context.service import ContextService
 from src.graphs.assistant_graph import GraphFactory
-from src.graphs.nodes import GraphDependencies
+from src.graphs.nodes import (
+    GraphDependencies,
+    _build_delegation_approval_response,
+    _build_terminal_delegation_result_response,
+    _format_approval_confirmed_message,
+)
 from src.graphs.state import AssistantState, ModelTurnResult, ToolRequest, ToolRuntimeContext, ToolRuntimeServices
 from src.observability.audit import ToolAuditSink
 from src.policies.service import PolicyService, canonicalize_params, hash_payload
@@ -173,6 +178,71 @@ def test_graph_consumes_terminal_delegation_result_without_reinvoking_model(sess
 
     assert model.calls == 0
     assert state.response_text == "Deployment event posted successfully."
+
+
+def test_delegation_approval_response_includes_requested_work_and_purpose() -> None:
+    response = _build_delegation_approval_response(
+        user_text=json.dumps(
+            {
+                "kind": "delegation_result",
+                "status": "awaiting_approval",
+                "child_agent_id": "notify-agent",
+                "task_text": "Send a deployment-complete email for northwind-api staging.",
+                "pending_approvals": [
+                    {
+                        "proposal_id": "proposal-1",
+                        "capability_name": "remote_exec",
+                        "next_action": "approve proposal-1",
+                        "canonical_params": {
+                            "script": "import smtplib\nprint('sending email')\n",
+                        },
+                    }
+                ],
+            }
+        )
+    )
+
+    assert response is not None
+    assert "Requested work:" in response
+    assert "Send a deployment-complete email for northwind-api staging." in response
+    assert "Purpose: Send an email notification." in response
+    assert "approve proposal-1" in response
+
+
+def test_approval_confirmed_message_includes_specific_purpose() -> None:
+    response = _format_approval_confirmed_message(
+        capability_name="remote_exec",
+        proposal_id="proposal-1",
+        canonical_params={"script": "import smtplib\nprint('sending email')\n"},
+        continuation_enqueued=True,
+        continuation_agent_id="notify-agent",
+    )
+
+    assert "Approval recorded for proposal `proposal-1`." in response
+    assert "You have authorized the system to: Send an email notification." in response
+    assert "`notify-agent` is continuing automatically now" in response
+
+
+def test_terminal_delegation_result_response_includes_requested_work_and_result() -> None:
+    response = _build_terminal_delegation_result_response(
+        user_text=json.dumps(
+            {
+                "kind": "delegation_result",
+                "status": "completed",
+                "child_agent_id": "notify-agent",
+                "task_text": "Send a deployment-complete email for northwind-api staging.",
+                "summary_text": "Email sent to ops-team@localhost.",
+                "pending_approvals": [],
+            }
+        )
+    )
+
+    assert response is not None
+    assert "`notify-agent` completed the delegated work." in response
+    assert "Requested work:" in response
+    assert "Send a deployment-complete email for northwind-api staging." in response
+    assert "Result:" in response
+    assert "Email sent to ops-team@localhost." in response
 
 
 def test_registry_filters_tools_by_policy_and_context() -> None:

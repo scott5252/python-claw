@@ -1390,6 +1390,7 @@ class SessionRepository:
             "content_hash": version.content_hash,
             "typed_action_id": payload["typed_action_id"],
             "capability_name": payload["capability_name"],
+            "canonical_params": payload["arguments"],
             "tool_schema_name": payload["tool_schema_name"],
             "tool_schema_version": payload["tool_schema_version"],
             "canonical_params_json": canonical_params_json,
