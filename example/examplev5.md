@@ -500,9 +500,66 @@ Python deployment report generated successfully.
 ### Verify the generated files
 
 ```bash
-docker exec python-claw-node-runner find /app/.claw-sandboxes/sessions/code-agent/ -type f 2>/dev/null
-docker exec python-claw-node-runner cat /app/.claw-sandboxes/sessions/code-agent/*/deploy_report.json 2>/dev/null
+docker exec python-claw-node-runner sh -lc 'find /app/.claw-sandboxes/agents/code-agent -type f 2>/dev/null'
+docker exec python-claw-node-runner sh -lc 'cat /app/.claw-sandboxes/agents/code-agent/deploy_report.json 2>/dev/null'
+docker exec python-claw-node-runner sh -lc 'cat /app/.claw-sandboxes/agents/code-agent/deploy_report.py 2>/dev/null'
 ```
+
+What these commands accomplish:
+
+- The first command lists the files created in the `code-agent` writable workspace
+- The second command shows the generated JSON deployment report
+- The third command shows the generated Python script that reads and prints the JSON
+
+Why this path is correct:
+
+- `code-agent` uses an agent-bound workspace, so its files are written under `/app/.claw-sandboxes/agents/code-agent`
+- The earlier `sessions/code-agent` path was incorrect for this demo configuration
+
+Example output for the first command:
+
+```text
+/app/.claw-sandboxes/agents/code-agent/deploy_report.json
+/app/.claw-sandboxes/agents/code-agent/deploy_report.py
+```
+
+What to look for:
+
+- `deploy_report.json`: confirms the report file was written
+- `deploy_report.py`: confirms the helper script was written
+
+Example output for the second command:
+
+```json
+{"app": "northwind-api", "environment": "staging", "status": "completed", "correlation_id": "northwind-api-staging-001", "generated_at": "2026-03-31T13:50:02.481438"}
+```
+
+Important JSON attributes:
+
+- `app`: the deployed application name
+- `environment`: the deployment target environment
+- `status`: the final deployment status
+- `correlation_id`: the deployment workflow identifier tying the report back to the earlier steps
+- `generated_at`: when the report file was generated
+
+Example output for the third command:
+
+```python
+import json
+
+with open("deploy_report.json", "r") as f:
+    data = json.load(f)
+
+print(data)
+```
+
+What to look for:
+
+- The script reads `deploy_report.json`
+- The script prints the parsed JSON object
+- The script lives in the same workspace as the JSON file
+
+If the first command returns nothing, `code-agent` likely printed a result without actually writing the files. In that case, the delegated script only partially followed the Step 7 request.
 
 ## Step 8: Chat — Request Email Notification
 
