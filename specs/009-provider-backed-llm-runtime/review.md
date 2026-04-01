@@ -12,8 +12,8 @@ Review Spec 009 against the current repository seams so the provider-backed runt
 ## Gap Review
 ### 1. Resolved: LLM-originated governed tool requests now have one canonical persistence path
 - Gap observed in the current codebase:
-  - ordinary model tool requests currently flow through `append_tool_proposal(...)` in [nodes.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/nodes.py#L264)
-  - deterministic approval-gated requests currently flow through `create_governance_proposal(...)` in [nodes.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/nodes.py#L177)
+  - ordinary model tool requests currently flow through `append_tool_proposal(...)` in [nodes.py](/src/graphs/nodes.py#L264)
+  - deterministic approval-gated requests currently flow through `create_governance_proposal(...)` in [nodes.py](/src/graphs/nodes.py#L177)
 - Options considered:
   - persist both a `tool_proposal` artifact and a governance proposal
   - persist a `tool_proposal` first, then translate it into governance state
@@ -26,7 +26,7 @@ Review Spec 009 against the current repository seams so the provider-backed runt
 
 ### 2. Resolved: Malformed semantic provider output now has one canonical safe-completion pattern
 - Gap observed in the current codebase:
-  - normal tool execution today persists proposal and result artifacts together in [nodes.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/nodes.py#L264)
+  - normal tool execution today persists proposal and result artifacts together in [nodes.py](/src/graphs/nodes.py#L264)
   - the provider-backed path needed a precise rule for malformed tool-like payloads so append-only artifact history and operator diagnostics stay consistent
 - Options considered:
   - always persist assistant fallback only
@@ -40,8 +40,8 @@ Review Spec 009 against the current repository seams so the provider-backed runt
 
 ### 3. Resolved: The backend-owned prompt contract is now explicit enough to hold graph and adapter boundaries
 - Gap observed in the current codebase:
-  - prompt construction is currently a plain string helper in [prompts.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/prompts.py#L1)
-  - the provider adapter currently receives only `AssistantState` plus `available_tools` names in [models.py](/Users/scottcornell/src/my-projects/python-claw/src/providers/models.py#L7)
+  - prompt construction is currently a plain string helper in [prompts.py](/src/graphs/prompts.py#L1)
+  - the provider adapter currently receives only `AssistantState` plus `available_tools` names in [models.py](/src/providers/models.py#L7)
 - Options considered:
   - let the provider adapter keep owning prompt meaning and build provider-native prompts from raw state only
   - keep only `available_tools: list[str]` and derive tool descriptions implicitly inside the adapter
@@ -55,7 +55,7 @@ Review Spec 009 against the current repository seams so the provider-backed runt
 ### 4. Resolved: Provider execution metadata now has one explicit round-trip path
 - Gap observed in the current codebase:
   - the spec wanted provider name, model name, prompt strategy, and related metadata visible in manifests or observability
-  - the existing `ModelTurnResult` contract in [state.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/state.py#L43) had no explicit way to return that metadata from the adapter to graph-owned persistence
+  - the existing `ModelTurnResult` contract in [state.py](/src/graphs/state.py#L43) had no explicit way to return that metadata from the adapter to graph-owned persistence
 - Options considered:
   - persist provider metadata through adapter-local logging only
   - mutate `state.context_manifest` inside the adapter as a side effect
@@ -68,7 +68,7 @@ Review Spec 009 against the current repository seams so the provider-backed runt
 
 ### 5. Resolved: Provider failure and retry classification now has one bounded cross-module seam
 - Gap observed in the current codebase:
-  - worker retry behavior is currently driven by generic exception handling in [jobs/service.py](/Users/scottcornell/src/my-projects/python-claw/src/jobs/service.py#L33)
+  - worker retry behavior is currently driven by generic exception handling in [jobs/service.py](/src/jobs/service.py#L33)
   - without a provider-specific internal error contract, the first implementation could drift into provider-SDK string matching or inconsistent retry decisions
 - Options considered:
   - let worker code inspect raw provider SDK exceptions directly
@@ -88,9 +88,9 @@ Review Spec 009 against the current repository seams so the provider-backed runt
 
 ## Plan Analysis Notes
 - The updated package now aligns better with the actual repository seams:
-  - [prompts.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/prompts.py#L1) can evolve from plain-string rendering to a typed payload without forcing adapter signature churn
-  - [state.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/state.py#L43) can absorb additive prompt and execution metadata fields without changing the append-only execution model
-  - [jobs/service.py](/Users/scottcornell/src/my-projects/python-claw/src/jobs/service.py#L33) now has a clearer target contract for provider failure and retry handling
+  - [prompts.py](/src/graphs/prompts.py#L1) can evolve from plain-string rendering to a typed payload without forcing adapter signature churn
+  - [state.py](/src/graphs/state.py#L43) can absorb additive prompt and execution metadata fields without changing the append-only execution model
+  - [jobs/service.py](/src/jobs/service.py#L33) now has a clearer target contract for provider failure and retry handling
 - The remaining implementation risk is normal slice complexity rather than unresolved contract ambiguity.
 
 ## Implementation Gate

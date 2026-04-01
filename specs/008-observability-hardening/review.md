@@ -60,7 +60,7 @@ Review Spec 008 against the updated `README.md`, the delivered capability path i
 - This prevents fake healthy signals for features that are stubbed, disabled, or not configured.
 
 ## Architecture Alignment
-- The slice stays aligned with the gateway-first architecture described in [README.md](/Users/scottcornell/src/my-projects/python-claw/README.md): gateway acceptance remains the front door, workers own queued execution, node-runner remains internal, and observability instruments those flows instead of redefining them.
+- The slice stays aligned with the gateway-first architecture described in [README.md](/README.md): gateway acceptance remains the front door, workers own queued execution, node-runner remains internal, and observability instruments those flows instead of redefining them.
 - Transcript-first durability is preserved because diagnostics and telemetry are derived from canonical records and additive instrumentation rather than becoming a second mutable state system.
 - The plan's module list fits the current repo structure, including existing gateway, worker, node-runner, queueing, media, execution, and `src/observability/` seams already present in the codebase.
 

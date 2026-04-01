@@ -1,12 +1,12 @@
 # Quick Start For `example`
 
-This guide was prepared by reviewing Specs `001` through `017`, [`docs/env_settings.md`](/Users/scottcornell/src/my-projects/python-claw/docs/env_settings.md), and [`example/example.md`](/Users/scottcornell/src/my-projects/python-claw/example/example.md). The current codebase is a gateway-first, database-backed assistant platform with durable sessions, queued worker execution, approval-gated remote execution, child-agent delegation, webchat delivery, and audited diagnostics.
+This guide was prepared by reviewing Specs `001` through `017`, [`docs/env_settings.md`](/docs/env_settings.md), and [`example/example.md`](/example/example.md). The current codebase is a gateway-first, database-backed assistant platform with durable sessions, queued worker execution, approval-gated remote execution, child-agent delegation, webchat delivery, and audited diagnostics.
 
 For `example`, the important takeaway is this: the demo is not driven by one setting. It depends on a coordinated `.env` profile that turns on provider-backed LLM execution, webchat ingress, durable approvals, delegation to specialist agents, HTTP node-runner remote execution, and the bootstrap templates that teach each child agent how to call `remote_exec`.
 
 ## What You Actually Need To Change
 
-If you start from [` .env.demo `](/Users/scottcornell/src/my-projects/python-claw/.env.demo), the only value you normally must replace is:
+If you start from [` .env.demo `](/.env.demo), the only value you normally must replace is:
 
 ```env
 PYTHON_CLAW_LLM_API_KEY=YOUR_OPENAI_API_KEY
@@ -14,11 +14,11 @@ PYTHON_CLAW_LLM_API_KEY=YOUR_OPENAI_API_KEY
 
 Everything else in `.env.demo` is already shaped for `example`. Still, those other values are required, because they control runtime mode, agent profiles, child-agent permissions, node-runner access, and webchat behavior.
 
-One webchat detail is easy to miss: the bundled browser client still sends a client token even when the `webchat-demo` account runs in fake mode. The gateway expects `X-Webchat-Client-Token: fake-webchat-token` for fake webchat accounts, which is why [`example/webchat.html`](/Users/scottcornell/src/my-projects/python-claw/example/webchat.html) works out of the box.
+One webchat detail is easy to miss: the bundled browser client still sends a client token even when the `webchat-demo` account runs in fake mode. The gateway expects `X-Webchat-Client-Token: fake-webchat-token` for fake webchat accounts, which is why [`example/webchat.html`](/example/webchat.html) works out of the box.
 
 ## Step-By-Step `.env` Setup
 
-1. Copy [` .env.demo `](/Users/scottcornell/src/my-projects/python-claw/.env.demo) to `.env`.
+1. Copy [` .env.demo `](/.env.demo) to `.env`.
 2. Replace `PYTHON_CLAW_LLM_API_KEY` with a valid OpenAI API key.
 3. Keep `PYTHON_CLAW_RUNTIME_MODE=provider` so the worker uses the provider-backed model instead of the rule-based fallback.
 4. Keep `PYTHON_CLAW_LLM_PROVIDER=openai` and `PYTHON_CLAW_LLM_MODEL=gpt-4o-mini` unless you intentionally want a different OpenAI model.
@@ -28,7 +28,7 @@ One webchat detail is easy to miss: the bundled browser client still sends a cli
 8. Keep `PYTHON_CLAW_REMOTE_EXECUTION_ENABLED=true`, and keep the `deploy-agent`, `code-agent`, and `notify-agent` policy/tool profiles enabled through `PYTHON_CLAW_POLICY_PROFILES`, `PYTHON_CLAW_TOOL_PROFILES`, and `PYTHON_CLAW_HISTORICAL_AGENT_PROFILE_OVERRIDES`.
 9. Keep `PYTHON_CLAW_REMOTE_EXEC_AGENT_TEMPLATES` populated. Without these templates, approved `remote_exec` calls from the child agents cannot resolve to an executable and argument template.
 10. Keep `PYTHON_CLAW_CHANNEL_ACCOUNTS=[{"channel_account_id":"webchat-demo","channel_kind":"webchat","mode":"fake"}]` so the example webchat UI can connect without live provider credentials.
-11. Use the default fake webchat client token from [`example/webchat.html`](/Users/scottcornell/src/my-projects/python-claw/example/webchat.html): `fake-webchat-token`. If you send requests with a different client, include header `X-Webchat-Client-Token: fake-webchat-token` or the gateway will reject the request.
+11. Use the default fake webchat client token from [`example/webchat.html`](/example/webchat.html): `fake-webchat-token`. If you send requests with a different client, include header `X-Webchat-Client-Token: fake-webchat-token` or the gateway will reject the request.
 12. Keep `PYTHON_CLAW_WEBCHAT_INTERACTIVE_APPROVALS_ENABLED=true` so approval prompts are rendered for the webchat surface.
 13. Keep the auth and diagnostics tokens populated. The runtime and the admin inspection steps both depend on them.
 14. If you change host ports such as `PYTHON_CLAW_POSTGRES_PORT` or `PYTHON_CLAW_REDIS_PORT`, also update your Docker usage accordingly. These two values affect host exposure, not the in-container service names used by `PYTHON_CLAW_DATABASE_URL`.
@@ -270,17 +270,17 @@ This step brings the durable platform online. Docker starts PostgreSQL, Redis, t
 
 This is the first step where the `.env` values materially change the database. In particular, `src/agents/bootstrap.py` seeds `model_profiles`, `agent_profiles`, and system bootstrap capability records for the child agents defined in `PYTHON_CLAW_REMOTE_EXEC_AGENT_TEMPLATES`.
 
-Use the same runtime sequence shown in [`example/example.md`](/Users/scottcornell/src/my-projects/python-claw/example/example.md):
+Use the same runtime sequence shown in [`example/example.md`](/example/example.md):
 
 1. Start MailDev: `maildev --smtp 1025 --web 1080`
-2. Start the webhook receiver from the [`example`](/Users/scottcornell/src/my-projects/python-claw/example) directory: `node webhook-receiver.js`
+2. Start the webhook receiver from the [`example`](/example) directory: `node webhook-receiver.js`
 3. If you previously ran the stack with older settings, reset volumes: `docker compose -f docker-compose.yml -f docker-compose.app.yml down -v`
 4. Start Postgres and Redis: `docker compose --env-file .env -f docker-compose.yml up -d postgres redis`
 5. Run migrations: `docker compose --env-file .env -f docker-compose.yml -f docker-compose.app.yml run --rm gateway uv run alembic upgrade head`
 6. Start the full app stack: `docker compose --env-file .env -f docker-compose.yml -f docker-compose.app.yml up -d --build`
 7. Tail the worker logs: `docker logs -f python-claw-worker`
 8. Tail the gateway logs in another terminal: `docker logs -f python-claw-gateway`
-9. Serve the browser UI from [`example`](/Users/scottcornell/src/my-projects/python-claw/example): `npx serve -l 3000 .`
+9. Serve the browser UI from [`example`](/example): `npx serve -l 3000 .`
 10. Open `http://localhost:3000/webchat.html` and confirm the system message `Connected to http://localhost:8000 as demo-user`
 
 ```mermaid
@@ -674,7 +674,7 @@ The final step is read-only. The admin and diagnostics APIs expose the durable s
 
 Nothing new is executed here. The system simply reads back the operational history that earlier steps wrote. The exact tables queried depend on which endpoint you call, but the example’s inspection flow covers the main runtime surfaces.
 
-Use the same minimal inspection sequence from [`example/example.md`](/Users/scottcornell/src/my-projects/python-claw/example/example.md):
+Use the same minimal inspection sequence from [`example/example.md`](/example/example.md):
 
 ```bash
 BASE=http://localhost:8000
@@ -741,4 +741,4 @@ To get `example` running, use `.env.demo` as the base, replace the OpenAI API ke
 - seeded remote-exec agent templates
 - webchat approval prompts enabled
 
-If those stay aligned, the example flow in [`example/example.md`](/Users/scottcornell/src/my-projects/python-claw/example/example.md) matches the current code structure and durable database behavior.
+If those stay aligned, the example flow in [`example/example.md`](/example/example.md) matches the current code structure and durable database behavior.

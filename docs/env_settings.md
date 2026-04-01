@@ -1,11 +1,11 @@
 # Environment Settings Guide
 
-This document explains every setting in [.env.example](/Users/scottcornell/src/my-projects/python-claw/.env.example) and how it relates to the behavior described in the README and Specs 001 through 017.
+This document explains every setting in [.env.example](/.env.example) and how it relates to the behavior described in the README and Specs 001 through 017.
 
 ## How configuration is loaded
 
 - The app loads a project-root `.env` file through `python-dotenv`.
-- Only variables prefixed with `PYTHON_CLAW_` are read by the application settings model in [src/config/settings.py](/Users/scottcornell/src/my-projects/python-claw/src/config/settings.py).
+- Only variables prefixed with `PYTHON_CLAW_` are read by the application settings model in [src/config/settings.py](/src/config/settings.py).
 - Unknown `PYTHON_CLAW_` variables are ignored rather than failing startup.
 - If the same setting exists in both the shell environment and `.env`, the already-exported shell environment value wins because dotenv is loaded with `override=False`.
 

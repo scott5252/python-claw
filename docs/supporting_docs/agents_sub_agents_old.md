@@ -45,11 +45,11 @@ An agent is identified by `agent_profiles.agent_id`. Each agent profile points t
 - one settings-backed policy profile through `policy_profile_key`
 - one settings-backed tool profile through `tool_profile_key`
 
-This is resolved by [`src/agents/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/agents/service.py).
+This is resolved by [`src/agents/service.py`](/src/agents/service.py).
 
 ### Settings-backed configuration
 
-Some agent behavior is not stored in tables. It comes from environment settings parsed by [`src/config/settings.py`](/Users/scottcornell/src/my-projects/python-claw/src/config/settings.py):
+Some agent behavior is not stored in tables. It comes from environment settings parsed by [`src/config/settings.py`](/src/config/settings.py):
 
 - `PYTHON_CLAW_DEFAULT_AGENT_ID`
 - `PYTHON_CLAW_POLICY_PROFILES`
@@ -86,7 +86,7 @@ Important implementation detail:
 
 ### Bootstrap flow
 
-At app startup, [`bootstrap_agent_profiles()`](/Users/scottcornell/src/my-projects/python-claw/src/agents/bootstrap.py) does the following:
+At app startup, [`bootstrap_agent_profiles()`](/src/agents/bootstrap.py) does the following:
 
 1. Creates a default `model_profiles` row if one does not already exist.
 2. Finds historical or configured agent IDs from runs, sessions, overrides, and `default_agent_id`.
@@ -118,7 +118,7 @@ Agents do not communicate through in-memory callbacks. They communicate through 
 
 When a parent agent uses the `delegate_to_agent` tool:
 
-1. `delegate_to_agent` validates the request in [`src/tools/delegation.py`](/Users/scottcornell/src/my-projects/python-claw/src/tools/delegation.py).
+1. `delegate_to_agent` validates the request in [`src/tools/delegation.py`](/src/tools/delegation.py).
 2. It calls `DelegationService.create_delegation(...)`.
 3. `DelegationService` creates:
    - a `delegations` row
@@ -151,7 +151,7 @@ This means parent/child coordination is asynchronous and durable.
 
 ### What the child actually sees
 
-The child receives a text instruction built in [`src/delegations/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/delegations/service.py) by `_build_child_instruction(...)`. It includes:
+The child receives a text instruction built in [`src/delegations/service.py`](/src/delegations/service.py) by `_build_child_instruction(...)`. It includes:
 
 - child agent id
 - parent agent id
@@ -172,11 +172,11 @@ Each run is bound to a model through `AgentExecutionBinding.model`, resolved fro
 
 The LLM input is constructed from:
 
-- transcript context from [`src/context/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/context/service.py)
-- system instructions and tool definitions from [`src/graphs/prompts.py`](/Users/scottcornell/src/my-projects/python-claw/src/graphs/prompts.py)
+- transcript context from [`src/context/service.py`](/src/context/service.py)
+- system instructions and tool definitions from [`src/graphs/prompts.py`](/src/graphs/prompts.py)
 - bound tool visibility from policy/tool profiles
 
-The runtime converts that to a JSON prompt payload in [`src/providers/models.py`](/Users/scottcornell/src/my-projects/python-claw/src/providers/models.py).
+The runtime converts that to a JSON prompt payload in [`src/providers/models.py`](/src/providers/models.py).
 
 ### Parent agent to LLM
 
@@ -198,7 +198,7 @@ Child runs use the same path, except:
 
 ### Current provider implementation
 
-The only provider-backed adapter implemented today is OpenAI's Responses API client in [`src/providers/models.py`](/Users/scottcornell/src/my-projects/python-claw/src/providers/models.py).
+The only provider-backed adapter implemented today is OpenAI's Responses API client in [`src/providers/models.py`](/src/providers/models.py).
 
 Important limitation:
 
@@ -314,34 +314,34 @@ If an agent uses remote execution:
 
 ### Agent profile resolution
 
-- [`src/agents/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/agents/repository.py)
-- [`src/agents/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/agents/service.py)
-- [`src/agents/bootstrap.py`](/Users/scottcornell/src/my-projects/python-claw/src/agents/bootstrap.py)
+- [`src/agents/repository.py`](/src/agents/repository.py)
+- [`src/agents/service.py`](/src/agents/service.py)
+- [`src/agents/bootstrap.py`](/src/agents/bootstrap.py)
 
 ### Session and message lifecycle
 
-- [`src/sessions/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/service.py)
-- [`src/sessions/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/repository.py)
+- [`src/sessions/service.py`](/src/sessions/service.py)
+- [`src/sessions/repository.py`](/src/sessions/repository.py)
 
 ### Run queue and worker execution
 
-- [`src/jobs/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/jobs/repository.py)
-- [`src/jobs/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/jobs/service.py)
+- [`src/jobs/repository.py`](/src/jobs/repository.py)
+- [`src/jobs/service.py`](/src/jobs/service.py)
 
 ### Delegation and child orchestration
 
-- [`src/tools/delegation.py`](/Users/scottcornell/src/my-projects/python-claw/src/tools/delegation.py)
-- [`src/delegations/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/delegations/repository.py)
-- [`src/delegations/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/delegations/service.py)
+- [`src/tools/delegation.py`](/src/tools/delegation.py)
+- [`src/delegations/repository.py`](/src/delegations/repository.py)
+- [`src/delegations/service.py`](/src/delegations/service.py)
 
 ### LLM runtime and tool execution
 
-- [`apps/gateway/deps.py`](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/deps.py)
-- [`src/graphs/assistant_graph.py`](/Users/scottcornell/src/my-projects/python-claw/src/graphs/assistant_graph.py)
-- [`src/graphs/nodes.py`](/Users/scottcornell/src/my-projects/python-claw/src/graphs/nodes.py)
-- [`src/graphs/prompts.py`](/Users/scottcornell/src/my-projects/python-claw/src/graphs/prompts.py)
-- [`src/providers/models.py`](/Users/scottcornell/src/my-projects/python-claw/src/providers/models.py)
-- [`src/policies/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/policies/service.py)
+- [`apps/gateway/deps.py`](/apps/gateway/deps.py)
+- [`src/graphs/assistant_graph.py`](/src/graphs/assistant_graph.py)
+- [`src/graphs/nodes.py`](/src/graphs/nodes.py)
+- [`src/graphs/prompts.py`](/src/graphs/prompts.py)
+- [`src/providers/models.py`](/src/providers/models.py)
+- [`src/policies/service.py`](/src/policies/service.py)
 
 ## 7. How to Set Up and Configure Agents and Sub-Agents to Use Local Ollama LLMs
 
@@ -391,11 +391,11 @@ If you want robust Ollama support, the clean next step is:
 
 ### What exists now
 
-There is currently one shared global prompt builder in [`src/graphs/prompts.py`](/Users/scottcornell/src/my-projects/python-claw/src/graphs/prompts.py).
+There is currently one shared global prompt builder in [`src/graphs/prompts.py`](/src/graphs/prompts.py).
 
 The main system instructions are hard-coded there. They are not currently customized per agent profile.
 
-For child sessions, there is a second hard-coded delegated-task instruction builder in [`src/delegations/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/delegations/service.py).
+For child sessions, there is a second hard-coded delegated-task instruction builder in [`src/delegations/service.py`](/src/delegations/service.py).
 
 ### Important limitation
 
@@ -415,11 +415,11 @@ So today:
 
 To change the general assistant prompt:
 
-- edit `build_prompt_payload()` in [`src/graphs/prompts.py`](/Users/scottcornell/src/my-projects/python-claw/src/graphs/prompts.py)
+- edit `build_prompt_payload()` in [`src/graphs/prompts.py`](/src/graphs/prompts.py)
 
 To change child-agent task framing:
 
-- edit `_build_child_instruction()` in [`src/delegations/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/delegations/service.py)
+- edit `_build_child_instruction()` in [`src/delegations/service.py`](/src/delegations/service.py)
 
 ### Recommended future improvement
 

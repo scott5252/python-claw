@@ -9,29 +9,29 @@ The codebase now reflects Specs `001` through `017`. This README is intended to 
 
 ## Example Guides
 
-If you want the fastest path to seeing the system work end-to-end, start with [`example/example.md`](/Users/scottcornell/src/my-projects/python-claw/example/example.md). It walks through the full local demo: browser-based webchat, Dockerized gateway/worker/node-runner services, OpenAI-backed execution, approval-gated `remote_exec`, child-agent delegation, webhook callbacks, generated deployment artifacts, and MailDev-based email delivery. The guide is scenario-driven, so it is the best fit when you want to understand what the example is demonstrating and run the complete workflow in order.
+If you want the fastest path to seeing the system work end-to-end, start with [`example/example.md`](/example/example.md). It walks through the full local demo: browser-based webchat, Dockerized gateway/worker/node-runner services, OpenAI-backed execution, approval-gated `remote_exec`, child-agent delegation, webhook callbacks, generated deployment artifacts, and MailDev-based email delivery. The guide is scenario-driven, so it is the best fit when you want to understand what the example is demonstrating and run the complete workflow in order.
 
-Pair that with [`example/quick_start.md`](/Users/scottcornell/src/my-projects/python-claw/example/quick_start.md), which focuses on the exact configuration needed to make the example succeed. In practice, the normal starting path is: copy `.env.demo` to `.env`, set `PYTHON_CLAW_LLM_API_KEY`, keep the provider/webchat/node-runner/delegation settings from `.env.demo`, then launch the stack with fresh volumes if you previously ran a different mode. If you are new to the repo, read `quick_start.md` first for the critical setup guardrails, then use `example.md` for the full walkthrough.
+Pair that with [`example/quick_start.md`](/example/quick_start.md), which focuses on the exact configuration needed to make the example succeed. In practice, the normal starting path is: copy `.env.demo` to `.env`, set `PYTHON_CLAW_LLM_API_KEY`, keep the provider/webchat/node-runner/delegation settings from `.env.demo`, then launch the stack with fresh volumes if you previously ran a different mode. If you are new to the repo, read `quick_start.md` first for the critical setup guardrails, then use `example.md` for the full walkthrough.
 
 ## Documentation Guide
 
-### [`docs/Database.md`](/Users/scottcornell/src/my-projects/python-claw/docs/Database.md)
+### [`docs/Database.md`](/docs/Database.md)
 
 This document maps the durable database schema to the feature set delivered through Specs `001` to `017`. It explains which tables exist, why they exist, how canonical and derived records differ, and how runtime features like approvals, delivery, delegation, collaboration, and recovery are represented in persisted state.
 
-### [`docs/env_settings.md`](/Users/scottcornell/src/my-projects/python-claw/docs/env_settings.md)
+### [`docs/env_settings.md`](/docs/env_settings.md)
 
 This is the detailed configuration reference for the `PYTHON_CLAW_` environment model. It explains how settings are loaded, the expected format for each value type, and how important options such as policy profiles, tool profiles, agent overrides, runtime mode, and other operational controls affect startup and runtime behavior.
 
-### [`docs/initial_design.md`](/Users/scottcornell/src/my-projects/python-claw/docs/initial_design.md)
+### [`docs/initial_design.md`](/docs/initial_design.md)
 
 This document captures the original architectural translation from OpenClaw concepts into a Python-first design using FastAPI, LangChain, LangGraph, PostgreSQL, Redis, and a separate node-runner layer. It is the best high-level reference if you want to understand the intended service boundaries, why the gateway owns routing, and how the major subsystems were meant to fit together.
 
-### [`docs/agents_sub_agents_v2.md`](/Users/scottcornell/src/my-projects/python-claw/docs/agents_sub_agents_v2.md)
+### [`docs/agents_sub_agents_v2.md`](/docs/agents_sub_agents_v2.md)
 
 This guide explains how agents and delegated child agents work in the current codebase, including bootstrap, runtime profile binding, delegation packaging, child-session creation, and parent/child run coordination. It also compares the implemented behavior to OpenClaw concepts so you can see which multi-agent features are already present, which are partial, and where the current design is intentionally narrower.
 
-### [`docs/architecture_change.md`](/Users/scottcornell/src/my-projects/python-claw/docs/architecture_change.md)
+### [`docs/architecture_change.md`](/docs/architecture_change.md)
 
 This document describes a specific architecture fix for the approval-continuation bug in delegated child runs. It explains the original deduplication collision, the introduction of an `AWAITING_APPROVAL` delegation state plus a separate `delegation_approval_prompt` trigger, and the tests that verify the parent now receives both the approval prompt and the final child result correctly.
 
@@ -114,91 +114,91 @@ flowchart LR
 
 ### App entrypoints
 
-- [`apps/gateway/main.py`](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/main.py) creates the main FastAPI app and wires all gateway routers and services.
-- [`apps/node_runner/main.py`](/Users/scottcornell/src/my-projects/python-claw/apps/node_runner/main.py) creates the internal node-runner service.
-- [`scripts/worker_loop.py`](/Users/scottcornell/src/my-projects/python-claw/scripts/worker_loop.py) runs the continuous worker poll loop.
+- [`apps/gateway/main.py`](/apps/gateway/main.py) creates the main FastAPI app and wires all gateway routers and services.
+- [`apps/node_runner/main.py`](/apps/node_runner/main.py) creates the internal node-runner service.
+- [`scripts/worker_loop.py`](/scripts/worker_loop.py) runs the continuous worker poll loop.
 
 ### API layer
 
-- [`apps/gateway/api/inbound.py`](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/api/inbound.py): canonical `POST /inbound/message`
-- [`apps/gateway/api/slack.py`](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/api/slack.py): Slack provider ingress
-- [`apps/gateway/api/telegram.py`](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/api/telegram.py): Telegram webhook ingress
-- [`apps/gateway/api/webchat.py`](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/api/webchat.py): webchat send, poll, stream, approval interactions
-- [`apps/gateway/api/admin.py`](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/api/admin.py): sessions, runs, agents, profiles, diagnostics, collaboration/operator reads and actions
-- [`apps/gateway/api/health.py`](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/api/health.py): health and readiness
-- [`apps/node_runner/api/internal.py`](/Users/scottcornell/src/my-projects/python-claw/apps/node_runner/api/internal.py): signed internal exec API
+- [`apps/gateway/api/inbound.py`](/apps/gateway/api/inbound.py): canonical `POST /inbound/message`
+- [`apps/gateway/api/slack.py`](/apps/gateway/api/slack.py): Slack provider ingress
+- [`apps/gateway/api/telegram.py`](/apps/gateway/api/telegram.py): Telegram webhook ingress
+- [`apps/gateway/api/webchat.py`](/apps/gateway/api/webchat.py): webchat send, poll, stream, approval interactions
+- [`apps/gateway/api/admin.py`](/apps/gateway/api/admin.py): sessions, runs, agents, profiles, diagnostics, collaboration/operator reads and actions
+- [`apps/gateway/api/health.py`](/apps/gateway/api/health.py): health and readiness
+- [`apps/node_runner/api/internal.py`](/apps/node_runner/api/internal.py): signed internal exec API
 
 ### Domain and persistence
 
-- [`src/db/models.py`](/Users/scottcornell/src/my-projects/python-claw/src/db/models.py): SQLAlchemy models for sessions, messages, runs, governance, deliveries, agents, context, collaboration, quotas, and more
-- [`src/db/session.py`](/Users/scottcornell/src/my-projects/python-claw/src/db/session.py): database session manager
-- [`migrations/versions`](/Users/scottcornell/src/my-projects/python-claw/migrations/versions): Alembic migrations
-- [`src/domain/schemas.py`](/Users/scottcornell/src/my-projects/python-claw/src/domain/schemas.py): typed request/response and domain contracts
+- [`src/db/models.py`](/src/db/models.py): SQLAlchemy models for sessions, messages, runs, governance, deliveries, agents, context, collaboration, quotas, and more
+- [`src/db/session.py`](/src/db/session.py): database session manager
+- [`migrations/versions`](/migrations/versions): Alembic migrations
+- [`src/domain/schemas.py`](/src/domain/schemas.py): typed request/response and domain contracts
 
 ### Session, routing, and queueing
 
-- [`src/routing/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/routing/service.py): canonical session-key resolution
-- [`src/sessions/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/service.py): inbound persistence, session ownership, run creation
-- [`src/sessions/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/repository.py): session/message persistence
-- [`src/jobs/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/jobs/service.py): run claiming, execution, retries, recovery interactions
-- [`src/jobs/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/jobs/repository.py): `execution_runs`, leases, and queue records
-- [`src/gateway/idempotency.py`](/Users/scottcornell/src/my-projects/python-claw/src/gateway/idempotency.py): inbound dedupe handling
+- [`src/routing/service.py`](/src/routing/service.py): canonical session-key resolution
+- [`src/sessions/service.py`](/src/sessions/service.py): inbound persistence, session ownership, run creation
+- [`src/sessions/repository.py`](/src/sessions/repository.py): session/message persistence
+- [`src/jobs/service.py`](/src/jobs/service.py): run claiming, execution, retries, recovery interactions
+- [`src/jobs/repository.py`](/src/jobs/repository.py): `execution_runs`, leases, and queue records
+- [`src/gateway/idempotency.py`](/src/gateway/idempotency.py): inbound dedupe handling
 
 ### Runtime, tools, and policies
 
-- [`src/graphs/assistant_graph.py`](/Users/scottcornell/src/my-projects/python-claw/src/graphs/assistant_graph.py): graph assembly
-- [`src/graphs/nodes.py`](/Users/scottcornell/src/my-projects/python-claw/src/graphs/nodes.py): node logic for thinking, tool execution, persistence, approvals, delegation handling
-- [`src/graphs/state.py`](/Users/scottcornell/src/my-projects/python-claw/src/graphs/state.py): assistant state contract
-- [`src/execution/runtime.py`](/Users/scottcornell/src/my-projects/python-claw/src/execution/runtime.py): runtime orchestration
-- [`src/tools/registry.py`](/Users/scottcornell/src/my-projects/python-claw/src/tools/registry.py): tool registry and binding
-- [`src/tools/local_safe.py`](/Users/scottcornell/src/my-projects/python-claw/src/tools/local_safe.py): safe local tools
-- [`src/tools/messaging.py`](/Users/scottcornell/src/my-projects/python-claw/src/tools/messaging.py): outbound message tooling
-- [`src/tools/remote_exec.py`](/Users/scottcornell/src/my-projects/python-claw/src/tools/remote_exec.py): governed remote execution tool
-- [`src/tools/delegation.py`](/Users/scottcornell/src/my-projects/python-claw/src/tools/delegation.py): child-agent delegation tool
-- [`src/tools/typed_actions.py`](/Users/scottcornell/src/my-projects/python-claw/src/tools/typed_actions.py): canonical action identity and schemas
-- [`src/policies/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/policies/service.py): policy checks, approvals, deterministic approve/revoke flows
-- [`src/policies/quota.py`](/Users/scottcornell/src/my-projects/python-claw/src/policies/quota.py): rate limiting and quota service
+- [`src/graphs/assistant_graph.py`](/src/graphs/assistant_graph.py): graph assembly
+- [`src/graphs/nodes.py`](/src/graphs/nodes.py): node logic for thinking, tool execution, persistence, approvals, delegation handling
+- [`src/graphs/state.py`](/src/graphs/state.py): assistant state contract
+- [`src/execution/runtime.py`](/src/execution/runtime.py): runtime orchestration
+- [`src/tools/registry.py`](/src/tools/registry.py): tool registry and binding
+- [`src/tools/local_safe.py`](/src/tools/local_safe.py): safe local tools
+- [`src/tools/messaging.py`](/src/tools/messaging.py): outbound message tooling
+- [`src/tools/remote_exec.py`](/src/tools/remote_exec.py): governed remote execution tool
+- [`src/tools/delegation.py`](/src/tools/delegation.py): child-agent delegation tool
+- [`src/tools/typed_actions.py`](/src/tools/typed_actions.py): canonical action identity and schemas
+- [`src/policies/service.py`](/src/policies/service.py): policy checks, approvals, deterministic approve/revoke flows
+- [`src/policies/quota.py`](/src/policies/quota.py): rate limiting and quota service
 
 ### Context, media, and delivery
 
-- [`src/context/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/context/service.py): context assembly from transcript and derived records
-- [`src/context/outbox.py`](/Users/scottcornell/src/my-projects/python-claw/src/context/outbox.py): after-turn work orchestration
-- [`src/memory/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/memory/service.py): durable memory extraction/storage
-- [`src/retrieval/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/retrieval/service.py): retrieval rows and selection
-- [`src/media/processor.py`](/Users/scottcornell/src/my-projects/python-claw/src/media/processor.py): attachment normalization and storage
-- [`src/media/extraction.py`](/Users/scottcornell/src/my-projects/python-claw/src/media/extraction.py): attachment text extraction
-- [`src/channels/dispatch.py`](/Users/scottcornell/src/my-projects/python-claw/src/channels/dispatch.py): outbound dispatch and delivery persistence
-- [`src/channels/adapters/webchat.py`](/Users/scottcornell/src/my-projects/python-claw/src/channels/adapters/webchat.py): poll/stream capable adapter
-- [`src/channels/adapters/slack.py`](/Users/scottcornell/src/my-projects/python-claw/src/channels/adapters/slack.py): Slack adapter
-- [`src/channels/adapters/telegram.py`](/Users/scottcornell/src/my-projects/python-claw/src/channels/adapters/telegram.py): Telegram adapter
+- [`src/context/service.py`](/src/context/service.py): context assembly from transcript and derived records
+- [`src/context/outbox.py`](/src/context/outbox.py): after-turn work orchestration
+- [`src/memory/service.py`](/src/memory/service.py): durable memory extraction/storage
+- [`src/retrieval/service.py`](/src/retrieval/service.py): retrieval rows and selection
+- [`src/media/processor.py`](/src/media/processor.py): attachment normalization and storage
+- [`src/media/extraction.py`](/src/media/extraction.py): attachment text extraction
+- [`src/channels/dispatch.py`](/src/channels/dispatch.py): outbound dispatch and delivery persistence
+- [`src/channels/adapters/webchat.py`](/src/channels/adapters/webchat.py): poll/stream capable adapter
+- [`src/channels/adapters/slack.py`](/src/channels/adapters/slack.py): Slack adapter
+- [`src/channels/adapters/telegram.py`](/src/channels/adapters/telegram.py): Telegram adapter
 
 ### Agents, delegation, sandboxing, and security
 
-- [`src/agents/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/agents/service.py): agent/model/tool/policy profile lookup
-- [`src/agents/bootstrap.py`](/Users/scottcornell/src/my-projects/python-claw/src/agents/bootstrap.py): profile bootstrap/seeding
-- [`src/delegations/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/delegations/service.py): child-session orchestration and delegation lifecycle
-- [`src/sandbox/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/sandbox/service.py): sandbox selection and workspace rules
-- [`src/security/signing.py`](/Users/scottcornell/src/my-projects/python-claw/src/security/signing.py): request signing/verification
-- [`apps/node_runner/policy.py`](/Users/scottcornell/src/my-projects/python-claw/apps/node_runner/policy.py): node-runner admission checks
-- [`apps/node_runner/executor.py`](/Users/scottcornell/src/my-projects/python-claw/apps/node_runner/executor.py): command execution and audit recording
+- [`src/agents/service.py`](/src/agents/service.py): agent/model/tool/policy profile lookup
+- [`src/agents/bootstrap.py`](/src/agents/bootstrap.py): profile bootstrap/seeding
+- [`src/delegations/service.py`](/src/delegations/service.py): child-session orchestration and delegation lifecycle
+- [`src/sandbox/service.py`](/src/sandbox/service.py): sandbox selection and workspace rules
+- [`src/security/signing.py`](/src/security/signing.py): request signing/verification
+- [`apps/node_runner/policy.py`](/apps/node_runner/policy.py): node-runner admission checks
+- [`apps/node_runner/executor.py`](/apps/node_runner/executor.py): command execution and audit recording
 
 ### Collaboration and observability
 
-- [`src/sessions/collaboration.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/collaboration.py): takeover, pause/resume, assignment, notes
-- [`src/observability/health.py`](/Users/scottcornell/src/my-projects/python-claw/src/observability/health.py): liveness and readiness helpers
-- [`src/observability/diagnostics.py`](/Users/scottcornell/src/my-projects/python-claw/src/observability/diagnostics.py): operator diagnostics reads
-- [`src/observability/audit.py`](/Users/scottcornell/src/my-projects/python-claw/src/observability/audit.py): structured audit events
-- [`src/observability/redaction.py`](/Users/scottcornell/src/my-projects/python-claw/src/observability/redaction.py): masking/redaction
-- [`src/observability/metrics.py`](/Users/scottcornell/src/my-projects/python-claw/src/observability/metrics.py): metrics facade
-- [`src/observability/tracing.py`](/Users/scottcornell/src/my-projects/python-claw/src/observability/tracing.py): tracing facade
+- [`src/sessions/collaboration.py`](/src/sessions/collaboration.py): takeover, pause/resume, assignment, notes
+- [`src/observability/health.py`](/src/observability/health.py): liveness and readiness helpers
+- [`src/observability/diagnostics.py`](/src/observability/diagnostics.py): operator diagnostics reads
+- [`src/observability/audit.py`](/src/observability/audit.py): structured audit events
+- [`src/observability/redaction.py`](/src/observability/redaction.py): masking/redaction
+- [`src/observability/metrics.py`](/src/observability/metrics.py): metrics facade
+- [`src/observability/tracing.py`](/src/observability/tracing.py): tracing facade
 
 ### Tests
 
-- [`tests/test_api.py`](/Users/scottcornell/src/my-projects/python-claw/tests/test_api.py): gateway and route behavior
-- [`tests/test_runtime.py`](/Users/scottcornell/src/my-projects/python-claw/tests/test_runtime.py): graph/runtime behavior
-- [`tests/test_integration.py`](/Users/scottcornell/src/my-projects/python-claw/tests/test_integration.py): end-to-end integration slices
-- [`tests/test_provider_runtime.py`](/Users/scottcornell/src/my-projects/python-claw/tests/test_provider_runtime.py): provider mode
-- [`tests/test_spec_011.py`](/Users/scottcornell/src/my-projects/python-claw/tests/test_spec_011.py) through [`tests/test_spec_017.py`](/Users/scottcornell/src/my-projects/python-claw/tests/test_spec_017.py): later-spec coverage
+- [`tests/test_api.py`](/tests/test_api.py): gateway and route behavior
+- [`tests/test_runtime.py`](/tests/test_runtime.py): graph/runtime behavior
+- [`tests/test_integration.py`](/tests/test_integration.py): end-to-end integration slices
+- [`tests/test_provider_runtime.py`](/tests/test_provider_runtime.py): provider mode
+- [`tests/test_spec_011.py`](/tests/test_spec_011.py) through [`tests/test_spec_017.py`](/tests/test_spec_017.py): later-spec coverage
 
 ## Important Persisted Records
 
@@ -218,11 +218,11 @@ The database contains the main durable system state in tables such as:
 - quota counters and stale-work recovery metadata
 - node execution audits
 
-The exact schema lives in [`src/db/models.py`](/Users/scottcornell/src/my-projects/python-claw/src/db/models.py) and the migration history in [`migrations/versions`](/Users/scottcornell/src/my-projects/python-claw/migrations/versions).
+The exact schema lives in [`src/db/models.py`](/src/db/models.py) and the migration history in [`migrations/versions`](/migrations/versions).
 
 ## Configuration
 
-The application loads environment variables from a project-root `.env` file using the `PYTHON_CLAW_` prefix. The canonical settings model is [`src/config/settings.py`](/Users/scottcornell/src/my-projects/python-claw/src/config/settings.py).
+The application loads environment variables from a project-root `.env` file using the `PYTHON_CLAW_` prefix. The canonical settings model is [`src/config/settings.py`](/src/config/settings.py).
 
 ### Minimal local `.env`
 
@@ -389,7 +389,7 @@ If the repository includes an example env file, start from it. Otherwise create 
 
 ### 3. Start infrastructure
 
-[`docker-compose.yml`](/Users/scottcornell/src/my-projects/python-claw/docker-compose.yml) starts only PostgreSQL and Redis:
+[`docker-compose.yml`](/docker-compose.yml) starts only PostgreSQL and Redis:
 
 ```bash
 docker compose --env-file .env up -d
@@ -455,14 +455,14 @@ There are two Compose files and they are meant to be used together.
 
 ### `docker-compose.yml`
 
-[`docker-compose.yml`](/Users/scottcornell/src/my-projects/python-claw/docker-compose.yml) defines infrastructure only:
+[`docker-compose.yml`](/docker-compose.yml) defines infrastructure only:
 
 - `postgres`
 - `redis`
 
 ### `docker-compose.app.yml`
 
-[`docker-compose.app.yml`](/Users/scottcornell/src/my-projects/python-claw/docker-compose.app.yml) defines application services:
+[`docker-compose.app.yml`](/docker-compose.app.yml) defines application services:
 
 - `gateway` on port `8000`
 - `worker`
@@ -494,7 +494,7 @@ This is the correct deployment flow to reference when running the app stack in D
 
 ## Running a Test Solution
 
-For the most complete example, use [`example/examplev5.md`](/Users/scottcornell/src/my-projects/python-claw/example/examplev5.md). That document demonstrates a full local Docker-based scenario with:
+For the most complete example, use [`example/examplev5.md`](/example/examplev5.md). That document demonstrates a full local Docker-based scenario with:
 
 - webchat UI
 - provider-backed agents
@@ -525,7 +525,7 @@ docker compose --env-file .env -f docker-compose.yml -f docker-compose.app.yml r
 docker logs -f python-claw-worker
 ```
 
-If you want the exact end-to-end walkthrough, including the sample `.env`, chat prompts, and callback steps, use [`example/examplev5.md`](/Users/scottcornell/src/my-projects/python-claw/example/examplev5.md) directly.
+If you want the exact end-to-end walkthrough, including the sample `.env`, chat prompts, and callback steps, use [`example/examplev5.md`](/example/examplev5.md) directly.
 
 ## Main HTTP Surfaces
 
@@ -602,7 +602,7 @@ The tests primarily rely on local fixtures, SQLite-style temporary state, and fa
 
 ## Spec Reference
 
-The repository specs are in [`specs`](/Users/scottcornell/src/my-projects/python-claw/specs). The current code structure maps broadly like this:
+The repository specs are in [`specs`](/specs). The current code structure maps broadly like this:
 
 - `001-005`: ingress, sessions, runtime, governance, queueing
 - `006-008`: node-runner, channels/media, observability

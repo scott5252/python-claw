@@ -52,14 +52,14 @@ The project already has several good foundations for sub-agents:
 
 Relevant current files:
 
-- [src/sessions/service.py](/Users/scottcornell/src/my-projects/python-claw/src/sessions/service.py)
-- [src/sessions/repository.py](/Users/scottcornell/src/my-projects/python-claw/src/sessions/repository.py)
-- [src/jobs/service.py](/Users/scottcornell/src/my-projects/python-claw/src/jobs/service.py)
-- [src/jobs/repository.py](/Users/scottcornell/src/my-projects/python-claw/src/jobs/repository.py)
-- [src/graphs/assistant_graph.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/assistant_graph.py)
-- [src/graphs/nodes.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/nodes.py)
-- [src/graphs/state.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/state.py)
-- [src/providers/models.py](/Users/scottcornell/src/my-projects/python-claw/src/providers/models.py)
+- [src/sessions/service.py](/src/sessions/service.py)
+- [src/sessions/repository.py](/src/sessions/repository.py)
+- [src/jobs/service.py](/src/jobs/service.py)
+- [src/jobs/repository.py](/src/jobs/repository.py)
+- [src/graphs/assistant_graph.py](/src/graphs/assistant_graph.py)
+- [src/graphs/nodes.py](/src/graphs/nodes.py)
+- [src/graphs/state.py](/src/graphs/state.py)
+- [src/providers/models.py](/src/providers/models.py)
 
 The biggest current limitation is:
 
@@ -84,7 +84,7 @@ At a high level, sub-agents require six major additions:
 
 Today, the runtime uses a configured default agent:
 
-- `default_agent_id` in [src/config/settings.py](/Users/scottcornell/src/my-projects/python-claw/src/config/settings.py)
+- `default_agent_id` in [src/config/settings.py](/src/config/settings.py)
 
 To support sub-agents, the system needs explicit agent definitions, for example:
 
@@ -415,7 +415,7 @@ For example:
 
 The routing logic should live near graph/model construction, likely around:
 
-- [apps/gateway/deps.py](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/deps.py)
+- [apps/gateway/deps.py](/apps/gateway/deps.py)
 
 Instead of always doing:
 
@@ -548,8 +548,8 @@ Instead, tool visibility should be resolved per child agent.
 
 This fits well with the current tool binding model:
 
-- [src/tools/registry.py](/Users/scottcornell/src/my-projects/python-claw/src/tools/registry.py)
-- [src/policies/service.py](/Users/scottcornell/src/my-projects/python-claw/src/policies/service.py)
+- [src/tools/registry.py](/src/tools/registry.py)
+- [src/policies/service.py](/src/policies/service.py)
 
 ## 9.1 Agent-Specific Tool Profiles
 
@@ -606,9 +606,9 @@ If a child agent uses remote execution:
 
 This works naturally with current code:
 
-- [src/tools/remote_exec.py](/Users/scottcornell/src/my-projects/python-claw/src/tools/remote_exec.py)
-- [src/execution/runtime.py](/Users/scottcornell/src/my-projects/python-claw/src/execution/runtime.py)
-- [src/sandbox/service.py](/Users/scottcornell/src/my-projects/python-claw/src/sandbox/service.py)
+- [src/tools/remote_exec.py](/src/tools/remote_exec.py)
+- [src/execution/runtime.py](/src/execution/runtime.py)
+- [src/sandbox/service.py](/src/sandbox/service.py)
 
 In fact, sub-agents make agent-specific sandboxing more valuable, not less.
 
@@ -824,19 +824,19 @@ Goal:
 
 Likely existing files to update:
 
-- [src/db/models.py](/Users/scottcornell/src/my-projects/python-claw/src/db/models.py)
-- [src/sessions/repository.py](/Users/scottcornell/src/my-projects/python-claw/src/sessions/repository.py)
-- [src/sessions/service.py](/Users/scottcornell/src/my-projects/python-claw/src/sessions/service.py)
-- [src/jobs/repository.py](/Users/scottcornell/src/my-projects/python-claw/src/jobs/repository.py)
-- [src/jobs/service.py](/Users/scottcornell/src/my-projects/python-claw/src/jobs/service.py)
-- [src/graphs/state.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/state.py)
-- [src/graphs/nodes.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/nodes.py)
-- [src/providers/models.py](/Users/scottcornell/src/my-projects/python-claw/src/providers/models.py)
-- [src/policies/service.py](/Users/scottcornell/src/my-projects/python-claw/src/policies/service.py)
-- [src/context/service.py](/Users/scottcornell/src/my-projects/python-claw/src/context/service.py)
-- [src/observability/diagnostics.py](/Users/scottcornell/src/my-projects/python-claw/src/observability/diagnostics.py)
-- [apps/gateway/deps.py](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/deps.py)
-- [README.md](/Users/scottcornell/src/my-projects/python-claw/README.md)
+- [src/db/models.py](/src/db/models.py)
+- [src/sessions/repository.py](/src/sessions/repository.py)
+- [src/sessions/service.py](/src/sessions/service.py)
+- [src/jobs/repository.py](/src/jobs/repository.py)
+- [src/jobs/service.py](/src/jobs/service.py)
+- [src/graphs/state.py](/src/graphs/state.py)
+- [src/graphs/nodes.py](/src/graphs/nodes.py)
+- [src/providers/models.py](/src/providers/models.py)
+- [src/policies/service.py](/src/policies/service.py)
+- [src/context/service.py](/src/context/service.py)
+- [src/observability/diagnostics.py](/src/observability/diagnostics.py)
+- [apps/gateway/deps.py](/apps/gateway/deps.py)
+- [README.md](/README.md)
 
 Likely new files:
 

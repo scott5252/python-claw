@@ -9,15 +9,15 @@ It is written to answer four practical questions:
 3. which feature slice introduced it
 4. how the records work together during runtime, approvals, delivery, delegation, collaboration, and recovery
 
-The schema authority is the code in [`src/db/models.py`](/Users/scottcornell/src/my-projects/python-claw/src/db/models.py) plus the migration history in [`migrations/versions`](/Users/scottcornell/src/my-projects/python-claw/migrations/versions).
+The schema authority is the code in [`src/db/models.py`](/src/db/models.py) plus the migration history in [`migrations/versions`](/migrations/versions).
 
 For day-to-day behavior, the main database write paths live in:
 
-- [`src/sessions/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/repository.py)
-- [`src/jobs/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/jobs/repository.py)
-- [`src/delegations/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/delegations/repository.py)
-- [`src/capabilities/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/capabilities/repository.py)
-- [`src/execution/audit.py`](/Users/scottcornell/src/my-projects/python-claw/src/execution/audit.py)
+- [`src/sessions/repository.py`](/src/sessions/repository.py)
+- [`src/jobs/repository.py`](/src/jobs/repository.py)
+- [`src/delegations/repository.py`](/src/delegations/repository.py)
+- [`src/capabilities/repository.py`](/src/capabilities/repository.py)
+- [`src/execution/audit.py`](/src/execution/audit.py)
 
 ## 1. Big Picture
 
@@ -49,13 +49,13 @@ At a high level, the tables fall into these groups:
 
 The repository is structured so database concerns are concentrated in a small set of modules:
 
-- [`src/db`](/Users/scottcornell/src/my-projects/python-claw/src/db) defines SQLAlchemy base/session wiring and the schema models
-- [`migrations`](/Users/scottcornell/src/my-projects/python-claw/migrations) is the schema change history and deployment authority
-- [`src/sessions`](/Users/scottcornell/src/my-projects/python-claw/src/sessions) owns conversation-core records plus a large share of derived-state, approval, and delivery persistence
-- [`src/jobs`](/Users/scottcornell/src/my-projects/python-claw/src/jobs) owns queue rows, leases, retries, and scheduler persistence
-- [`src/delegations`](/Users/scottcornell/src/my-projects/python-claw/src/delegations) owns parent/child delegation rows and event history
-- [`src/capabilities`](/Users/scottcornell/src/my-projects/python-claw/src/capabilities) owns governed activation lookups and agent sandbox profile persistence
-- [`src/execution`](/Users/scottcornell/src/my-projects/python-claw/src/execution) owns durable node execution auditing
+- [`src/db`](/src/db) defines SQLAlchemy base/session wiring and the schema models
+- [`migrations`](/migrations) is the schema change history and deployment authority
+- [`src/sessions`](/src/sessions) owns conversation-core records plus a large share of derived-state, approval, and delivery persistence
+- [`src/jobs`](/src/jobs) owns queue rows, leases, retries, and scheduler persistence
+- [`src/delegations`](/src/delegations) owns parent/child delegation rows and event history
+- [`src/capabilities`](/src/capabilities) owns governed activation lookups and agent sandbox profile persistence
+- [`src/execution`](/src/execution) owns durable node execution auditing
 
 That structure matches the current codebase: most services orchestrate behavior, while repositories and audit modules perform the durable writes.
 
@@ -267,11 +267,11 @@ Important indexes:
 
 Read/write code:
 
-- [`src/routing/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/routing/service.py)
-- [`src/sessions/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/service.py)
-- [`src/sessions/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/repository.py)
-- [`src/sessions/collaboration.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/collaboration.py)
-- [`src/delegations/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/delegations/service.py)
+- [`src/routing/service.py`](/src/routing/service.py)
+- [`src/sessions/service.py`](/src/sessions/service.py)
+- [`src/sessions/repository.py`](/src/sessions/repository.py)
+- [`src/sessions/collaboration.py`](/src/sessions/collaboration.py)
+- [`src/delegations/service.py`](/src/delegations/service.py)
 
 ### `messages`
 
@@ -1115,45 +1115,45 @@ When a session is under takeover or pause:
 
 Conversation and routing:
 
-- [`src/routing/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/routing/service.py)
-- [`src/sessions/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/service.py)
-- [`src/sessions/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/repository.py)
-- [`src/gateway/idempotency.py`](/Users/scottcornell/src/my-projects/python-claw/src/gateway/idempotency.py)
+- [`src/routing/service.py`](/src/routing/service.py)
+- [`src/sessions/service.py`](/src/sessions/service.py)
+- [`src/sessions/repository.py`](/src/sessions/repository.py)
+- [`src/gateway/idempotency.py`](/src/gateway/idempotency.py)
 
 Runs and scheduler:
 
-- [`src/jobs/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/jobs/repository.py)
-- [`src/jobs/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/jobs/service.py)
-- [`apps/worker/jobs.py`](/Users/scottcornell/src/my-projects/python-claw/apps/worker/jobs.py)
-- [`apps/worker/scheduler.py`](/Users/scottcornell/src/my-projects/python-claw/apps/worker/scheduler.py)
+- [`src/jobs/repository.py`](/src/jobs/repository.py)
+- [`src/jobs/service.py`](/src/jobs/service.py)
+- [`apps/worker/jobs.py`](/apps/worker/jobs.py)
+- [`apps/worker/scheduler.py`](/apps/worker/scheduler.py)
 
 Runtime, governance, and approvals:
 
-- [`src/graphs/nodes.py`](/Users/scottcornell/src/my-projects/python-claw/src/graphs/nodes.py)
-- [`src/policies/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/policies/service.py)
-- [`src/policies/approval_actions.py`](/Users/scottcornell/src/my-projects/python-claw/src/policies/approval_actions.py)
-- [`src/capabilities/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/capabilities/repository.py)
-- [`src/capabilities/activation.py`](/Users/scottcornell/src/my-projects/python-claw/src/capabilities/activation.py)
+- [`src/graphs/nodes.py`](/src/graphs/nodes.py)
+- [`src/policies/service.py`](/src/policies/service.py)
+- [`src/policies/approval_actions.py`](/src/policies/approval_actions.py)
+- [`src/capabilities/repository.py`](/src/capabilities/repository.py)
+- [`src/capabilities/activation.py`](/src/capabilities/activation.py)
 
 Context, memory, retrieval, media, and delivery:
 
-- [`src/context/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/context/service.py)
-- [`src/context/outbox.py`](/Users/scottcornell/src/my-projects/python-claw/src/context/outbox.py)
-- [`src/memory/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/memory/service.py)
-- [`src/retrieval/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/retrieval/service.py)
-- [`src/media/processor.py`](/Users/scottcornell/src/my-projects/python-claw/src/media/processor.py)
-- [`src/media/extraction.py`](/Users/scottcornell/src/my-projects/python-claw/src/media/extraction.py)
-- [`src/channels/dispatch.py`](/Users/scottcornell/src/my-projects/python-claw/src/channels/dispatch.py)
+- [`src/context/service.py`](/src/context/service.py)
+- [`src/context/outbox.py`](/src/context/outbox.py)
+- [`src/memory/service.py`](/src/memory/service.py)
+- [`src/retrieval/service.py`](/src/retrieval/service.py)
+- [`src/media/processor.py`](/src/media/processor.py)
+- [`src/media/extraction.py`](/src/media/extraction.py)
+- [`src/channels/dispatch.py`](/src/channels/dispatch.py)
 
 Agents, delegation, collaboration, and diagnostics:
 
-- [`src/agents/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/agents/repository.py)
-- [`src/agents/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/agents/service.py)
-- [`src/delegations/repository.py`](/Users/scottcornell/src/my-projects/python-claw/src/delegations/repository.py)
-- [`src/delegations/service.py`](/Users/scottcornell/src/my-projects/python-claw/src/delegations/service.py)
-- [`src/sessions/collaboration.py`](/Users/scottcornell/src/my-projects/python-claw/src/sessions/collaboration.py)
-- [`src/observability/diagnostics.py`](/Users/scottcornell/src/my-projects/python-claw/src/observability/diagnostics.py)
-- [`src/execution/audit.py`](/Users/scottcornell/src/my-projects/python-claw/src/execution/audit.py)
+- [`src/agents/repository.py`](/src/agents/repository.py)
+- [`src/agents/service.py`](/src/agents/service.py)
+- [`src/delegations/repository.py`](/src/delegations/repository.py)
+- [`src/delegations/service.py`](/src/delegations/service.py)
+- [`src/sessions/collaboration.py`](/src/sessions/collaboration.py)
+- [`src/observability/diagnostics.py`](/src/observability/diagnostics.py)
+- [`src/execution/audit.py`](/src/execution/audit.py)
 
 ## 9. What Changed Compared To The Older Database Doc
 
