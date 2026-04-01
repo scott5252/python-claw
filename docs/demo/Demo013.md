@@ -561,7 +561,7 @@ This demonstrates:
 
 This quick check is useful for a developer audience.
 
-Run the Slack or Telegram demo from [Demo012.md](/Users/scottcornell/src/my-projects/python-claw/docs/demo/Demo012.md).
+Run the Slack or Telegram demo from [Demo012.md](/docs/demo/Demo012.md).
 
 What you should observe:
 

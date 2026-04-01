@@ -20,7 +20,7 @@ What it does not yet have is a real LLM-driven conversational decision layer.
 
 Right now, the default model adapter is rule-based:
 
-- [src/providers/models.py](/Users/scottcornell/src/my-projects/python-claw/src/providers/models.py)
+- [src/providers/models.py](/src/providers/models.py)
 
 It only understands a few hard-coded patterns:
 
@@ -60,8 +60,8 @@ The smallest correct architecture change is:
 
 1. Replace or extend the current rule-based model adapter with a real provider-backed LLM adapter.
 2. Keep using the existing graph/runtime flow in:
-   - [src/graphs/assistant_graph.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/assistant_graph.py)
-   - [src/graphs/nodes.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/nodes.py)
+   - [src/graphs/assistant_graph.py](/src/graphs/assistant_graph.py)
+   - [src/graphs/nodes.py](/src/graphs/nodes.py)
 3. Keep using the existing tool registry and policy service.
 4. Keep using the existing approval and remote execution contracts.
 
@@ -81,7 +81,7 @@ The first major addition is a real implementation of `ModelAdapter`.
 
 Current interface:
 
-- [src/providers/models.py](/Users/scottcornell/src/my-projects/python-claw/src/providers/models.py)
+- [src/providers/models.py](/src/providers/models.py)
 
 What needs to be added:
 
@@ -111,7 +111,7 @@ That is critical because the graph already expects those objects.
 
 The current system already renders prompts through:
 
-- [src/graphs/prompts.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/prompts.py)
+- [src/graphs/prompts.py](/src/graphs/prompts.py)
 
 An LLM integration would need a much stronger prompt contract that teaches the model:
 
@@ -149,10 +149,10 @@ The LLM must not return free-form text and expect the backend to guess what it m
 
 Instead, it should produce structured tool requests that map to the existing tool registry:
 
-- [src/tools/registry.py](/Users/scottcornell/src/my-projects/python-claw/src/tools/registry.py)
-- [src/tools/local_safe.py](/Users/scottcornell/src/my-projects/python-claw/src/tools/local_safe.py)
-- [src/tools/messaging.py](/Users/scottcornell/src/my-projects/python-claw/src/tools/messaging.py)
-- [src/tools/remote_exec.py](/Users/scottcornell/src/my-projects/python-claw/src/tools/remote_exec.py)
+- [src/tools/registry.py](/src/tools/registry.py)
+- [src/tools/local_safe.py](/src/tools/local_safe.py)
+- [src/tools/messaging.py](/src/tools/messaging.py)
+- [src/tools/remote_exec.py](/src/tools/remote_exec.py)
 
 That means the LLM integration needs:
 
@@ -192,7 +192,7 @@ This is especially important for `remote_exec`, because exact approval matching 
 
 Right now, turn classification is implemented in:
 
-- [src/policies/service.py](/Users/scottcornell/src/my-projects/python-claw/src/policies/service.py)
+- [src/policies/service.py](/src/policies/service.py)
 
 It currently uses simple string prefixes like:
 
@@ -231,9 +231,9 @@ The backend already supports:
 
 Relevant code:
 
-- [src/sessions/repository.py](/Users/scottcornell/src/my-projects/python-claw/src/sessions/repository.py)
-- [src/capabilities/activation.py](/Users/scottcornell/src/my-projects/python-claw/src/capabilities/activation.py)
-- [src/graphs/nodes.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/nodes.py)
+- [src/sessions/repository.py](/src/sessions/repository.py)
+- [src/capabilities/activation.py](/src/capabilities/activation.py)
+- [src/graphs/nodes.py](/src/graphs/nodes.py)
 
 What needs to be added is the LLM-side behavior:
 
@@ -254,11 +254,11 @@ This is the specific feature the user has been asking about.
 
 The backend already supports remote execution through:
 
-- [src/tools/remote_exec.py](/Users/scottcornell/src/my-projects/python-claw/src/tools/remote_exec.py)
-- [src/execution/runtime.py](/Users/scottcornell/src/my-projects/python-claw/src/execution/runtime.py)
-- [apps/node_runner/main.py](/Users/scottcornell/src/my-projects/python-claw/apps/node_runner/main.py)
-- [apps/node_runner/policy.py](/Users/scottcornell/src/my-projects/python-claw/apps/node_runner/policy.py)
-- [apps/node_runner/executor.py](/Users/scottcornell/src/my-projects/python-claw/apps/node_runner/executor.py)
+- [src/tools/remote_exec.py](/src/tools/remote_exec.py)
+- [src/execution/runtime.py](/src/execution/runtime.py)
+- [apps/node_runner/main.py](/apps/node_runner/main.py)
+- [apps/node_runner/policy.py](/apps/node_runner/policy.py)
+- [apps/node_runner/executor.py](/apps/node_runner/executor.py)
 
 What is missing is the front-end conversation mapping.
 
@@ -293,7 +293,7 @@ The settings module would need new fields for LLM integration.
 
 Current settings file:
 
-- [src/config/settings.py](/Users/scottcornell/src/my-projects/python-claw/src/config/settings.py)
+- [src/config/settings.py](/src/config/settings.py)
 
 Likely additions:
 
@@ -330,7 +330,7 @@ A real LLM integration introduces a new failure domain:
 
 The worker path in:
 
-- [src/jobs/service.py](/Users/scottcornell/src/my-projects/python-claw/src/jobs/service.py)
+- [src/jobs/service.py](/src/jobs/service.py)
 
 already has retry and failure handling for runs. The LLM adapter should integrate with that cleanly.
 
@@ -347,9 +347,9 @@ Specs 008 already established observability patterns.
 
 Relevant code:
 
-- [src/observability/logging.py](/Users/scottcornell/src/my-projects/python-claw/src/observability/logging.py)
-- [src/observability/failures.py](/Users/scottcornell/src/my-projects/python-claw/src/observability/failures.py)
-- [src/observability/diagnostics.py](/Users/scottcornell/src/my-projects/python-claw/src/observability/diagnostics.py)
+- [src/observability/logging.py](/src/observability/logging.py)
+- [src/observability/failures.py](/src/observability/failures.py)
+- [src/observability/diagnostics.py](/src/observability/diagnostics.py)
 
 LLM integration should add observability for:
 
@@ -373,7 +373,7 @@ Ideally, diagnostics should eventually expose bounded LLM execution metadata wit
 
 The project already has continuity logic in:
 
-- [src/context/service.py](/Users/scottcornell/src/my-projects/python-claw/src/context/service.py)
+- [src/context/service.py](/src/context/service.py)
 
 This becomes more important with a real LLM.
 
@@ -534,18 +534,18 @@ Goal:
 
 The main files likely to be updated are:
 
-- [src/providers/models.py](/Users/scottcornell/src/my-projects/python-claw/src/providers/models.py)
-- [src/config/settings.py](/Users/scottcornell/src/my-projects/python-claw/src/config/settings.py)
-- [src/graphs/prompts.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/prompts.py)
-- [src/graphs/nodes.py](/Users/scottcornell/src/my-projects/python-claw/src/graphs/nodes.py)
-- [src/policies/service.py](/Users/scottcornell/src/my-projects/python-claw/src/policies/service.py)
-- [src/tools/registry.py](/Users/scottcornell/src/my-projects/python-claw/src/tools/registry.py)
-- [src/tools/remote_exec.py](/Users/scottcornell/src/my-projects/python-claw/src/tools/remote_exec.py)
-- [src/tools/messaging.py](/Users/scottcornell/src/my-projects/python-claw/src/tools/messaging.py)
-- [src/context/service.py](/Users/scottcornell/src/my-projects/python-claw/src/context/service.py)
-- [src/observability/logging.py](/Users/scottcornell/src/my-projects/python-claw/src/observability/logging.py)
-- [src/observability/diagnostics.py](/Users/scottcornell/src/my-projects/python-claw/src/observability/diagnostics.py)
-- [apps/gateway/deps.py](/Users/scottcornell/src/my-projects/python-claw/apps/gateway/deps.py)
+- [src/providers/models.py](/src/providers/models.py)
+- [src/config/settings.py](/src/config/settings.py)
+- [src/graphs/prompts.py](/src/graphs/prompts.py)
+- [src/graphs/nodes.py](/src/graphs/nodes.py)
+- [src/policies/service.py](/src/policies/service.py)
+- [src/tools/registry.py](/src/tools/registry.py)
+- [src/tools/remote_exec.py](/src/tools/remote_exec.py)
+- [src/tools/messaging.py](/src/tools/messaging.py)
+- [src/context/service.py](/src/context/service.py)
+- [src/observability/logging.py](/src/observability/logging.py)
+- [src/observability/diagnostics.py](/src/observability/diagnostics.py)
+- [apps/gateway/deps.py](/apps/gateway/deps.py)
 
 Additional new files are likely:
 

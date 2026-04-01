@@ -45,7 +45,7 @@ Review Spec 007 against the updated project documentation and Specs 001 through 
   - attachment and outbound-delivery records must fit the continuity and append-only artifact model from Spec 004
 
 ## Architecture Alignment
-- The spec remains aligned with the gateway-first architecture in [docs/architecture.md](/Users/scottcornell/src/my-projects/python-claw/docs/architecture.md): channel adapters translate transport details, while the gateway-owned runtime and dispatcher control orchestration.
+- The spec remains aligned with the gateway-first architecture in [docs/architecture.md](/docs/architecture.md): channel adapters translate transport details, while the gateway-owned runtime and dispatcher control orchestration.
 - The slice matches the architecture's stated Spec 7 requirements for outbound dispatcher abstraction, reply-directive parsing, block chunking, inbound attachment normalization, media-safe handling, and adapter boundary discipline.
 - The updated contracts also preserve the project's staged maturity: they add realistic delivery behavior without prematurely introducing live incremental streaming, OCR, transcription, or provider-native rich-layout concerns.
 

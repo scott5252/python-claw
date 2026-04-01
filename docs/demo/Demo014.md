@@ -175,7 +175,7 @@ Why this is still manual:
 
 - today the demo needs a person to trigger the local worker helper
 - this manual step becomes less necessary as the platform moves into more complete orchestration and operational flows
-- the future spec most directly related to removing this kind of manual “operator glue” for end-to-end specialist workflows is Spec 017 in [docs/features_plan.md](/Users/scottcornell/src/my-projects/python-claw/docs/features_plan.md), which calls for production hardening, smoke-test flows, and stronger operational automation
+- the future spec most directly related to removing this kind of manual “operator glue” for end-to-end specialist workflows is Spec 017 in [docs/features_plan.md](/docs/features_plan.md), which calls for production hardening, smoke-test flows, and stronger operational automation
 
 ### Terminal C: Use `curl`
 
@@ -738,9 +738,9 @@ This demo intentionally does not show:
 
 Those belong to later work:
 
-- Spec 015 in [docs/features_plan.md](/Users/scottcornell/src/my-projects/python-claw/docs/features_plan.md) for sub-agent delegation and child-session orchestration
-- Spec 016 in [docs/features_plan.md](/Users/scottcornell/src/my-projects/python-claw/docs/features_plan.md) for human handoff and collaboration UX
-- Spec 017 in [docs/features_plan.md](/Users/scottcornell/src/my-projects/python-claw/docs/features_plan.md) for stronger production automation and operational hardening
+- Spec 015 in [docs/features_plan.md](/docs/features_plan.md) for sub-agent delegation and child-session orchestration
+- Spec 016 in [docs/features_plan.md](/docs/features_plan.md) for human handoff and collaboration UX
+- Spec 017 in [docs/features_plan.md](/docs/features_plan.md) for stronger production automation and operational hardening
 
 ## 11. Troubleshooting
 

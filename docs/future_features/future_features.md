@@ -102,7 +102,7 @@ What it would enable:
 
 Related file:
 
-- [src/providers/models.py](/Users/scottcornell/src/my-projects/python-claw/src/providers/models.py)
+- [src/providers/models.py](/src/providers/models.py)
 
 ## 3.2 Sub-Agents
 
@@ -126,7 +126,7 @@ Examples:
 
 This is covered in more detail in:
 
-- [sub_agents.md](/Users/scottcornell/src/my-projects/python-claw/sub_agents.md)
+- [sub_agents.md](/sub_agents.md)
 
 ## 3.3 Real Channel Integrations
 
@@ -150,9 +150,9 @@ Needed additions:
 
 Relevant files:
 
-- [src/channels/adapters/webchat.py](/Users/scottcornell/src/my-projects/python-claw/src/channels/adapters/webchat.py)
-- [src/channels/adapters/slack.py](/Users/scottcornell/src/my-projects/python-claw/src/channels/adapters/slack.py)
-- [src/channels/adapters/telegram.py](/Users/scottcornell/src/my-projects/python-claw/src/channels/adapters/telegram.py)
+- [src/channels/adapters/webchat.py](/src/channels/adapters/webchat.py)
+- [src/channels/adapters/slack.py](/src/channels/adapters/slack.py)
+- [src/channels/adapters/telegram.py](/src/channels/adapters/telegram.py)
 
 ## 3.4 True Streaming
 
@@ -201,8 +201,8 @@ Needed additions:
 
 Relevant current files:
 
-- [src/media/processor.py](/Users/scottcornell/src/my-projects/python-claw/src/media/processor.py)
-- [src/context/service.py](/Users/scottcornell/src/my-projects/python-claw/src/context/service.py)
+- [src/media/processor.py](/src/media/processor.py)
+- [src/context/service.py](/src/context/service.py)
 
 ## 3.6 Richer Outbound Content
 
@@ -267,7 +267,7 @@ Needed additions:
 
 This would build naturally on:
 
-- [src/context/service.py](/Users/scottcornell/src/my-projects/python-claw/src/context/service.py)
+- [src/context/service.py](/src/context/service.py)
 - `summary_snapshots`
 - `outbox_jobs`
 - `context_manifests`
@@ -373,9 +373,9 @@ Needed additions:
 
 Relevant current files:
 
-- [src/sandbox/service.py](/Users/scottcornell/src/my-projects/python-claw/src/sandbox/service.py)
-- [apps/node_runner/policy.py](/Users/scottcornell/src/my-projects/python-claw/apps/node_runner/policy.py)
-- [apps/node_runner/executor.py](/Users/scottcornell/src/my-projects/python-claw/apps/node_runner/executor.py)
+- [src/sandbox/service.py](/src/sandbox/service.py)
+- [apps/node_runner/policy.py](/apps/node_runner/policy.py)
+- [apps/node_runner/executor.py](/apps/node_runner/executor.py)
 
 ## 5.2 Richer Approval Models
 

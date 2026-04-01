@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document evaluates whether the current codebase plus the planned roadmap in [`docs/features_plan018_29.md`](/Users/scottcornell/src/my-projects/python-claw/docs/features_plan018_29.md) is enough to make `python-claw` a practical OpenClaw replacement, then proposes the additional specs needed after Spec 029.
+This document evaluates whether the current codebase plus the planned roadmap in [`docs/features_plan018_29.md`](/docs/features_plan018_29.md) is enough to make `python-claw` a practical OpenClaw replacement, then proposes the additional specs needed after Spec 029.
 
 This analysis is based on:
 
