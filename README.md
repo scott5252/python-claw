@@ -35,6 +35,10 @@ This guide explains how agents and delegated child agents work in the current co
 
 This document describes a specific architecture fix for the approval-continuation bug in delegated child runs. It explains the original deduplication collision, the introduction of an `AWAITING_APPROVAL` delegation state plus a separate `delegation_approval_prompt` trigger, and the tests that verify the parent now receives both the approval prompt and the final child result correctly.
 
+### [`docs/message_flow.md`](docs/message_flow.md)
+
+This guide walks step by step through how a user request moves through the current system: gateway ingress, routing, session and transcript persistence, run creation, worker claiming, context assembly, AI/model execution, tool and approval handling, delegation, delivery, streaming, and after-turn enrichment. It is written for junior developers and calls out the main code modules, durable tables, architecture diagrams, and sequence diagrams involved at each phase.
+
 ## What Is Implemented
 
 The current repository includes these major slices from the spec set:
